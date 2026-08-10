@@ -1,0 +1,20 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    level: 8
+    paths:
+        - src
+    excludePaths:
+        - src/Console/BackfillCommand.php # command options are mixed by nature
+
+    # HasLinqelioContact has no consumer inside src — it is meant for an
+    # application's own models — so PHPStan reports it as unanalysed. Pulling
+    # tests into the analysis fixes that but replaces it with a dozen false
+    # positives: without a Pest plugin, PHPStan types $this inside a test
+    # closure as PHPUnit's TestCase, so no accurate signature for a helper
+    # taking it can typecheck. The trait is covered by tests instead.
+    reportUnmatchedIgnoredErrors: true
+    ignoreErrors:
+        - identifier: trait.unused
+          path: src/Concerns/HasLinqelioContact.php

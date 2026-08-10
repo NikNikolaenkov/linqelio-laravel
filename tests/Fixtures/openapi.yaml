@@ -1,0 +1,2771 @@
+# =============================================================================
+# Linqelio Platform API — the single source of truth (ADR-0002).
+# =============================================================================
+# Contract-first: every platform action is declared here BEFORE code. The admin
+# UI has no backend of its own — it consumes exactly this contract, so the admin
+# and external integrators cannot diverge (full parity, ADR-0002).
+#
+# --- On the OpenAPI version ---------------------------------------------------
+# ADR-0002 prefers OpenAPI 3.1, but this spec targets 3.0.3. oapi-codegen v2.7.2
+# prints "OpenAPI 3.1.x ... is not yet supported" (upstream issue #373) and
+# recommends 3.0.x; generated Go feeds the gen-drift CI gate, so a reliable
+# toolchain wins. The spec avoids 3.1-only syntax, so a future bump is a
+# one-line change once oapi-codegen ships 3.1 support.
+#
+# --- On the single-file layout ------------------------------------------------
+# This is ONE self-contained document, organized by resource with the banners
+# below (health / channels / contacts / messages / embed) and a components
+# catalog that mirrors the intended module split (errors, contact, envelope,
+# channel, embed, pagination, params). It is NOT split across paths/*.yaml and
+# components/*.yaml because the pinned generator (oapi-codegen v2.7.2, invoked by
+# the fixed Taskfile/CI command `oapi-codegen ... api/openapi/openapi.yaml`)
+# cannot emit Go types for schemas defined in external $ref files: any external
+# reference suppresses type emission, and import-mapping "-" yields `type X = X`
+# self-cycles / undefined types. Physically splitting the files would require a
+# bundle step in the Taskfile/CI `gen` target (out of this slice's scope). See
+# the S0.2 report for details and remediation.
+openapi: 3.0.3
+
+info:
+  title: Linqelio Platform API
+  version: 0.1.0
+  description: >
+    Unified multi-channel messaging control plane. Errors are RFC 9457
+    problem+json with a machine `code` from the ADR-0013 registry. Commands are
+    idempotent via `Idempotency-Key`; lists are cursor-paginated; the version is
+    pinned in the path (`/v1`).
+  license:
+    name: Proprietary
+
+servers:
+  - url: /v1
+    description: Version 1 (path-versioned; breaking changes ship as /v2).
+
+security:
+  - clientApiKey: []
+
+tags:
+  - name: health
+    description: Liveness/readiness.
+  - name: channels
+    description: Channel inventory and state.
+  - name: contacts
+    description: Contacts (persons with identities[], ADR-0008).
+  - name: messages
+    description: Outbound message commands.
+  - name: embed
+    description: Embeddable conversation widget sessions (ADR-0007/0009).
+
+paths:
+  # ===========================================================================
+  # health.yaml — liveness/readiness
+  # ===========================================================================
+  /healthz:
+    get:
+      operationId: healthCheck
+      summary: Liveness/readiness probe.
+      description: Reports service health. Unauthenticated; safe to poll.
+      tags:
+        - health
+      security: []
+      responses:
+        '200':
+          description: Service is healthy (or degraded but serving).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - degraded
+                required:
+                  - status
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ===========================================================================
+  # channels.yaml — channel inventory
+  # ===========================================================================
+  /channels:
+    get:
+      operationId: listChannels
+      summary: List channels configured in the cabinet.
+      description: >
+        Returns the channels visible in the caller's cabinet with their kind,
+        state, and honest capabilities (ADR-0012). Read-only for M0.
+      tags:
+        - channels
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: The channels configured in the cabinet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createChannel
+      summary: Provision a new channel in the cabinet.
+      description: >
+        Create a channel of the given kind. It starts disconnected; call the
+        connect command to begin pairing (a QR for wa_web, ADR-0013
+        channel.pairing_required). Provisioning is authorized against the connect
+        policy budget (ADR-0019 policy seam).
+      tags:
+        - channels
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+        - policy.rule_blocked
+        - policy.quota_exceeded
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelRequest'
+      responses:
+        '201':
+          description: The channel was provisioned (disconnected until paired).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /channels/{id}/connect:
+    post:
+      operationId: connectChannel
+      summary: Start (or refresh) a channel's pairing session.
+      description: >
+        Begin connecting the channel. For QR channels (wa_web) this returns a
+        pairing payload (QR string / pairing code) the operator scans; for
+        API-token channels (bots) it transitions straight to connected. Poll
+        getChannelStatus to observe progress.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - channel.not_connected
+        - channel.pairing_required
+        - policy.rate_limited
+      responses:
+        '200':
+          description: The current pairing/connection status (with QR if pairing).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /channels/{id}/credentials:
+    put:
+      operationId: setChannelCredentials
+      summary: Set the channel's provider credential (write-only).
+      description: >
+        Store the channel's provider credential (e.g. a Telegram bot token or a
+        Viber PA auth token) in the secret store and bind its reference to the
+        channel. WRITE-ONLY by design (ADR-0011): the raw value is accepted here
+        once, never persisted outside the secret store, and never returned by
+        any API — reads only ever see the `secret://` reference. Intended for
+        the first-connect flow of API-token channels (tg_bot, viber_bot,
+        wa_cloud); QR channels (wa_web) pair via connectChannel instead.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetChannelCredentialsRequest'
+      responses:
+        '204':
+          description: The credential was stored and bound to the channel.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /channels/{id}/sync:
+    post:
+      operationId: syncChannel
+      summary: Import contacts (and request history) from the channel's source.
+      description: >
+        Backfill from the provider account itself: pulls the address book into
+        platform contacts (deduplicated on the exact within-channel identity key
+        — ADR-0008 §2 never fuzzy-matches) and, when `history=true`, asks the
+        source to replay older messages. Replayed messages arrive asynchronously
+        through the ordinary inbound pipeline (deduplicated by provider message
+        id), so this returns as soon as the request is accepted. Only source-side
+        channels support it: wa_web and tg_client. Bot channels (tg_bot,
+        viber_bot) and wa_cloud have no history/address-book API upstream and
+        yield channel.capability_unsupported.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncChannelRequest'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+      responses:
+        '200':
+          description: Import result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /channels/{id}/disconnect:
+    post:
+      operationId: disconnectChannel
+      summary: Disconnect a channel.
+      description: >
+        Tears the channel's live link down: wa_web logs the WhatsApp instance
+        out, tg_client wipes the MTProto session, token channels unbind their
+        stored credential reference. The channel row flips to disconnected;
+        reconnect via connectChannel / setChannelCredentials.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      responses:
+        '200':
+          description: The channel's state after disconnecting.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /channels/{id}/status:
+    get:
+      operationId: getChannelStatus
+      summary: Get a channel's live connection/pairing status.
+      description: >
+        Returns the channel's current connection state and, while pairing, the QR
+        / pairing payload to render. Safe to poll from the admin connect screen.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - channel.not_connected
+      responses:
+        '200':
+          description: The channel's current connection/pairing status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # tenancy — platform administration (cabinets + client API keys). Requires a
+  # key carrying the `platform:admin` scope; ordinary cabinet keys are rejected
+  # with auth.forbidden_scope. Client keys are cabinet-scoped and isolated by
+  # Postgres RLS — a client's token only ever sees its own cabinet.
+  # ===========================================================================
+  /cabinets:
+    get:
+      operationId: listCabinets
+      summary: List all cabinets (platform admin).
+      tags:
+        - tenancy
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+      responses:
+        '200':
+          description: All cabinets on the platform.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CabinetList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createCabinet
+      summary: Provision a new client cabinet (platform admin).
+      description: >
+        Creates an organization + cabinet pair for a new client. The cabinet is
+        the tenant boundary (RLS): keys issued for it can only ever see its own
+        channels, contacts, and messages.
+      tags:
+        - tenancy
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCabinetRequest'
+      responses:
+        '201':
+          description: The cabinet was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cabinet'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /cabinets/{id}/keys:
+    get:
+      operationId: listCabinetKeys
+      summary: List a cabinet's API keys (platform admin; never the secrets).
+      tags:
+        - tenancy
+      parameters:
+        - $ref: '#/components/parameters/CabinetPathId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: The cabinet's keys (hashes/secrets are never returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: issueCabinetKey
+      summary: Issue a new API key for a cabinet (platform admin).
+      description: >
+        Mints a client bearer token for the cabinet. The secret is returned in
+        this response ONCE and stored only as an argon2id hash (ADR-0005) — it
+        cannot be retrieved again; issue a new key instead.
+      tags:
+        - tenancy
+      parameters:
+        - $ref: '#/components/parameters/CabinetPathId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '201':
+          description: The new key; `bearerToken` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cabinets/{id}/keys/{kid}:
+    delete:
+      operationId: revokeCabinetKey
+      summary: Revoke a cabinet's API key (platform admin).
+      tags:
+        - tenancy
+      parameters:
+        - $ref: '#/components/parameters/CabinetPathId'
+        - $ref: '#/components/parameters/KeyKid'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '204':
+          description: The key was revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # webhooks + access pool — admin management via the contract (ADR-0002, M6 S4)
+  # ===========================================================================
+  /webhooks:
+    get:
+      operationId: listWebhooks
+      summary: List outbound webhook subscriptions in the cabinet.
+      tags:
+        - webhooks
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: The webhook subscriptions configured in the cabinet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: registerWebhook
+      summary: Register an outbound webhook subscription.
+      description: >
+        Subscribe an HTTPS endpoint to cabinet events (ADR-0031). `secretRef` is a
+        secret-store reference (secret://...) to the HMAC signing key — never the
+        key itself.
+      tags:
+        - webhooks
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterWebhookRequest'
+      responses:
+        '201':
+          description: The webhook subscription was registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /access-pool:
+    get:
+      operationId: listAccessPool
+      summary: List access-pool credentials for a channel kind.
+      tags:
+        - access-pool
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ChannelKind'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+      responses:
+        '200':
+          description: The access-pool entries for the cabinet + kind.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessPoolList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: addAccessPoolEntry
+      summary: Add a provider credential to the access pool.
+      description: >
+        Register an auth-out credential (ADR-0029). `credentialsRef` is a
+        secret-store reference (secret://...) — never the credential itself.
+      tags:
+        - access-pool
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddAccessPoolEntryRequest'
+      responses:
+        '201':
+          description: The credential was added to the pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessPoolEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /access-pool/rotate:
+    post:
+      operationId: rotateAccessPool
+      summary: Rotate the access pool for a channel kind (zero-downtime).
+      description: >
+        Promote the healthy `next` credential to active and retire the current
+        active with a grace window (ADR-0029). Fails with 409 when there is no
+        `next` to promote.
+      tags:
+        - access-pool
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateAccessPoolRequest'
+      responses:
+        '200':
+          description: The pool was rotated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateAccessPoolResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /audit:
+    get:
+      operationId: listAudit
+      summary: List the cabinet's audit log (append-only, newest first).
+      description: >
+        Query the cabinet's audit trail (ADR-0028). Optional `action` filters by
+        event type; `limit` caps the page (default 100).
+      tags:
+        - audit
+      parameters:
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: The cabinet's audit entries, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ===========================================================================
+  # contacts.yaml — contacts (persons with identities[])
+  # ===========================================================================
+  /contacts:
+    get:
+      operationId: listContacts
+      summary: List / poll contacts (cursor pagination).
+      description: >
+        Cursor-paginated pool of contacts (ADR-0008 §3 receive flow). Use `since`
+        to walk pages and `status` to scope (e.g. `new` = inbound not yet
+        host-linked). Response carries `pageInfo.nextCursor` for the next page.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ContactStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          required: false
+          description: >
+            Case-insensitive substring search over the contact's display name and
+            its identities' phone / username / provider id. Digit-only input also
+            matches phones written with separators.
+          schema:
+            type: string
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: A cursor page of contacts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # conversations — the operator's dialog list (admin console). Distinct from the
+  # /embed/conversations family, which is token-scoped to ONE conversation for the
+  # embedded widget (ADR-0009); these are cabinet-scoped and list everything.
+  # ===========================================================================
+  /media:
+    post:
+      operationId: uploadMedia
+      summary: Upload an attachment to send.
+      description: >
+        Stores a file in the platform's object store and returns the reference to
+        put in a send command's `content.media.url`. Providers fetch outbound
+        media by URL, so the returned url is an ABSOLUTE, time-limited link the
+        provider can read — unlike the inbound read path, which streams through
+        the platform.
+      tags:
+        - messages
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      parameters:
+        - name: filename
+          in: query
+          required: false
+          description: Original file name (kept for documents).
+          schema:
+            type: string
+        - name: mime
+          in: query
+          required: false
+          description: Content type; sniffed from the bytes when omitted.
+          schema:
+            type: string
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - message.too_large
+      responses:
+        '201':
+          description: The stored attachment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadedMedia'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: The file exceeds the platform limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /messages/{id}/media:
+    get:
+      operationId: getMessageMedia
+      summary: Download a message's media attachment.
+      description: >
+        Streams the attachment bytes of a media message THROUGH the platform. The
+        object store is never published: a stored provider/presigned URL is not
+        reachable from a browser and expires, so this endpoint is the only way to
+        read an attachment. Authorization is the message's own visibility — the
+        row must exist in the caller's cabinet (RLS), which is what keeps one
+        tenant's attachments away from another.
+      tags:
+        - messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Message id (our ULID).
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The attachment bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /conversations:
+    get:
+      operationId: listConversations
+      summary: List the cabinet's conversations, most recently active first.
+      description: >
+        The dialog list: one row per conversation with its contact, channel kind,
+        and a preview of the latest message. Optional filters by channel and
+        status. Cursor-paginated on (last_message_at, id).
+      tags:
+        - conversations
+      parameters:
+        - name: channelId
+          in: query
+          required: false
+          description: Only conversations on this channel.
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          description: Conversation status filter (e.g. open, closed).
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: A page of conversations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /conversations/{id}/feed:
+    get:
+      operationId: listConversationMessages
+      summary: Read one conversation's messages (admin).
+      description: >
+        Backward-paginated thread of a single conversation, oldest→newest within
+        the page. Cabinet-scoped (RLS); `before` walks further back.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - name: before
+          in: query
+          required: false
+          description: Backward cursor — a message id from a previous page.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: A page of the conversation's messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationFeed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contacts/create:
+    post:
+      operationId: createContact
+      summary: Create a contact from a channel identity (idempotent).
+      description: >
+        Register a person the cabinet has not messaged yet — e.g. to start a
+        conversation with a phone number that is not in the imported address
+        book. The identity key (channel kind + provider id) is the SAME key used
+        for inbound auto-linking (ADR-0008 §2), so calling this twice returns the
+        existing contact instead of creating a duplicate: 201 when a contact was
+        created, 200 when an existing one matched. `providerId` defaults to
+        `phone` when omitted (WhatsApp/Viber address a person by number).
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+        - contact.identity_conflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateContactRequest'
+      responses:
+        '200':
+          description: An existing contact already carried this identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '201':
+          description: The contact was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contacts/{id}/invite:
+    post:
+      operationId: createContactInvite
+      summary: Mint a deep-link invite that opts a contact into a bot channel.
+      description: >
+        Bot channels cannot start a conversation (Telegram requires /start, Viber
+        requires a subscription) — the CONTACT must opt in. This mints a one-time
+        click-to-chat link carrying a start token bound to (cabinet, contact,
+        channel): when the contact taps it and starts the bot, the adapter
+        redeems the token and binds the bot identity to THIS contact (ADR-0008
+        §5), so the new channel joins the same person instead of creating a
+        stranger. Send the link over a channel that already reaches them.
+        Only tg_bot and viber_bot support it.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInviteRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - channel.not_found
+        - channel.capability_unsupported
+      responses:
+        '201':
+          description: The invite link (single use, short-lived).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactInvite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The channel kind has no deep-link opt-in.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /contacts/{id}:
+    get:
+      operationId: getContact
+      summary: Fetch one contact by id.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+      responses:
+        '200':
+          description: The contact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateContact
+      summary: Update host-owned contact fields.
+      description: >
+        Partial update of host-owned fields only — `hostRefs` and `custom`
+        (ADR-0008 §3: the host mirrors the contact and returns the link). Writing
+        a field owned by another party yields embed.field_ownership_denied.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactPatch'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - contact.identity_conflict
+        - contact.merge_conflict
+        - embed.field_ownership_denied
+      responses:
+        '200':
+          description: The updated contact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ===========================================================================
+  # messages.yaml — outbound message commands
+  # ===========================================================================
+  /contacts/{id}/messages:
+    get:
+      operationId: listContactMessages
+      summary: Read a contact's message history (all channels).
+      description: >
+        Backward-paginated history of every message exchanged with the contact
+        across all of its conversations — a contact is one person spanning
+        channels (ADR-0008). Newest-first pagination, presented oldest→newest;
+        `cursor` walks further back. Cabinet-scoped (RLS).
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - name: before
+          in: query
+          required: false
+          description: Backward cursor — a message id from a previous page's `pageInfo.nextCursor`.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+      responses:
+        '200':
+          description: A page of the contact's message history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageHistory'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: sendContactMessage
+      summary: Send an outbound message to a contact.
+      description: >
+        Enqueue an outbound message to the contact (ADR-0012 outbound flow). This
+        is an unsafe command, so `Idempotency-Key` is REQUIRED (ADR-0002 §5):
+        replaying the same key with the same body returns the original result;
+        reusing it with a different body yields idempotency.key_reused (409).
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - channel.pairing_required
+        - message.type_unsupported
+        - message.too_large
+        - policy.rate_limited
+        - policy.quota_exceeded
+        - policy.rule_blocked
+        - idempotency.key_reused
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '202':
+          description: The message was accepted and queued for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ===========================================================================
+  # embed.yaml — embeddable widget sessions
+  # ===========================================================================
+  /embed/session:
+    post:
+      operationId: createEmbedSession
+      summary: Initialize an embed widget session (M0 stub).
+      description: >
+        Init/token stub for the embeddable conversation widget (ADR-0007 /
+        ADR-0009). Validates the embedding origin and issues a short-lived session
+        token. Full deep-link/pairing mechanics land in a later slice.
+      tags:
+        - embed
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - embed.token_expired
+        - embed.scope_violation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbedSessionRequest'
+      responses:
+        '201':
+          description: A session token was issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbedSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /embed/contacts/{id}:
+    get:
+      operationId: getEmbedContact
+      summary: Read the embed-scoped contact.
+      description: >
+        Plane B (ADR-0009 §4): the widget hydrates the contact bound to its token
+        (cap contact:read). Scope is enforced server-side — the id MUST match the
+        token's scope.contactId, else embed.scope_violation.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - contact.not_found
+      responses:
+        '200':
+          description: The scoped contact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: patchEmbedContact
+      summary: Patch host-owned custom fields of the embed-scoped contact.
+      description: >
+        Plane B (ADR-0009 §4): optimistic-concurrency write of host-owned custom
+        fields (cap contact:write:custom). `baseVersion` guards the update
+        (contact.version_conflict on drift); the idempotency key dedups a retried
+        patch. Writing profile.*/identities.* is rejected — not host-owned
+        (embed.field_ownership_denied, ADR-0007 §3).
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbedContactPatch'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - embed.field_ownership_denied
+        - contact.not_found
+        - contact.version_conflict
+        - idempotency.key_reused
+      responses:
+        '200':
+          description: The updated contact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /embed/contacts/{id}/conversations:
+    post:
+      operationId: startEmbedBotConversation
+      summary: Start a bot conversation via deep-link (click-to-chat).
+      description: >
+        Plane B (ADR-0009 §6): bots cannot message first, so a bot session is
+        raised through a deep link. Returns a pending session with an inviteLink;
+        when the contact taps it and sends /start with the link token, the tg_bot
+        identity is bound to THIS contact (ADR-0008 §5). cap conversation:start.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartBotConversationRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - contact.not_found
+        - channel.not_connected
+        - idempotency.key_reused
+      responses:
+        '201':
+          description: A pending bot session with a deep-link to opt in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /embed/conversations/{id}:
+    get:
+      operationId: getEmbedConversation
+      summary: Read the embed-scoped conversation feed.
+      description: >
+        Plane B (ADR-0009 §5): the scoped, append-only message feed (cap
+        message:read). The host reads and appends but never edits history.
+        Backward cursor pagination via `before`.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - name: before
+          in: query
+          required: false
+          description: Backward cursor — return messages older than this opaque cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum messages to return (the server clamps to a page cap).
+          schema:
+            type: integer
+            format: int32
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - contact.not_found
+      responses:
+        '200':
+          description: The scoped conversation feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationFeed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /embed/conversations/{id}/messages:
+    post:
+      operationId: sendEmbedMessage
+      summary: Send an outbound message from the widget.
+      description: >
+        Plane B (ADR-0009 §5): send a text message into the scoped conversation
+        (cap message:send). Routed outbound through OUR API → policy → adapter
+        (never directly to Chatwoot). `Idempotency-Key` is REQUIRED (unsafe
+        command); dedup is by providerMsgId downstream.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbedSendRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - channel.not_connected
+        - message.too_large
+        - policy.rate_limited
+        - idempotency.key_reused
+        - provider.upstream_error
+      responses:
+        '202':
+          description: The message was accepted and queued for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+  # ===========================================================================
+  # Security
+  # ===========================================================================
+  securitySchemes:
+    clientApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >
+        Client API key presented as a Bearer token. Stored server-side as an
+        argon2id hash and shown once (DEVELOPMENT_RULES §8; scopes per §5).
+    embedToken:
+      type: http
+      scheme: bearer
+      bearerFormat: jwt
+      description: >
+        Short-lived embed session token (ADR-0009 Plane B). Issued by
+        POST /embed/session; carries the cabinet, the scoped contact/conversation
+        and a capability set (cap[]). The widget is its ONLY holder — the host page
+        never sees it. Distinct from clientApiKey: it authorizes ONLY the /embed/*
+        Plane-B surface, scoped to a single contact.
+
+  # ===========================================================================
+  # params.yaml — reusable parameters (path/query/header)
+  # ===========================================================================
+  parameters:
+    ContactId:
+      name: id
+      in: path
+      required: true
+      description: Contact identifier (our ULID).
+      schema:
+        type: string
+
+    ChannelId:
+      name: id
+      in: path
+      required: true
+      description: Channel identifier (our ULID).
+      schema:
+        type: string
+
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      description: Conversation identifier (our ULID).
+      schema:
+        type: string
+
+    CabinetPathId:
+      name: id
+      in: path
+      required: true
+      description: Cabinet identifier (uuid).
+      schema:
+        type: string
+
+    KeyKid:
+      name: kid
+      in: path
+      required: true
+      description: API key identifier (kid) within the cabinet.
+      schema:
+        type: string
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-generated key that makes an unsafe command idempotent (ADR-0002 §5,
+        DEVELOPMENT_RULES §5). Replaying the same key with the same body returns the
+        original result; reusing it with a DIFFERENT body yields
+        idempotency.key_reused (409).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+    Cursor:
+      name: since
+      in: query
+      required: false
+      description: Opaque forward cursor from a previous page's `pageInfo.nextCursor` (ADR-0008 §3).
+      schema:
+        type: string
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum items per page. The server clamps to its own ceiling.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+    ContactStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Filter contacts by lifecycle status (ADR-0008 §3, e.g. `new` = not yet host-linked).
+      schema:
+        $ref: '#/components/schemas/ContactStatus'
+
+  # ===========================================================================
+  # errors.yaml — RFC 9457 problem+json response objects (ADR-0013)
+  # ===========================================================================
+  # Each references Problem. Per-operation code lists live on the operation via
+  # the `x-error-codes` extension (ADR-0013 §4: every endpoint declares its codes).
+  responses:
+    BadRequest:
+      description: Request body or parameters failed schema validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing, invalid, or expired client API key.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Authenticated but not permitted (scope, tenancy, or policy rule).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: The scoped resource does not exist or is not visible.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: The request conflicts with current state (idempotency, merge, identity).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PayloadTooLarge:
+      description: The message or file exceeds the allowed size.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnprocessableEntity:
+      description: Well-formed but semantically unsupported by the target channel/type.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    TooManyRequests:
+      description: A rate limit or quota was exceeded.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    BadGateway:
+      description: An upstream provider returned an error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: A provider or channel is temporarily unavailable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    # =========================================================================
+    # errors.yaml — RFC 9457 envelope + ADR-0013 machine `code` registry
+    # =========================================================================
+    # The envelope shape and the `code` enum are FROZEN v1 (ADR-0013). Codes are
+    # additive-only: never reassigned, never removed. The frontend `errors.<code>`
+    # i18n namespace binds to ErrorCode below — this is that bridge, so the enum
+    # lists the ADR-0013 starter registry VERBATIM.
+    ErrorCode:
+      type: string
+      description: >
+        Stable machine-readable error code in `domain.reason` form (ADR-0013).
+        Additive-only registry: codes are never reassigned or removed. Clients switch
+        on this value; the frontend `errors.<code>` i18n namespace is keyed by it.
+      enum:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+        - tenancy.cross_cabinet_denied
+        - keyring.rotation_overlap_required
+        - channel.not_connected
+        - channel.not_found
+        - channel.capability_unsupported
+        - channel.pairing_required
+        - policy.rate_limited
+        - policy.quota_exceeded
+        - policy.rule_blocked
+        - accesspool.no_next
+        - message.type_unsupported
+        - message.too_large
+        - idempotency.key_reused
+        - contact.not_found
+        - contact.merge_conflict
+        - contact.identity_conflict
+        - contact.version_conflict
+        - embed.token_expired
+        - embed.scope_violation
+        - embed.field_ownership_denied
+        - provider.upstream_error
+        - provider.unavailable
+
+    ValidationError:
+      type: object
+      description: One field-level validation failure (RFC 9457 `errors[]` extension).
+      properties:
+        field:
+          type: string
+          description: JSON Pointer / dotted path to the offending field.
+        reason:
+          type: string
+          description: Human-readable reason this field failed.
+      required:
+        - field
+        - reason
+
+    Problem:
+      type: object
+      description: >
+        RFC 9457 problem+json error envelope (ADR-0013). Cabinet-safe: `detail` never
+        leaks another cabinet's data or internal details.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+          description: URI to the versioned doc page for this `code`.
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: HTTP status code, duplicated in the body per RFC 9457.
+        detail:
+          type: string
+          description: Human-readable explanation of this occurrence (cabinet-safe).
+        instance:
+          type: string
+          format: uri-reference
+          description: URI reference identifying this specific occurrence.
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        trace_id:
+          type: string
+          description: Correlation id for logs/traces (ADR-0013 §1).
+        errors:
+          type: array
+          description: Field-level failures; present for validation.invalid_request.
+          items:
+            $ref: '#/components/schemas/ValidationError'
+      required:
+        - type
+        - title
+        - status
+        - code
+
+    # =========================================================================
+    # envelope.yaml — message Envelope (mirrors internal/messaging/envelope.go)
+    # =========================================================================
+    # FROZEN v1 (ADR-0012): core fields stable; Meta and enum members additive.
+    # ChannelKind lives with the messaging schemas (its canonical Go home).
+    ChannelKind:
+      type: string
+      description: Channel family a message or session belongs to (ADR-0012). Extends additively.
+      enum:
+        - wa_web
+        - wa_cloud
+        - tg_client
+        - tg_bot
+        - viber_bot
+
+    Direction:
+      type: string
+      description: Direction of a message relative to the platform (ADR-0012).
+      enum:
+        - inbound
+        - outbound
+
+    MsgType:
+      type: string
+      description: Payload type carried by `content` (ADR-0012). Members extend additively.
+      enum:
+        - text
+        - image
+        - audio
+        - video
+        - document
+        - location
+        - template
+        - interactive
+        - system
+
+    MsgStatus:
+      type: string
+      description: Delivery-lifecycle state of a message (ADR-0012).
+      enum:
+        - queued
+        - sent
+        - delivered
+        - read
+        - failed
+
+    Timestamps:
+      type: object
+      description: >
+        Delivery-lifecycle moments. `created` is always set; `sent`/`delivered`/`read`
+        are populated as the message advances.
+      properties:
+        created:
+          type: string
+          format: date-time
+        sent:
+          type: string
+          format: date-time
+        delivered:
+          type: string
+          format: date-time
+        read:
+          type: string
+          format: date-time
+      required:
+        - created
+
+    Envelope:
+      type: object
+      description: >
+        Unified message contract between the core and every adapter (ADR-0012).
+        Mirrors internal/messaging/envelope.go core fields. `meta` MUST NOT carry
+        routing-significant data — routing uses core fields only.
+      properties:
+        id:
+          type: string
+          description: Our ULID.
+        cabinetId:
+          type: string
+        channelId:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        direction:
+          $ref: '#/components/schemas/Direction'
+        chatId:
+          type: string
+          description: Unified conversation id.
+        contactRef:
+          type: string
+          description: Points to Contact.identities[].providerId (ADR-0008).
+        type:
+          $ref: '#/components/schemas/MsgType'
+        content:
+          type: object
+          additionalProperties: true
+          description: Type-dependent payload (JSON). Shape depends on `type`.
+        replyTo:
+          type: string
+          description: Optional provider message id this message replies to.
+        providerMsgId:
+          type: string
+          description: Provider-side id; bus idempotency key (ADR-0012 §3).
+        idempotencyKey:
+          type: string
+          description: Outbound-send idempotency key (API §5).
+        status:
+          $ref: '#/components/schemas/MsgStatus'
+        timestamps:
+          $ref: '#/components/schemas/Timestamps'
+        meta:
+          type: object
+          additionalProperties: true
+          description: Provider-specific metadata. NEVER used for routing.
+      required:
+        - id
+        - cabinetId
+        - channelId
+        - kind
+        - direction
+        - chatId
+        - contactRef
+        - type
+        - content
+        - status
+        - timestamps
+
+    ConversationSummary:
+      type: object
+      description: One row of the operator dialog list.
+      properties:
+        id:
+          type: string
+        contactId:
+          type: string
+        contactName:
+          type: string
+        channelId:
+          type: string
+        channelType:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          type: string
+          description: The provider-side chat address (JID / chat id).
+        status:
+          type: string
+        lastMessageAt:
+          type: string
+          format: date-time
+        lastMessageText:
+          type: string
+          description: Preview of the newest message ("" for non-text payloads).
+        lastMessageDirection:
+          $ref: '#/components/schemas/Direction'
+      required:
+        - id
+        - channelId
+        - chatId
+
+    ConversationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationSummary'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+
+    CreateInviteRequest:
+      type: object
+      properties:
+        channelId:
+          type: string
+          description: The bot channel the contact should be invited into.
+      required:
+        - channelId
+
+    ContactInvite:
+      type: object
+      description: A single-use deep link that opts a contact into a bot channel.
+      properties:
+        contactId:
+          type: string
+        channelId:
+          type: string
+        inviteLink:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - contactId
+        - channelId
+        - inviteLink
+        - expiresAt
+
+    CreateContactRequest:
+      type: object
+      description: >
+        A new person expressed as ONE channel identity. Identities are how the
+        platform addresses people (ADR-0008); more can be linked later.
+      properties:
+        channelType:
+          $ref: '#/components/schemas/ChannelKind'
+        phone:
+          type: string
+          description: E.164-ish number (separators tolerated). Required unless providerId/username is set.
+        username:
+          type: string
+          description: Channel username (Telegram @handle without the @).
+        providerId:
+          type: string
+          description: Native provider id (e.g. a WhatsApp JID). Defaults to `phone`.
+        name:
+          type: string
+          description: Display name for the new contact. Ignored when a contact already matched.
+      required:
+        - channelType
+
+    SendMessageRequest:
+      type: object
+      description: >
+        Outbound message command body. The platform fills the remaining Envelope
+        fields (id, direction=outbound, timestamps, status=queued). `content` is
+        type-dependent (e.g. {"text":"hi"} for type=text).
+      properties:
+        type:
+          $ref: '#/components/schemas/MsgType'
+        content:
+          type: object
+          additionalProperties: true
+          description: Type-dependent payload matching `type`.
+        replyTo:
+          type: string
+          description: Optional provider message id to reply to.
+        channelId:
+          type: string
+          description: >
+            Optional channel override. By default the platform replies on the
+            channel of the contact's most recent conversation, falling back to a
+            channel matching one of the contact's identities. Set this to force a
+            specific channel; the contact must be addressable there (it needs an
+            identity of that channel's kind, or a conversation on it) — otherwise
+            the send fails with channel.capability_unsupported.
+      required:
+        - type
+        - content
+
+    # =========================================================================
+    # contact.yaml — Contact (mirrors internal/contacts/contact.go)
+    # =========================================================================
+    # FROZEN v1 (ADR-0008): a Contact is a *person* with identities[]. Field
+    # ownership is fixed (messenger read-only, `custom` host-owned, profile/content
+    # platform-owned — ADR-0007 §3).
+    ContactStatus:
+      type: string
+      description: >
+        Lifecycle filter for the receive pool (ADR-0008 §3). Not a stored Contact
+        field — a server-derived view (e.g. `new` = inbound not yet host-linked).
+      enum:
+        - new
+        - active
+        - archived
+
+    Identity:
+      type: object
+      description: >
+        One channel presence of a Contact. Auto-link is only ever done on an EXACT
+        within-channel key (providerId primary, phone secondary) — never a fuzzy
+        match on name/avatar (ADR-0008 §2).
+      properties:
+        channelType:
+          $ref: '#/components/schemas/ChannelKind'
+        providerId:
+          type: string
+        phone:
+          type: string
+        username:
+          type: string
+        pushName:
+          type: string
+        avatarUrl:
+          type: string
+      required:
+        - channelType
+        - providerId
+
+    Profile:
+      type: object
+      description: Platform-owned presentation of a Contact.
+      properties:
+        displayName:
+          type: string
+        avatarUrl:
+          type: string
+        locale:
+          type: string
+
+    HostRef:
+      type: object
+      description: >
+        Links a Contact to the host's own record. The host owns the decision "this
+        is the same customer as in my CRM" (ADR-0008 §2); the platform never infers
+        cross-system identity itself.
+      properties:
+        system:
+          type: string
+        externalId:
+          type: string
+      required:
+        - system
+        - externalId
+
+    ContactMeta:
+      type: object
+      description: >
+        Ownership + versioning metadata (`_meta`). Ownership maps a field group
+        ("identities"/"profile"/"custom") to its owner (ADR-0008 §1, ADR-0007 §3).
+      properties:
+        ownership:
+          type: object
+          additionalProperties:
+            type: string
+        version:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - version
+        - updatedAt
+
+    Contact:
+      type: object
+      description: A person, addressable across one or more channel identities (ADR-0008).
+      properties:
+        id:
+          type: string
+        cabinetId:
+          type: string
+        identities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Identity'
+        profile:
+          $ref: '#/components/schemas/Profile'
+        custom:
+          type: object
+          additionalProperties: true
+          description: Host-owned free-form fields.
+        hostRefs:
+          type: array
+          items:
+            $ref: '#/components/schemas/HostRef'
+        _meta:
+          $ref: '#/components/schemas/ContactMeta'
+      required:
+        - id
+        - cabinetId
+        - identities
+        - profile
+        - _meta
+
+    ContactPatch:
+      type: object
+      description: >
+        Partial update of host-owned fields (ADR-0008 §3 lifecycle: host mirrors the
+        contact then returns the link). Only `hostRefs` and `custom` are writable
+        here — identities and platform profile are not host-owned.
+      properties:
+        hostRefs:
+          type: array
+          items:
+            $ref: '#/components/schemas/HostRef'
+        custom:
+          type: object
+          additionalProperties: true
+
+    ContactList:
+      type: object
+      description: A cursor page of contacts (ADR-0002 §5, cursor-based).
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contact'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+
+    # =========================================================================
+    # channel.yaml — channel read view (Capabilities mirrors channels.Capabilities)
+    # =========================================================================
+    Capabilities:
+      type: object
+      description: A channel's honest self-declaration of what it can do (ADR-0012).
+      properties:
+        text:
+          type: boolean
+        media:
+          type: boolean
+        templates:
+          type: boolean
+        buttons:
+          type: boolean
+        groups:
+          type: boolean
+        presence:
+          type: boolean
+        deepLinkInvite:
+          type: boolean
+          description: Click-to-chat deep-link support opt-in (ADR-0009).
+        delivery:
+          type: string
+          description: How the provider delivers inbound updates.
+          enum:
+            - stream
+            - webhook
+            - poll
+      required:
+        - text
+        - media
+        - templates
+        - buttons
+        - groups
+        - presence
+        - deepLinkInvite
+        - delivery
+
+    Channel:
+      type: object
+      description: A channel configured in the cabinet (M0 read view).
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        state:
+          type: string
+          description: Connection/pairing state (e.g. connected, pairing, disconnected).
+        capabilities:
+          $ref: '#/components/schemas/Capabilities'
+      required:
+        - id
+        - kind
+        - state
+
+    ChannelList:
+      type: object
+      description: The channels configured in the cabinet.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Channel'
+      required:
+        - items
+
+    CreateChannelRequest:
+      type: object
+      description: >
+        Provision a new channel of the given kind. The channel starts
+        disconnected; the connect command begins pairing (ADR-0012 outbound
+        readiness). `label` is an optional operator-facing name.
+      properties:
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        label:
+          type: string
+          description: Optional human-friendly label shown in the admin channel list.
+      required:
+        - kind
+
+    Cabinet:
+      type: object
+      description: A client cabinet — the tenant/isolation boundary (RLS).
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - orgId
+        - name
+        - slug
+
+    CabinetList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Cabinet'
+      required:
+        - items
+
+    CreateCabinetRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Client-facing cabinet name; the slug derives from it.
+          minLength: 1
+      required:
+        - name
+
+    ApiKey:
+      type: object
+      description: API key metadata — the secret/hash is NEVER returned (ADR-0005).
+      properties:
+        kid:
+          type: string
+        status:
+          type: string
+          description: active | next | retiring | revoked
+        scopes:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+      required:
+        - kid
+        - status
+
+    ApiKeyList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'
+      required:
+        - items
+
+    IssuedApiKey:
+      type: object
+      description: >
+        A freshly minted client key. `bearerToken` is shown ONLY here, once —
+        the platform stores just its argon2id hash.
+      properties:
+        kid:
+          type: string
+        cabinetId:
+          type: string
+        bearerToken:
+          type: string
+          description: 'Full bearer credential: "<cabinetId>.<kid>.<secret>". Shown once.'
+      required:
+        - kid
+        - cabinetId
+        - bearerToken
+
+    SyncChannelRequest:
+      type: object
+      description: Options for a source-side import.
+      properties:
+        history:
+          type: boolean
+          description: Also ask the source to replay older messages (default false).
+        historyCount:
+          type: integer
+          description: How many older messages to request (default 100, max 500).
+          minimum: 1
+          maximum: 500
+
+    SyncResult:
+      type: object
+      description: Outcome of a source-side import.
+      properties:
+        channelId:
+          type: string
+        contactsImported:
+          type: integer
+          description: Contacts newly created in the cabinet.
+        contactsMatched:
+          type: integer
+          description: Contacts that already existed (matched on identity).
+        historyRequested:
+          type: boolean
+          description: True when a history replay was requested from the source.
+      required:
+        - channelId
+        - contactsImported
+        - contactsMatched
+
+    SetChannelCredentialsRequest:
+      type: object
+      description: >
+        Write-only provider credential for an API-token channel. The value goes
+        straight into the secret store; only its `secret://` reference is kept
+        on the channel (ADR-0011). It is never echoed back by any operation.
+      properties:
+        token:
+          type: string
+          description: >
+            The provider credential (bot token / auth token) — or, for a
+            tg_client login waiting on 2FA, the cloud password. Write-only.
+          minLength: 1
+      required:
+        - token
+
+    ChannelState:
+      type: string
+      description: >
+        Coarse connection state of a channel (ADR-0012). `pairing` means a QR /
+        pairing code is pending; `connected` means the channel can send/receive.
+      enum:
+        - disconnected
+        - pairing
+        - connected
+
+    ChannelStatus:
+      type: object
+      description: >
+        Live connection/pairing status of a channel. While `state=pairing` a QR
+        channel (wa_web, tg_client) carries the `qr` payload (and optionally a
+        `pairingCode`) to render in the admin connect screen (ADR-0013
+        channel.pairing_required). For tg_client, `passwordRequired=true` means
+        the QR was scanned but the account's 2FA cloud password must be submitted
+        via setChannelCredentials to finish the login.
+      properties:
+        channelId:
+          type: string
+        state:
+          $ref: '#/components/schemas/ChannelState'
+        qr:
+          type: string
+          description: >
+            QR payload to render while pairing (opaque string; the admin encodes it
+            as a QR image). Absent unless state=pairing for a QR channel.
+        pairingCode:
+          type: string
+          description: Alternative short pairing code (phone-number pairing). Optional.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the current QR / pairing code expires and must be refreshed.
+        passwordRequired:
+          type: boolean
+          description: >
+            tg_client only: the QR was scanned but the account's 2FA cloud
+            password is required — submit it via setChannelCredentials (write-only).
+      required:
+        - channelId
+        - state
+
+    # =========================================================================
+    # embed.yaml — embeddable widget session (ADR-0007/0009 stub)
+    # =========================================================================
+    EmbedSessionRequest:
+      type: object
+      description: Initialize an embed widget session (ADR-0009 stub for M0).
+      properties:
+        origin:
+          type: string
+          format: uri
+          description: Origin (scheme+host) of the embedding site; validated against allowed origins.
+        contactId:
+          type: string
+          description: Optional existing contact to bind the session to.
+      required:
+        - origin
+
+    EmbedSession:
+      type: object
+      description: An issued embed session token (ADR-0009 stub).
+      properties:
+        token:
+          type: string
+          description: Short-lived, opaque embed session token.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry of the token.
+      required:
+        - token
+        - expiresAt
+
+    EmbedContactPatch:
+      type: object
+      description: >
+        Optimistic-concurrency patch of host-owned custom fields from the widget
+        (ADR-0009 §4). Only `custom` is writable — profile/identities are not
+        host-owned (ADR-0007 §3).
+      properties:
+        custom:
+          type: object
+          additionalProperties: true
+          description: Host-owned free-form fields to merge into the contact.
+        baseVersion:
+          type: integer
+          description: The `_meta.version` the widget last saw; a drift yields contact.version_conflict.
+        idempotencyKey:
+          type: string
+          description: Dedups a retried patch (ADR-0002 §5).
+      required:
+        - custom
+        - baseVersion
+
+    EmbedSendRequest:
+      type: object
+      description: Send a text message from the widget into the scoped conversation (ADR-0009 §5).
+      properties:
+        text:
+          type: string
+        idempotencyKey:
+          type: string
+      required:
+        - text
+
+    StartBotConversationRequest:
+      type: object
+      description: Raise a bot conversation via deep-link / click-to-chat (ADR-0009 §6).
+      properties:
+        channelId:
+          type: string
+          description: The bot channel to raise the session on (e.g. a tg_bot channel).
+        mode:
+          type: string
+          description: Session mode; `bot` raises a click-to-chat deep-link.
+          enum:
+            - bot
+        idempotencyKey:
+          type: string
+      required:
+        - channelId
+        - mode
+
+    BotSession:
+      type: object
+      description: A pending deep-link bot session (ADR-0009 §6).
+      properties:
+        conversationId:
+          type: string
+          description: The (pending) conversation id.
+        state:
+          type: string
+          description: Session state; `pending_optin` until the contact taps the link.
+          enum:
+            - pending_optin
+            - open
+        inviteLink:
+          type: string
+          format: uri
+          description: The click-to-chat deep-link the contact taps to opt in.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the invite link / pending session expires.
+      required:
+        - conversationId
+        - state
+        - inviteLink
+        - expiresAt
+
+    FeedMessage:
+      type: object
+      description: One message in the embed conversation feed (ADR-0009 §5).
+      properties:
+        id:
+          type: string
+        providerMsgId:
+          type: string
+        direction:
+          $ref: '#/components/schemas/Direction'
+        type:
+          $ref: '#/components/schemas/MsgType'
+        text:
+          type: string
+        author:
+          type: string
+        ts:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/MsgStatus'
+        media:
+          $ref: '#/components/schemas/MediaInfo'
+      required:
+        - id
+        - direction
+        - type
+        - ts
+
+    UploadedMedia:
+      type: object
+      description: A stored outbound attachment, ready to reference in a send.
+      properties:
+        url:
+          type: string
+          description: Absolute, time-limited URL the provider fetches.
+        mime:
+          type: string
+        filename:
+          type: string
+        size:
+          type: integer
+      required:
+        - url
+
+    MediaInfo:
+      type: object
+      description: >
+        Attachment descriptor for a media message. `url` is a PLATFORM url
+        (`/v1/messages/{id}/media`) — the object store is private and provider
+        links expire, so bytes are always read back through the platform.
+      properties:
+        url:
+          type: string
+        mime:
+          type: string
+        filename:
+          type: string
+        caption:
+          type: string
+      required:
+        - url
+
+    MessageHistory:
+      type: object
+      description: A page of a contact's message history across all channels.
+      properties:
+        contactId:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedMessage'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - contactId
+        - messages
+
+    ConversationFeed:
+      type: object
+      description: The scoped, append-only conversation feed (ADR-0009 §5).
+      properties:
+        conversationId:
+          type: string
+        channelType:
+          $ref: '#/components/schemas/ChannelKind'
+        contactId:
+          type: string
+        status:
+          type: string
+          description: Conversation status (e.g. open, closed).
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedMessage'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - conversationId
+        - contactId
+        - messages
+
+    # =========================================================================
+    # pagination.yaml — cursor pagination (ADR-0002 §5)
+    # =========================================================================
+    PageInfo:
+      type: object
+      description: >
+        Cursor pagination envelope metadata. `nextCursor` is an opaque forward
+        cursor; it is absent/empty on the last page. Pass it back as the `since`
+        query parameter to fetch the next page (ADR-0008 §3).
+      properties:
+        nextCursor:
+          type: string
+          description: Opaque cursor for the next page; absent when there are no more pages.
+
+    # =========================================================================
+    # webhooks + access pool — admin management (ADR-0002, M6 S4)
+    # =========================================================================
+    WebhookSubscription:
+      type: object
+      description: An outbound webhook subscription (ADR-0031). The signing secret is never returned.
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        eventTypes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+      required:
+        - id
+        - url
+        - status
+    WebhookList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookSubscription'
+      required:
+        - items
+    RegisterWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        secretRef:
+          type: string
+          description: Secret-store reference (secret://...) to the HMAC key; never the key itself.
+        eventTypes:
+          type: array
+          items:
+            type: string
+      required:
+        - url
+    AccessPoolEntry:
+      type: object
+      description: One auth-out credential in the pool (ADR-0029). credentialsRef is a pointer, never the secret.
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        status:
+          type: string
+        health:
+          type: string
+        weight:
+          type: integer
+        credentialsRef:
+          type: string
+      required:
+        - id
+        - kind
+        - status
+        - health
+    AccessPoolList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessPoolEntry'
+      required:
+        - items
+    AddAccessPoolEntryRequest:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        credentialsRef:
+          type: string
+          description: Secret-store reference (secret://...); never the credential itself.
+        status:
+          type: string
+          description: Initial status — "active" or "next" (default next).
+        weight:
+          type: integer
+      required:
+        - kind
+        - credentialsRef
+    RotateAccessPoolRequest:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+      required:
+        - kind
+    RotateAccessPoolResult:
+      type: object
+      properties:
+        promoted:
+          type: string
+        retired:
+          type: array
+          items:
+            type: string
+      required:
+        - promoted
+    AuditEntry:
+      type: object
+      description: One append-only audit record (ADR-0028). detail carries only non-sensitive metadata.
+      properties:
+        id:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        actorType:
+          type: string
+        actorId:
+          type: string
+        action:
+          type: string
+        targetType:
+          type: string
+        targetId:
+          type: string
+        result:
+          type: string
+      required:
+        - id
+        - action
+        - result
+    AuditList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+      required:
+        - items
