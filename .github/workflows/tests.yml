@@ -12,13 +12,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Laravel 12 only. The 11.x line is past its security-support window, so
+        # every release in it carries unpatched advisories and Composer's default
+        # policy refuses to install them — supporting it would mean asking users
+        # to turn that check off.
         php: ['8.2', '8.3', '8.4']
-        laravel: ['11.*', '12.*']
+        laravel: ['12.*']
         dependencies: [highest]
         include:
           # Prove the declared minimums are real, not aspirational.
           - php: '8.2'
-            laravel: '11.*'
+            laravel: '12.*'
             dependencies: lowest
 
     name: PHP ${{ matrix.php }} · Laravel ${{ matrix.laravel }} · ${{ matrix.dependencies }}

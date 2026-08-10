@@ -12,7 +12,11 @@ $customer->sendMessage('Your order has shipped');
 
 ## Requirements
 
-PHP 8.2+ · Laravel 11 or 12 · a Linqelio installation with a client API key.
+PHP 8.2+ · Laravel 12 · a Linqelio installation with a client API key.
+
+Laravel 11 is not supported: that line is past its security-support window, so
+every release in it carries unpatched advisories and Composer refuses to install
+one under its default policy.
 
 ## Installation
 
