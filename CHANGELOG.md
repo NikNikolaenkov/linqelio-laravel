@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-11
+
 ### Added
 
 - Typed client over the Linqelio API: channels, contacts, messages, media,
@@ -44,4 +46,5 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Contract parity test: every operation is wrapped or explicitly excluded with a
   reason, and every error code in the contract exists in `ErrorCode`.
 
-[Unreleased]: https://github.com/linqelio/linqelio-laravel/commits/main
+[Unreleased]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/NikNikolaenkov/linqelio-laravel/releases/tag/v0.1.0

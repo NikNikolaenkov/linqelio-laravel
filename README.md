@@ -2,7 +2,7 @@
 
 One API for WhatsApp, Telegram and Viber conversations.
 
-[![Tests](https://github.com/linqelio/linqelio-laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/linqelio/linqelio-laravel/actions/workflows/tests.yml)
+[![Tests](https://github.com/NikNikolaenkov/linqelio-laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/NikNikolaenkov/linqelio-laravel/actions/workflows/tests.yml)
 [![Latest Version](https://img.shields.io/packagist/v/linqelio/linqelio-laravel.svg)](https://packagist.org/packages/linqelio/linqelio-laravel)
 [![License](https://img.shields.io/packagist/l/linqelio/linqelio-laravel.svg)](LICENSE)
 

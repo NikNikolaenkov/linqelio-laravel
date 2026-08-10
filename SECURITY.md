@@ -5,7 +5,7 @@
 Please do not open a public issue.
 
 Report privately through GitHub's [security advisory
-form](https://github.com/linqelio/linqelio-laravel/security/advisories/new), or
+form](https://github.com/NikNikolaenkov/linqelio-laravel/security/advisories/new), or
 email **security@linqelio.com**.
 
 Include what you can: affected version, a reproduction, and what an attacker
