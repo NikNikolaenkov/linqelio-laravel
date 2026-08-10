@@ -58,17 +58,54 @@ final readonly class ChannelsResource
     }
 
     /**
-     * Hand a channel its provider credential — a bot token, or the 2FA password
+     * Hand a channel its provider credentials — a bot token, or the 2FA password
      * a Telegram login is waiting on.
      *
-     * Write-only by design: the value goes straight to the secret store and only
-     * a reference is bound to the channel, so it can never be read back out.
-     * There is no "show me the current token" call, and losing one means issuing
-     * a new one with the provider.
+     * A WhatsApp Cloud channel needs three, all per-channel so you can run your
+     * own Meta app rather than share one: `$token` is the Graph access token,
+     * `$appSecret` signs the inbound webhooks, `$verifyToken` is what Meta echoes
+     * back during verification. Send them together — a channel with a token but
+     * no app secret sends fine and rejects every message coming back.
+     *
+     * Both extras are refused on any other kind, rather than stored where
+     * nothing would read them.
+     *
+     * Write-only by design: values go straight to the secret store and only
+     * references are bound to the channel, so none can be read back out. There is
+     * no "show me the current token" call, and losing one means issuing a new one
+     * with the provider.
      */
-    public function setCredentials(string $id, string $token): void
+    public function setCredentials(
+        string $id,
+        string $token,
+        ?string $appSecret = null,
+        ?string $verifyToken = null,
+    ): void {
+        $this->client->put("/channels/{$id}/credentials", array_filter([
+            'token' => $token,
+            'appSecret' => $appSecret,
+            'verifyToken' => $verifyToken,
+        ], static fn (?string $v): bool => $v !== null && $v !== ''));
+    }
+
+    /**
+     * Non-secret provider configuration — identifiers from the provider's own
+     * dashboard, not credentials.
+     *
+     * The mirror image of {@see self::setCredentials()}: these are readable back
+     * (they come with the channel in {@see self::list()}), because "which number
+     * does this channel send from?" has to be answerable.
+     *
+     * REPLACES the stored settings. A value left null is cleared, not kept — so
+     * pass everything you want to keep, and pass nothing to clear them all.
+     *
+     * @return array<string, mixed> the settings now stored
+     */
+    public function settings(string $id, ?string $phoneNumberId = null): array
     {
-        $this->client->put("/channels/{$id}/credentials", ['token' => $token]);
+        return $this->client->put("/channels/{$id}/settings", array_filter([
+            'phoneNumberId' => $phoneNumberId,
+        ], static fn (?string $v): bool => $v !== null && $v !== ''))->data;
     }
 
     /**

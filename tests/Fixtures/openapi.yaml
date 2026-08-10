@@ -287,6 +287,55 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /channels/{id}/settings:
+    put:
+      operationId: updateChannelSettings
+      summary: Replace a channel's non-secret provider configuration.
+      description: >
+        Store the channel's provider *identifiers* — the values that come from
+        the provider's own dashboard and are not credentials. Unlike
+        setChannelCredentials this is READABLE back (the settings appear on the
+        channel in listChannels), because "which number does this channel send
+        from?" has to be answerable without guessing.
+
+
+        PUT REPLACES the whole object: a key omitted from the body is cleared,
+        not kept. Settings are validated against the channel's kind, so a key
+        that means nothing for that kind is rejected rather than silently stored
+        where nothing will ever read it.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelSettings'
+      responses:
+        '200':
+          description: The settings now stored on the channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /channels/{id}/disconnect:
     post:
       operationId: disconnectChannel
@@ -408,6 +457,46 @@ paths:
                 $ref: '#/components/schemas/Cabinet'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /cabinets/{id}:
+    delete:
+      operationId: deleteCabinet
+      summary: Offboard a tenant — delete the cabinet and everything in it.
+      description: >
+        Removes the cabinet with its channels, users, memberships, API keys,
+        contacts, conversations and messages. This is the tenant-level
+        counterpart of eraseContact, and it is not reversible.
+
+
+        The audit trail is the one thing that survives: its entries are archived
+        before the delete, so the record of who did what to this tenant — the
+        deletion included — outlives the tenant. The archive is not readable
+        through this API; it is a platform-operator record.
+
+
+        Requires the platform:admin scope. Idempotent: an id that is already gone
+        answers 204.
+      tags:
+        - tenancy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The cabinet id.
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+      responses:
+        '204':
+          description: The cabinet is gone (whether or not it existed).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -545,6 +634,74 @@ paths:
                 $ref: '#/components/schemas/WebhookSubscription'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /webhooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The webhook subscription id.
+        schema:
+          type: string
+    patch:
+      operationId: updateWebhook
+      summary: Enable or disable a webhook subscription.
+      description: >
+        Suspend delivery without losing the subscription — its url, event types
+        and signing secret survive, so re-enabling does not mean re-registering
+        and re-sharing a key. Use this to stop a noisy or broken endpoint;
+        use deleteWebhook to unsubscribe for good.
+      tags:
+        - webhooks
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookRequest'
+      responses:
+        '200':
+          description: The subscription after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteWebhook
+      summary: Unsubscribe an endpoint permanently.
+      description: >
+        Remove the subscription. Without this a tenant cannot stop receiving
+        their own data — only an operator with database access could. Idempotent:
+        deleting an id that is already gone answers 204, so a retry after a lost
+        response is not an error.
+      tags:
+        - webhooks
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+      responses:
+        '204':
+          description: The subscription is gone (whether or not it existed).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1085,6 +1242,54 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /contacts/{id}/erase:
+    post:
+      operationId: eraseContact
+      summary: Erase a person's data from the cabinet.
+      description: >
+        Remove the contact AND redact every trace of the person from the records
+        that survive it. This is deliberately not a `DELETE /contacts/{id}`,
+        because deleting the contact row would not do the job: only its
+        identities and host refs cascade, conversations merely lose their
+        contact link, and messages have no foreign key to a contact at all — so
+        after a plain delete the person's number would remain in the message and
+        conversation rows, with the correspondence intact. Erasure here means
+        redaction, and the name says so.
+
+
+        Runs as one transaction: either the person is erased or nothing changed.
+        The response reports how many rows were touched so the caller can record
+        it in its own erasure journal.
+
+
+        IDEMPOTENT: erasing someone already erased is not an error. It answers
+        200 with zero counts, because the requested state — this person's data is
+        not here — holds either way.
+
+
+        Not reversible, and not a substitute for deleting derived copies the
+        integrator holds.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: What the erasure touched (all zeros if nothing was left).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErasureResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   # ===========================================================================
   # messages.yaml — outbound message commands
@@ -2169,6 +2374,26 @@ components:
         - deepLinkInvite
         - delivery
 
+    ChannelSettings:
+      type: object
+      description: >
+        Non-secret, per-channel provider configuration: identifiers taken from
+        the provider's own dashboard. Deliberately separate from credentials —
+        these are readable back, while anything set through
+        setChannelCredentials never is (ADR-0011). Keys are per-kind; one that
+        does not apply to the channel's kind is rejected.
+      properties:
+        phoneNumberId:
+          type: string
+          description: >
+            wa_cloud only. The Meta phone number id this channel sends from
+            (Graph POST /<phoneNumberId>/messages). It identifies the sending
+            number, so a cabinet with two wa_cloud channels needs one per
+            channel — a single shared value would send every message from the
+            first channel's number.
+          minLength: 1
+      additionalProperties: false
+
     Channel:
       type: object
       description: A channel configured in the cabinet (M0 read view).
@@ -2182,6 +2407,8 @@ components:
           description: Connection/pairing state (e.g. connected, pairing, disconnected).
         capabilities:
           $ref: '#/components/schemas/Capabilities'
+        settings:
+          $ref: '#/components/schemas/ChannelSettings'
       required:
         - id
         - kind
@@ -2343,18 +2570,39 @@ components:
     SetChannelCredentialsRequest:
       type: object
       description: >
-        Write-only provider credential for an API-token channel. The value goes
-        straight into the secret store; only its `secret://` reference is kept
-        on the channel (ADR-0011). It is never echoed back by any operation.
+        Write-only provider credentials for an API-token channel. Every value
+        goes straight into the secret store; only `secret://` references are kept
+        on the channel (ADR-0011), and none is ever echoed back by any operation.
+
+
+        Per-kind, the mirror image of ChannelSettings: settings are per-kind and
+        readable, credentials are per-kind and never readable. A field that does
+        not apply to the channel's kind is rejected rather than stored.
       properties:
         token:
           type: string
           description: >
-            The provider credential (bot token / auth token) — or, for a
-            tg_client login waiting on 2FA, the cloud password. Write-only.
+            The provider credential (bot token / auth token / wa_cloud Graph
+            access token) — or, for a tg_client login waiting on 2FA, the cloud
+            password. Write-only.
+          minLength: 1
+        appSecret:
+          type: string
+          description: >
+            wa_cloud only. The Meta app secret that signs inbound webhooks
+            (X-Hub-Signature-256). Per-channel, so a tenant can bring its own
+            Meta app instead of sharing ours.
+          minLength: 1
+        verifyToken:
+          type: string
+          description: >
+            wa_cloud only. The token Meta echoes back on the webhook verification
+            handshake. You choose the value; it is still a shared secret, and it
+            is per-channel for the same reason appSecret is.
           minLength: 1
       required:
         - token
+      additionalProperties: false
 
     ChannelState:
       type: string
@@ -2397,6 +2645,15 @@ components:
           description: >
             tg_client only: the QR was scanned but the account's 2FA cloud
             password is required — submit it via setChannelCredentials (write-only).
+        detail:
+          type: string
+          description: >
+            Human-readable note about a channel that is usable but not fully
+            healthy — e.g. a viber_bot whose callback URL could not be registered,
+            which can send but will never receive. Present only when there is
+            something the operator has to act on; `state` alone cannot express
+            "works one way", and reporting such a channel as plainly connected
+            hides the reason nothing arrives.
       required:
         - channelId
         - state
@@ -2648,6 +2905,52 @@ components:
         - id
         - url
         - status
+    ErasureResult:
+      type: object
+      description: >
+        How many rows an erasure touched. Reported so the caller can enter it in
+        its own erasure journal — "we asked and it said 0/0/0/0" is a materially
+        different record from "it removed a contact and redacted 412 messages".
+      properties:
+        contacts:
+          type: integer
+          description: 1 when the contact row still existed, 0 when already gone.
+        identities:
+          type: integer
+          description: Channel identities (phone / username / provider id) removed.
+        conversations:
+          type: integer
+          description: Conversations whose chat id was replaced with a tombstone.
+        messages:
+          type: integer
+          description: >
+            Messages redacted — body, metadata, contact reference, chat id and
+            provider message id.
+      required:
+        - contacts
+        - identities
+        - conversations
+        - messages
+
+    UpdateWebhookRequest:
+      type: object
+      description: >
+        Change a subscription's delivery state. Only the state is mutable here:
+        editing the url would silently redirect a tenant's events to a different
+        destination under the same id, which is a re-registration, not an edit.
+      properties:
+        status:
+          type: string
+          description: >
+            `active` delivers; `disabled` stops delivery and keeps everything
+            else, so the subscription can be resumed without re-sharing a key.
+          enum:
+            - active
+            - disabled
+      required:
+        - status
+      additionalProperties: false
+
     WebhookList:
       type: object
       properties:

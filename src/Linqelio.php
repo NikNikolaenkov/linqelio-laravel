@@ -11,6 +11,7 @@ use Linqelio\Laravel\Resources\ConversationsResource;
 use Linqelio\Laravel\Resources\EmbedResource;
 use Linqelio\Laravel\Resources\MediaResource;
 use Linqelio\Laravel\Resources\MessagesResource;
+use Linqelio\Laravel\Resources\WebhooksResource;
 
 /**
  * Entry point: `Linqelio::messages()->sendText(...)`.
@@ -31,6 +32,8 @@ final class Linqelio
     private ?ConversationsResource $conversations = null;
 
     private ?EmbedResource $embed = null;
+
+    private ?WebhooksResource $webhooks = null;
 
     public function __construct(private readonly HttpClient $client) {}
 
@@ -62,6 +65,11 @@ final class Linqelio
     public function embed(): EmbedResource
     {
         return $this->embed ??= new EmbedResource($this->client);
+    }
+
+    public function webhooks(): WebhooksResource
+    {
+        return $this->webhooks ??= new WebhooksResource($this->client);
     }
 
     /** The transport, for calls this package has not wrapped yet. */

@@ -147,6 +147,53 @@ neither.
 Deliveries are verified (HMAC-SHA256 over the raw body), rejected if older than
 the tolerance, processed once, and handled on a queue.
 
+### Managing subscriptions
+
+Registering is usually a one-off, but the rest of the lifecycle is not — an
+endpoint breaks, a deployment moves, a tenant leaves:
+
+```php
+Linqelio::webhooks()->register('https://your-app.test/linqelio/webhook',
+    ['message.inbound'], 'secret://webhooks/your-app');
+
+Linqelio::webhooks()->disable($id);   // stop delivering, keep the subscription
+Linqelio::webhooks()->enable($id);
+Linqelio::webhooks()->delete($id);    // unsubscribe for good
+```
+
+Reach for `disable()` rather than `delete()` when an endpoint is merely broken:
+deleting takes the signing key with it, so coming back means handing out a new
+one. `delete()` is idempotent — deleting an id that is already gone succeeds, so
+a retry after a lost response is not an error.
+
+## Erasing a person
+
+When someone asks to be deleted, one call removes them:
+
+```php
+$result = Linqelio::contacts()->erase($contactId);
+
+$result->toArray();  // ['contacts' => 1, 'identities' => 3, ...] — record this
+```
+
+This is deliberately not a delete of the contact record. Messages carry the
+person's number in their own columns and have no link back to a contact to
+cascade through, so the platform redacts them instead — bodies, metadata, chat
+ids, contact references — in one transaction. The counts come back so you can
+enter them in your own erasure journal: "we asked and it touched nothing" and
+"it redacted 412 messages" are different things to be able to show later.
+
+Irreversible, and idempotent: erasing someone already erased returns zero counts
+(`$result->wasAlreadyErased()`) rather than failing, so a retry after a timeout
+is safe.
+
+**It cannot reach your copies.** The local projection below lives in *your*
+database, and so does anything you derived from it:
+
+```php
+LinqelioMessage::where('contact_id', $contactId)->delete();
+```
+
 ## Local projection
 
 Messages are mirrored into `linqelio_messages` so you can join, search and

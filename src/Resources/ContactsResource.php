@@ -7,6 +7,7 @@ namespace Linqelio\Laravel\Resources;
 use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Contact;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
+use Linqelio\Laravel\Data\ErasureResult;
 
 final readonly class ContactsResource
 {
@@ -130,5 +131,26 @@ final readonly class ContactsResource
     public function invite(string $id, string $channelId): array
     {
         return $this->client->post("/contacts/{$id}/invite", ['channelId' => $channelId])->data;
+    }
+
+    /**
+     * Erase a person: the contact, and every trace of them in the records that
+     * outlive it — message bodies and metadata, chat ids, contact references.
+     *
+     * Not a delete, because deleting the contact would not be enough. Messages
+     * carry the person's number in their own columns and have no link back to a
+     * contact to cascade through, so the platform redacts them instead, in one
+     * transaction.
+     *
+     * Answer a deletion request with this, then remove whatever copies you hold
+     * yourself — this call cannot reach those, including the message projection
+     * this package writes into your own database.
+     *
+     * IRREVERSIBLE. Idempotent: erasing someone already erased returns zero
+     * counts instead of failing, so a retry after a timeout is safe.
+     */
+    public function erase(string $id): ErasureResult
+    {
+        return ErasureResult::fromArray($this->client->post("/contacts/{$id}/erase")->data);
     }
 }

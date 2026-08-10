@@ -10,7 +10,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 - Typed client over the Linqelio API: channels, contacts, messages, media,
-  conversations and embed sessions.
+  conversations, webhook subscriptions and embed sessions.
+- `contacts()->erase()` for subject deletion requests. Not a delete of the
+  contact record — messages hold the person's number in their own columns with no
+  link back to cascade through, so the platform redacts them in one transaction.
+  Returns the counts to record, and is idempotent so a retry after a timeout is
+  safe. It cannot reach copies in your own database, including this package's
+  message projection.
+- `webhooks()` covering the whole subscription lifecycle: list, register,
+  disable/enable and delete. Disabling keeps the subscription and its signing
+  key, so recovering from a broken endpoint does not mean handing out a new one.
+- `channels()->settings()` for non-secret provider configuration (the WhatsApp
+  Cloud sending number), and `Channel::$phoneNumberId` reading it back — the
+  mirror of credentials, which never read back.
+- `channels()->setCredentials()` takes the WhatsApp Cloud app secret and verify
+  token alongside the access token. All three are per-channel, so a tenant can
+  run its own Meta app; send them together, since a channel with a token but no
+  app secret sends fine and rejects every message coming back.
 - `Idempotency-Key` on every unsafe command, generated when not supplied and
   derived from the job id on queued sends, so a retry cannot become a duplicate
   message.

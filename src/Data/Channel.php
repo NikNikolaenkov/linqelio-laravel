@@ -11,11 +11,18 @@ use Linqelio\Laravel\Data\Enums\ChannelKind;
  */
 final readonly class Channel
 {
+    /**
+     * @param  string|null  $phoneNumberId  WhatsApp Cloud only: the Meta number
+     *                                      this channel sends from. Non-secret
+     *                                      configuration, so unlike the channel's
+     *                                      credentials it does read back.
+     */
     public function __construct(
         public string $id,
         public ChannelKind $kind,
         public string $state,
         public ?string $name = null,
+        public ?string $phoneNumberId = null,
     ) {}
 
     /**
@@ -23,11 +30,17 @@ final readonly class Channel
      */
     public static function fromArray(array $data): self
     {
+        $settings = is_array($data['settings'] ?? null) ? $data['settings'] : [];
+        $phoneNumberId = isset($settings['phoneNumberId']) && $settings['phoneNumberId'] !== ''
+            ? (string) $settings['phoneNumberId']
+            : null;
+
         return new self(
             id: (string) ($data['id'] ?? ''),
             kind: ChannelKind::tryFrom((string) ($data['kind'] ?? '')) ?? ChannelKind::WaWeb,
             state: (string) ($data['state'] ?? $data['status'] ?? 'inactive'),
             name: isset($data['name']) && $data['name'] !== '' ? (string) $data['name'] : null,
+            phoneNumberId: $phoneNumberId,
         );
     }
 

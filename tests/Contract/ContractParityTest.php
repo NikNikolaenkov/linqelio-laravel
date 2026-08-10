@@ -24,6 +24,7 @@ final class Contract
         'disconnectChannel' => 'channels()->disconnect()',
         'getChannelStatus' => 'channels()->status()',
         'setChannelCredentials' => 'channels()->setCredentials()',
+        'updateChannelSettings' => 'channels()->settings()',
         'syncChannel' => 'channels()->sync()',
 
         'listContacts' => 'contacts()->list()',
@@ -31,6 +32,12 @@ final class Contract
         'createContact' => 'contacts()->create()',
         'updateContact' => 'contacts()->update()',
         'createContactInvite' => 'contacts()->invite()',
+        'eraseContact' => 'contacts()->erase()',
+
+        'listWebhooks' => 'webhooks()->list()',
+        'registerWebhook' => 'webhooks()->register()',
+        'updateWebhook' => 'webhooks()->disable() / enable()',
+        'deleteWebhook' => 'webhooks()->delete()',
 
         'sendContactMessage' => 'messages()->send()',
         'listContactMessages' => 'messages()->history()',
@@ -58,6 +65,7 @@ final class Contract
         // it, and it cannot.
         'listCabinets' => 'platform:admin only',
         'createCabinet' => 'platform:admin only',
+        'deleteCabinet' => 'platform:admin only — offboarding a tenant is the platform operator, not the tenant',
         'listCabinetKeys' => 'platform:admin only',
         'issueCabinetKey' => 'platform:admin only',
         'revokeCabinetKey' => 'platform:admin only',
@@ -67,8 +75,6 @@ final class Contract
         'addAccessPoolEntry' => 'operator tooling',
         'rotateAccessPool' => 'operator tooling',
         'listAudit' => 'operator tooling',
-        'listWebhooks' => 'endpoints are registered out of band, once',
-        'registerWebhook' => 'endpoints are registered out of band, once',
 
         // Plane B: called by the widget with its own short-lived token, never by
         // the host application holding the client key.
