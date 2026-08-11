@@ -32,7 +32,13 @@ it('erases a contact and reports what it touched', function (): void {
 // survive the round trip rather than being collapsed into a boolean.
 it('keeps the counts so they can go in an erasure journal', function (): void {
     Http::fake([
-        '*' => Http::response(['contacts' => 1, 'identities' => 2, 'conversations' => 0, 'messages' => 9], 200),
+        '*' => Http::response([
+            'contacts' => 1, 'identities' => 2, 'conversations' => 0, 'messages' => 9,
+            // The two copies of a person that outlive the redaction: the outbox
+            // keeps its own marshalled envelope, and attachments live in the
+            // object store. A journal that omits them describes half an erasure.
+            'outbox' => 3, 'media' => 4,
+        ], 200),
     ]);
 
     expect(Linqelio::contacts()->erase('c-1')->toArray())->toBe([
@@ -40,6 +46,8 @@ it('keeps the counts so they can go in an erasure journal', function (): void {
         'identities' => 2,
         'conversations' => 0,
         'messages' => 9,
+        'outbox' => 3,
+        'media' => 4,
     ]);
 });
 

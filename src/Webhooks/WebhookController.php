@@ -26,7 +26,10 @@ final class WebhookController
         /** @var array<string, mixed> $payload */
         $payload = $request->json()->all();
 
-        $job = ProcessWebhook::dispatch($payload);
+        // The event type travels with the payload: two message events share the
+        // same identifier field, and the platform's own header is a better answer
+        // than guessing from which other fields happen to be present.
+        $job = ProcessWebhook::dispatch($payload, (string) $request->header('X-Linqelio-Event', ''));
 
         /** @var array{connection: ?string, queue: ?string} $queue */
         $queue = config('linqelio.webhooks.queue', []);

@@ -42,6 +42,7 @@ enum ErrorCode: string
 
     case MessageTypeUnsupported = 'message.type_unsupported';
     case MessageTooLarge = 'message.too_large';
+    case MessageNotFound = 'message.not_found';
 
     case IdempotencyKeyReused = 'idempotency.key_reused';
 

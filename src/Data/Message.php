@@ -20,6 +20,9 @@ final readonly class Message
 {
     /**
      * @param  array<string, mixed>  $content
+     * @param  array<string, mixed>  $meta  provider-specific metadata; never
+     *                                      routing-significant, and the only
+     *                                      place a failure reason is recorded
      */
     public function __construct(
         public string $id,
@@ -30,6 +33,7 @@ final readonly class Message
         public ?MessageStatus $status = null,
         public ?string $providerMessageId = null,
         public ?string $author = null,
+        public array $meta = [],
     ) {}
 
     /**
@@ -46,7 +50,26 @@ final readonly class Message
             status: MessageStatus::tryFrom((string) ($data['status'] ?? '')),
             providerMessageId: isset($data['providerMsgId']) ? (string) $data['providerMsgId'] : null,
             author: isset($data['author']) ? (string) $data['author'] : null,
+            meta: is_array($data['meta'] ?? null) ? $data['meta'] : [],
         );
+    }
+
+    /**
+     * Why a failed send failed, or null when it did not fail.
+     *
+     * A permanent send error — an unaddressable recipient, a type the channel
+     * cannot carry — stops the message at `failed` and records the reason here.
+     * Without it "failed" is a status and not an answer, and the operator is back
+     * to reading platform logs they do not have access to.
+     */
+    public function failureReason(): ?string
+    {
+        if ($this->status !== MessageStatus::Failed) {
+            return null;
+        }
+        $reason = $this->meta['error'] ?? null;
+
+        return is_string($reason) && $reason !== '' ? $reason : null;
     }
 
     public function isInbound(): bool

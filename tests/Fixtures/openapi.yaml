@@ -404,6 +404,11 @@ paths:
   # ===========================================================================
   # tenancy — platform administration (cabinets + client API keys). Requires a
   # key carrying the `platform:admin` scope; ordinary cabinet keys are rejected
+  #
+  # `secrets:read` is the other scope not implied by `*`. It gates disclosure of
+  # secret-store references (access-pool `credentialsRef`): a key issued to send
+  # messages has no need to learn where provider credentials are kept, and every
+  # disclosure is written to the audit trail.
   # with auth.forbidden_scope. Client keys are cabinet-scoped and isolated by
   # Postgres RLS — a client's token only ever sees its own cabinet.
   # ===========================================================================
@@ -539,7 +544,14 @@ paths:
         - tenancy
       parameters:
         - $ref: '#/components/parameters/CabinetPathId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueApiKeyRequest'
       x-error-codes:
+        - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
@@ -551,6 +563,59 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IssuedApiKey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cabinets/{id}/keys/{kid}/rotate:
+    post:
+      operationId: rotateCabinetKey
+      summary: Rotate a cabinet's API key with an overlap window (platform admin).
+      description: >
+        Mints a replacement and puts the outgoing key into a grace window instead
+        of cutting it off. Both work until `graceUntil`, so the holder swaps at
+        its own pace and the old key lapses on its own.
+
+        The keyring has always had the states this needs — active, next, retiring
+        with a grace window, all honoured by the verifier — and no way to reach
+        them through the API. The only available "rotation" was issue-then-revoke,
+        which breaks every holder in the instant between the two calls.
+
+        The replacement's secret is shown ONCE, here. A revoked key cannot be
+        rotated: it is already off, and reviving it into a grace window would hand
+        back access somebody deliberately withdrew.
+      tags:
+        - tenancy
+      parameters:
+        - $ref: '#/components/parameters/CabinetPathId'
+        - $ref: '#/components/parameters/KeyKid'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateApiKeyRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cabinet_not_found
+        - keyring.rotation_overlap_required
+      responses:
+        '201':
+          description: The replacement key; `bearerToken` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedApiKey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -768,6 +833,52 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /access-pool/{id}/health:
+    put:
+      operationId: setAccessPoolHealth
+      summary: Set a pool entry's health, returning it to rotation or pulling it out.
+      description: >
+        A credential that fails a send with a permanent auth or ban error is
+        auto-degraded and drops out of rotation (ADR-0032 §2). Getting it BACK
+        was possible only through the operator CLI — so an account that recovered
+        stayed out until somebody with shell access noticed, and a tenant could
+        not act on their own pool at all.
+
+        Setting `healthy` returns the entry to rotation; `degraded` and `banned`
+        take it out. Audited either way: this decides which of a cabinet's
+        credentials its messages leave through.
+      tags:
+        - access-pool
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The pool entry id.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetAccessPoolHealthRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - tenancy.cross_cabinet_denied
+      responses:
+        '204':
+          description: The entry's health was updated.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /access-pool/rotate:
     post:
       operationId: rotateAccessPool
@@ -804,6 +915,94 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /dead-letters:
+    get:
+      operationId: listDeadLetters
+      summary: List webhook deliveries the platform gave up on.
+      description: >
+        The dead-letter window (ADR-0031 §5). A delivery that exhausts its
+        attempts — six, backing off to about fifteen minutes — is marked failed
+        and stops being retried. Until this endpoint those rows existed and
+        nothing could see them: a tenant's endpoint broke, the platform tried,
+        gave up, and the event was gone with no way to list or resend it.
+
+        Requires the `platform:admin` scope and spans every cabinet: the delivery
+        queue is cross-cabinet infrastructure, and replaying one sends traffic to
+        a tenant's endpoint. Filter with `cabinetId` to scope a listing.
+      tags:
+        - webhooks
+      parameters:
+        - name: cabinetId
+          in: query
+          required: false
+          description: Restrict to one cabinet. Omitted, every cabinet is listed.
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          description: Only deliveries created at or after this instant.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 100 and is capped at 500.
+          schema:
+            type: integer
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+      responses:
+        '200':
+          description: Dead-lettered deliveries, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeadLetterList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dead-letters/{id}/replay:
+    post:
+      operationId: replayDeadLetter
+      summary: Put a dead-lettered delivery back in the queue.
+      description: >
+        Requeues the delivery, due immediately, with its attempt counter reset so
+        it gets a full retry schedule rather than dying again on the first
+        failure. The payload and signature are regenerated by the deliverer, so
+        the receiver sees an ordinary delivery.
+
+        Requires `platform:admin`. Idempotent: only a failed delivery moves, so
+        replaying twice is harmless and a replay cannot disturb one still being
+        retried. Recorded in the audit trail — this sends traffic to somebody
+        else's endpoint.
+      tags:
+        - webhooks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+      responses:
+        '204':
+          description: The delivery was requeued.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /audit:
     get:
       operationId: listAudit
@@ -817,11 +1016,24 @@ paths:
         - name: action
           in: query
           required: false
+          description: Exact action match, e.g. `contact.erase`.
           schema:
             type: string
+        - name: since
+          in: query
+          required: false
+          description: >
+            Only entries at or after this instant. Without it the only way to
+            reach an incident's window was to raise `limit` until it came into
+            view — which on a busy cabinet means paging past everything that
+            happened after.
+          schema:
+            type: string
+            format: date-time
         - name: limit
           in: query
           required: false
+          description: Page size; defaults to 100 and is capped at 500.
           schema:
             type: integer
       x-error-codes:
@@ -951,6 +1163,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      summary: Read one message and its current status.
+      description: >
+        The single-message read path. A send is accepted with 202 and reaches the
+        provider afterwards, so "accepted" is not "delivered" — this is how the
+        outcome is checked: queued, sent, delivered, read or failed, with the
+        timestamp of each step it reached.
+
+        Prefer subscribing to `message.status` for outcomes at scale; this
+        endpoint answers for one message, which is what a support desk needs when
+        somebody asks what happened to a specific reply.
+
+        A failed send carries the reason under `meta.error`.
+      tags:
+        - messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The platform message id (the `id` a send returned).
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - message.not_found
+      responses:
+        '200':
+          description: The message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /messages/{id}/media:
     get:
       operationId: getMessageMedia
@@ -976,6 +1232,7 @@ paths:
         - auth.key_expired
         - auth.forbidden_scope
         - tenancy.cross_cabinet_denied
+        - message.not_found
       responses:
         '200':
           description: The attachment bytes.
@@ -1875,6 +2132,7 @@ components:
         - accesspool.no_next
         - message.type_unsupported
         - message.too_large
+        - message.not_found
         - idempotency.key_reused
         - contact.not_found
         - contact.merge_conflict
@@ -2320,6 +2578,23 @@ components:
         custom:
           type: object
           additionalProperties: true
+        _meta:
+          type: object
+          description: >
+            Optimistic concurrency. Pass the `version` you last read and the write
+            applies only if nothing changed underneath — otherwise
+            contact.version_conflict (409), and you refetch and retry.
+
+            Optional: omit it and the update is last-writer-wins, which is the
+            behaviour every caller had before this existed. Only `custom` is
+            guarded; `hostRefs` are links rather than values and adding one twice
+            is not a conflict.
+          properties:
+            version:
+              type: integer
+              description: The `_meta.version` of the contact you based this edit on.
+          required:
+            - version
 
     ContactList:
       type: object
@@ -2404,9 +2679,28 @@ components:
           $ref: '#/components/schemas/ChannelKind'
         state:
           type: string
-          description: Connection/pairing state (e.g. connected, pairing, disconnected).
+          description: >
+            LAST OBSERVED connection/pairing state (active, pairing,
+            disconnected), read from the stored row rather than the provider.
+
+            For kinds whose liveness is only known to the provider — wa_web —
+            the row converges when the channel's status is checked
+            (GET /channels/{id}/status), which writes back what it observes. So
+            a channel paired but never status-checked can still read
+            disconnected here.
+
+            Use GET /channels/{id}/status when you need the state as of now;
+            this list is a cheap inventory, not a live probe.
         capabilities:
           $ref: '#/components/schemas/Capabilities'
+          description: >
+            What this channel's provider declares it can do (ADR-0012), read from
+            the provider itself rather than from a table kept alongside it.
+
+            A property of the KIND, not of this particular channel: it says what
+            the integration supports, not what the account is currently permitted
+            or connected to do. Absent for a kind this build holds no declaration
+            for — an unknown capability set is not an empty one.
         settings:
           $ref: '#/components/schemas/ChannelSettings'
       required:
@@ -2496,12 +2790,28 @@ components:
           type: array
           items:
             type: string
+        label:
+          type: string
+          description: >
+            Who holds this key. Empty for keys issued before labels existed —
+            those are the ones an operator cannot rotate confidently, because
+            nothing records what would break.
         createdAt:
           type: string
           format: date-time
         revokedAt:
           type: string
           format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; absent when the key does not expire.
+        graceUntil:
+          type: string
+          format: date-time
+          description: >
+            For a `retiring` key: when it stops working. Present only during a
+            rotation's overlap window.
       required:
         - kid
         - status
@@ -2515,6 +2825,68 @@ components:
             $ref: '#/components/schemas/ApiKey'
       required:
         - items
+
+    IssueApiKeyRequest:
+      type: object
+      description: >
+        What the key should be. Every field is optional and the defaults preserve
+        the previous behaviour — a cabinet-wide, never-expiring key — but each one
+        was previously impossible to express, so no caller could ask for less.
+      properties:
+        scopes:
+          type: array
+          items:
+            type: string
+          description: >
+            What this key may do. Defaults to ["*"], the whole cabinet. Name the
+            scopes instead when the holder needs less: an integration that only
+            sends messages has no business reading secret references.
+
+            Note `platform:admin` and `secrets:read` are NOT implied by "*" and
+            must be granted explicitly.
+        label:
+          type: string
+          description: >
+            Who holds this key ("zapier", "billing sync"). Not a secret and not an
+            identity — the kid is the identity. Without it a cabinet's key list is
+            a column of opaque ids, and rotating one safely means knowing which
+            integration would break.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            Absolute expiry, enforced at verification. Omitted, the key never
+            expires — which is right for a long-lived integration and wrong for
+            the two-week migration that is still valid two years later.
+      required: []
+
+    RotateApiKeyRequest:
+      type: object
+      description: >
+        Replace a key without an outage. The old key keeps working until
+        `graceUntil`, so the holder swaps at its own pace.
+      properties:
+        graceUntil:
+          type: string
+          format: date-time
+          description: >
+            When the outgoing key stops working. Defaults to 24 hours from now.
+            Both keys are valid until then — which is the entire point: issuing a
+            replacement and revoking the old one breaks every holder in the
+            instant between the two calls.
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Scopes for the replacement. Defaults to the outgoing key's.
+        label:
+          type: string
+          description: Label for the replacement. Defaults to the outgoing key's.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Expiry for the replacement. Omitted, it does not expire.
+      required: []
 
     IssuedApiKey:
       type: object
@@ -2663,17 +3035,38 @@ components:
     # =========================================================================
     EmbedSessionRequest:
       type: object
-      description: Initialize an embed widget session (ADR-0009 stub for M0).
+      description: Initialize an embed widget session (ADR-0009).
       properties:
+        contactId:
+          type: string
+          description: >
+            The contact this session is scoped to. Required: a token that names
+            nobody would reach everybody.
+        conversationId:
+          type: string
+          description: >
+            Optional: confine the token to a single conversation. Omitted, it
+            reaches every conversation that contact has.
+        cap:
+          type: array
+          items:
+            type: string
+          description: >
+            Capabilities the token should carry, as an UPPER BOUND — the issued
+            set is never wider than this. Omitted, the platform's default set is
+            issued. A capability the platform does not issue is rejected with
+            validation.invalid_request rather than dropped, so a caller is never
+            left believing its token is narrower than it is.
         origin:
           type: string
           format: uri
-          description: Origin (scheme+host) of the embedding site; validated against allowed origins.
-        contactId:
-          type: string
-          description: Optional existing contact to bind the session to.
+          description: >
+            Origin (scheme+host) of the embedding site. NOT YET ENFORCED —
+            allowed-origin validation is planned (ADR-0009) and this value is
+            currently ignored. Optional for that reason: a required field that
+            nothing reads is a contract that lies to the integrator.
       required:
-        - origin
+        - contactId
 
     EmbedSession:
       type: object
@@ -2926,11 +3319,27 @@ components:
           description: >
             Messages redacted — body, metadata, contact reference, chat id and
             provider message id.
+        outbox:
+          type: integer
+          description: >
+            Outbox rows removed. The outbox holds its own full copy of the
+            envelope — body, chat id, contact reference — so redacting the
+            message row does not reach it. A row still pending is dropped, which
+            cancels an outbound message to someone who asked to be erased.
+        media:
+          type: integer
+          description: >
+            Attachments queued for removal from the object store. Queued rather
+            than deleted inline: the object store is not in the erasure's
+            transaction, so the keys are committed with the redaction and a
+            background sweep removes the bytes immediately afterwards.
       required:
         - contacts
         - identities
         - conversations
         - messages
+        - outbox
+        - media
 
     UpdateWebhookRequest:
       type: object
@@ -2974,6 +3383,73 @@ components:
             type: string
       required:
         - url
+    SetAccessPoolHealthRequest:
+      type: object
+      properties:
+        health:
+          type: string
+          enum: [healthy, degraded, banned]
+          description: >
+            `healthy` returns the entry to rotation. `degraded` and `banned` take
+            it out — the platform sets those itself when a send fails with a
+            permanent auth or ban error.
+      required:
+        - health
+
+    DeadLetter:
+      type: object
+      description: >
+        One webhook delivery the platform stopped retrying, with enough context to
+        judge it: which cabinet and endpoint it was for, what it carried, and what
+        the last attempt got back.
+      properties:
+        id:
+          type: string
+          description: The delivery id — pass it to the replay operation.
+        cabinetId:
+          type: string
+        webhookId:
+          type: string
+        url:
+          type: string
+          description: The endpoint that would not accept it.
+        eventId:
+          type: string
+        eventType:
+          type: string
+        attemptNo:
+          type: integer
+          description: How many attempts were made before giving up.
+        responseCode:
+          type: integer
+          description: HTTP status of the last attempt; 0 when it never got a response.
+        error:
+          type: string
+          description: Transport or status error recorded on the last attempt.
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - cabinetId
+        - webhookId
+        - url
+        - eventId
+        - eventType
+        - attemptNo
+        - createdAt
+
+    DeadLetterList:
+      type: object
+      description: Dead-lettered deliveries, newest first.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeadLetter'
+      required:
+        - items
+
     AccessPoolEntry:
       type: object
       description: One auth-out credential in the pool (ADR-0029). credentialsRef is a pointer, never the secret.
@@ -2990,6 +3466,12 @@ components:
           type: integer
         credentialsRef:
           type: string
+          description: >
+            Pointer into the secret store — never the secret itself. ABSENT
+            unless the calling key carries the `secrets:read` scope, which the
+            cabinet-wide `*` does not imply: a key issued to send messages has no
+            need to learn where the provider credentials are kept. Each
+            disclosure is recorded in the audit trail as accesspool.secrets.read.
       required:
         - id
         - kind
@@ -3059,6 +3541,18 @@ components:
           type: string
         result:
           type: string
+        detail:
+          type: object
+          additionalProperties: true
+          description: >
+            Non-sensitive metadata recorded with the action — the counts an
+            erasure touched, the scope a denied request asked for, the status a
+            webhook was moved to. Never secrets, tokens or message bodies
+            (ADR-0028 §3).
+
+            It is the part that makes an entry answerable rather than merely
+            present: "key.issue on cabinet X" says less than the scopes that key
+            was given. Recorded from the start and never returned until now.
       required:
         - id
         - action

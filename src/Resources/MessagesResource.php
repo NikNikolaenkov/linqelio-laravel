@@ -76,6 +76,26 @@ final readonly class MessagesResource
     }
 
     /**
+     * Read one message and its current status.
+     *
+     * A send is accepted, not delivered — `send()` returns as soon as the
+     * platform takes the command, and the provider is reached afterwards. This is
+     * how the outcome is checked: queued, sent, delivered, read or failed, with
+     * the timestamp of each step it reached.
+     *
+     * For a failed send, `$message->failureReason()` says why.
+     *
+     * At any volume prefer the `message.status` webhook — one call per message
+     * does not scale, and polling for an outcome that may take seconds is how a
+     * queue worker ends up sleeping. This answers for ONE message, which is what
+     * a support desk needs when somebody asks about a specific reply.
+     */
+    public function find(string $id): Message
+    {
+        return Message::fromArray($this->client->get("/messages/{$id}")->data);
+    }
+
+    /**
      * A contact's history across every channel, newest first.
      *
      * @return array{messages: array<int, Message>, nextCursor: ?string}

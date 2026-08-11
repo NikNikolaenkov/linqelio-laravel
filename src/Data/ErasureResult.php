@@ -14,11 +14,23 @@ namespace Linqelio\Laravel\Data;
  */
 final readonly class ErasureResult
 {
+    /**
+     * @param  int  $outbox  queued outbound rows removed. The outbox holds its own
+     *                       full copy of the envelope, so redacting the message
+     *                       does not reach it; a still-pending one is dropped,
+     *                       which cancels a message to somebody who asked to go.
+     * @param  int  $media  attachments queued for removal from the object store.
+     *                      Queued, not deleted inline: the object store is not in
+     *                      the erasure's transaction, so the keys are committed
+     *                      with the redaction and swept immediately after.
+     */
     public function __construct(
         public int $contacts,
         public int $identities,
         public int $conversations,
         public int $messages,
+        public int $outbox = 0,
+        public int $media = 0,
     ) {}
 
     /**
@@ -31,6 +43,8 @@ final readonly class ErasureResult
             identities: (int) ($data['identities'] ?? 0),
             conversations: (int) ($data['conversations'] ?? 0),
             messages: (int) ($data['messages'] ?? 0),
+            outbox: (int) ($data['outbox'] ?? 0),
+            media: (int) ($data['media'] ?? 0),
         );
     }
 
@@ -46,7 +60,9 @@ final readonly class ErasureResult
         return $this->contacts === 0
             && $this->identities === 0
             && $this->conversations === 0
-            && $this->messages === 0;
+            && $this->messages === 0
+            && $this->outbox === 0
+            && $this->media === 0;
     }
 
     /**
@@ -59,6 +75,8 @@ final readonly class ErasureResult
             'identities' => $this->identities,
             'conversations' => $this->conversations,
             'messages' => $this->messages,
+            'outbox' => $this->outbox,
+            'media' => $this->media,
         ];
     }
 }

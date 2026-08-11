@@ -54,6 +54,7 @@ final class Contract
 
         'sendContactMessage' => 'messages()->send()',
         'listContactMessages' => 'messages()->history()',
+        'getMessage' => 'messages()->find()',
 
         'listConversations' => 'conversations()->list()',
         'listConversationMessages' => 'conversations()->feed()',
@@ -82,11 +83,19 @@ final class Contract
         'listCabinetKeys' => 'platform:admin only',
         'issueCabinetKey' => 'platform:admin only',
         'revokeCabinetKey' => 'platform:admin only',
+        'rotateCabinetKey' => 'platform:admin only — an application cannot rotate the key it is holding',
+
+        // The dead-letter window spans every cabinet and a replay sends traffic
+        // to somebody else's endpoint. platform:admin by design, so a client key
+        // cannot reach it and wrapping it here would suggest otherwise.
+        'listDeadLetters' => 'platform:admin only',
+        'replayDeadLetter' => 'platform:admin only',
 
         // Operator tooling rather than integration surface.
         'listAccessPool' => 'operator tooling',
         'addAccessPoolEntry' => 'operator tooling',
         'rotateAccessPool' => 'operator tooling',
+        'setAccessPoolHealth' => 'operator tooling — which credential a cabinet sends through is an operator decision',
         'listAudit' => 'operator tooling',
 
         // Plane B: called by the widget with its own short-lived token, never by
@@ -101,27 +110,21 @@ final class Contract
     /**
      * Body fields this package sends that the contract does not declare.
      *
-     * Each one is a promise the platform does not currently keep. They stay on
-     * the wire because the arguments behind them are public API and the platform
-     * may yet honour them — but the wrapper's docblock now tells the caller the
+     * Each entry is a promise the platform does not currently keep. A field stays
+     * on the wire because the argument behind it is public API and the platform
+     * may yet honour it — but the wrapper's docblock has to tell the caller the
      * same thing this table does, so nobody plans around a guarantee that is not
-     * there. A stale entry fails its own gate below.
+     * there.
+     *
+     * EMPTY, and that is the interesting state. It held `_meta` on updateContact
+     * and `cap`/`conversationId` on createEmbedSession until the platform started
+     * honouring all three; the staleness gate below is what noticed, on the first
+     * contract sync after they landed. A table like this is only trustworthy if
+     * something forces entries out of it.
      *
      * @var array<string, array<string, string>>
      */
-    public const WIRE_DEVIATIONS = [
-        'updateContact' => [
-            '_meta' => 'Optimistic concurrency. ContactPatch declares hostRefs and custom only, and '.
-                'UpdateContact acts on exactly those two — the version is dropped, so '.
-                'contact.version_conflict cannot be raised and a concurrent edit silently wins.',
-        ],
-        'createEmbedSession' => [
-            'cap' => 'CreateEmbedSession mints with embed.DefaultCaps regardless, so a narrower '.
-                'capability set asked for here is not the set the widget ends up holding.',
-            'conversationId' => 'Same handler mints with an empty conversation scope, so the token '.
-                'is not confined to the conversation named here.',
-        ],
-    ];
+    public const WIRE_DEVIATIONS = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +440,9 @@ function contractDrivers(): array
             'call' => fn (): array => Linqelio::messages()->history('c-1', cursor: 'cur-2', limit: 50)['messages'],
             'paged' => true,
         ],
+        'getMessage' => [
+            'call' => fn () => Linqelio::messages()->find('01MSG'),
+        ],
 
         'listConversations' => [
             'call' => fn (): array => Linqelio::conversations()->list(
@@ -624,26 +630,33 @@ it('sends only request body fields the contract declares', function (string $ope
     ));
 })->with(fn (): array => array_keys(contractDrivers()));
 
-it('keeps no stale wire deviation', function (string $operationId): void {
-    $recorded = array_keys(Contract::WIRE_DEVIATIONS[$operationId]);
-    $declared = contractBodyFields($operationId) ?? [];
+// Not a dataset: an EMPTY deviation table is the healthy state, and a dataset
+// cannot be empty. It is also the state this gate produced — it caught all three
+// recorded deviations the moment the platform started honouring them.
+it('keeps no stale wire deviation', function (): void {
+    foreach (Contract::WIRE_DEVIATIONS as $operationId => $fields) {
+        $recorded = array_keys($fields);
+        $declared = contractBodyFields($operationId) ?? [];
 
-    $request = driveOperation($operationId)['request'];
-    $sent = $request->method() === 'GET' ? [] : array_keys($request->data());
+        $request = driveOperation($operationId)['request'];
+        $sent = $request->method() === 'GET' ? [] : array_keys($request->data());
 
-    // Still sent: an entry for a field the package stopped sending is a note
-    // about code that no longer exists.
-    expect(array_diff($recorded, $sent))->toBeEmpty(
-        "{$operationId}: WIRE_DEVIATIONS lists fields this package no longer sends. Delete them."
-    );
+        // Still sent: an entry for a field the package stopped sending is a note
+        // about code that no longer exists.
+        expect(array_diff($recorded, $sent))->toBeEmpty(
+            "{$operationId}: WIRE_DEVIATIONS lists fields this package no longer sends. Delete them."
+        );
 
-    // Still undeclared: once the contract grows the field, the deviation is the
-    // stale thing, and leaving it would suppress a future real failure.
-    expect(array_intersect($recorded, $declared))->toBeEmpty(
-        "{$operationId}: the contract now declares these, so they are not deviations any more. ".
-        'Delete the entries and let the gate check them normally.'
-    );
-})->with(fn (): array => array_keys(Contract::WIRE_DEVIATIONS));
+        // Still undeclared: once the contract grows the field, the deviation is
+        // the stale thing, and leaving it would suppress a future real failure.
+        expect(array_intersect($recorded, $declared))->toBeEmpty(
+            "{$operationId}: the contract now declares these, so they are not deviations any more. ".
+            'Delete the entries and let the gate check them normally.'
+        );
+    }
+
+    expect(true)->toBeTrue();
+});
 
 it('reads each page out of the field the contract names', function (string $operationId): void {
     $pageField = contractPageField($operationId);

@@ -9,6 +9,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `messages()->find()` and the `MessageStatusChanged` event, together answering
+  what a send actually did. `send()` returns when the platform accepts the
+  command, not when the provider is reached — and until the platform grew
+  `message.status` and `GET /messages/{id}` there was no way to learn the
+  outcome, so a failed send looked exactly like a delivered one. Subscribe to
+  `message.status` when registering the webhook; every transition is delivered
+  and `eventTypes` filters the ones you do not want.
+- `Message::failureReason()`, and `Message::$meta` behind it. "Failed" is a
+  status; the reason is the answer, and without it the next step was reading
+  platform logs an integrator has no access to.
+- `LinqelioMessage::recordStatus()` advances the projection when a status
+  arrives. Only the status moves: a status payload carries no body, so writing
+  the rest of the row from it would blank the content the projection holds.
+- `ErasureResult::$outbox` and `$media` — the two copies of a person that
+  outlive the redaction. A journal entry without them describes half an erasure.
 - Verification of `X-Linqelio-Signature-V2`, which the platform signs over the
   send timestamp and delivery id as well as the body. Nothing to configure: a
   delivery that carries it is judged on those headers — freshness per attempt,
@@ -51,18 +66,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `HttpClient::VERSION` still read `0.1.0` after the 0.2.0 release, so the
   `User-Agent` misreported the client version.
 
-### Documented
+### Now honoured by the platform
 
-Two arguments this package sends that the platform does not act on. Both are
-still sent and both docblocks now say so, rather than promising a guarantee that
-is not there:
+Two arguments this package sent that the platform used to discard. Both work as
+documented; the docblocks that warned against relying on them are gone, and the
+parity gate's staleness check is what noticed on the first contract sync after
+the fixes landed:
 
-- `contacts()->update(version:)` — `ContactPatch` declares `hostRefs` and
-  `custom` only, so the version is dropped and `contact.version_conflict` cannot
-  be raised. Serialise conflicting writes on your side until it lands.
-- `embed()->session(capabilities:, conversationId:)` — the platform mints every
-  token with its own default capability set and no conversation scope. A token
-  asked for as read-only, or confined to one thread, is neither.
+- `contacts()->update(version:)` — optimistic concurrency. Pass the version you
+  last read and the write applies only if nothing changed underneath, otherwise
+  `contact.version_conflict`. Omit it and the update stays last-writer-wins.
+- `embed()->session(capabilities:, conversationId:)` — the issued token is never
+  wider than what you ask for, and a capability the platform does not issue is
+  refused rather than quietly dropped. `conversationId` confines the token to one
+  thread.
 
 ### Testing
 

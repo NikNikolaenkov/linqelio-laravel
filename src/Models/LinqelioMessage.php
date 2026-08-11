@@ -13,6 +13,7 @@ use Linqelio\Laravel\Data\Enums\MessageStatus;
 use Linqelio\Laravel\Data\Enums\MessageType;
 use Linqelio\Laravel\Data\Message;
 use Linqelio\Laravel\Events\MessageReceived;
+use Linqelio\Laravel\Events\MessageStatusChanged;
 use Linqelio\Laravel\Facades\Linqelio;
 
 /**
@@ -113,6 +114,44 @@ final class LinqelioMessage extends Model
                 'occurred_at' => $message->timestamp,
             ],
         );
+
+        return $model;
+    }
+
+    /**
+     * Advance an outbound row to the status the platform just reported.
+     *
+     * Only the status moves. A status delivery names the message and says what
+     * happened to it; rewriting the rest from a payload that carries no body
+     * would blank the content this projection exists to hold.
+     *
+     * Creates the row when it is missing, because a status can arrive for a
+     * message this application never recorded — a send made from somewhere else,
+     * or a projection enabled after the fact. A row saying "this failed" with no
+     * body still beats no row at all.
+     */
+    public static function recordStatus(MessageStatusChanged $event): self
+    {
+        /** @var self $model */
+        $model = self::query()->firstOrNew(['id' => $event->messageId]);
+
+        $model->status = $event->status->value;
+        if ($event->providerMessageId !== null) {
+            $model->provider_message_id = $event->providerMessageId;
+        }
+        // Only when this call is creating the row: an existing projection already
+        // knows the channel and the address, and a status payload is not where to
+        // learn them from.
+        if (! $model->exists) {
+            $model->channel_id = $event->channelId;
+            $model->kind = $event->kind->value;
+            $model->direction = 'outbound';
+            $model->type = '';
+            $model->chat_id = $event->chatId;
+            $model->contact_ref = $event->contactRef;
+            $model->occurred_at = Carbon::instance($event->occurredAt);
+        }
+        $model->save();
 
         return $model;
     }

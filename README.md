@@ -161,6 +161,36 @@ neither.
 Deliveries are verified (HMAC-SHA256 over the raw body), rejected if older than
 the tolerance, processed once, and handled on a queue.
 
+### Knowing whether a send worked
+
+`send()` returns when the platform accepts the command, not when the provider is
+reached — so a 202 is "handed over", never "delivered". Subscribe to
+`message.status` and the outcome comes to you:
+
+```php
+Linqelio::webhooks()->register('https://your-app.test/linqelio/webhook',
+    ['message.inbound', 'message.status'], 'secret://webhooks/your-app');
+```
+
+```php
+public function handle(MessageStatusChanged $event): void
+{
+    if ($event->hasFailed()) {
+        // $event->reason says why: an unaddressable recipient, an unsupported
+        // type. It will not be retried.
+        Log::warning('send failed', ['id' => $event->messageId, 'why' => $event->reason]);
+    }
+}
+```
+
+Every transition is delivered — `sent`, `delivered`, `read`, `failed`. On a busy
+cabinet read receipts are the bulk of that, so name only the ones you want in
+`eventTypes`.
+
+For one message rather than a stream, `Linqelio::messages()->find($id)` reads its
+current status directly; `failureReason()` on the result answers "why" for a
+failed one. At volume prefer the event — one call per message does not scale.
+
 Newer platforms also send `X-Linqelio-Signature-V2`, which signs the send
 timestamp and delivery id alongside the body. Where the older signature covers
 the body alone — leaving those two headers unauthenticated, and so unusable for

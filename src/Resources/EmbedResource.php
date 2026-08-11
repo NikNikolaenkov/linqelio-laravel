@@ -14,8 +14,7 @@ use Linqelio\Laravel\Client\HttpClient;
  * and the widget holds only that. Even if it leaks, it expires quickly and
  * reaches one person.
  *
- * Scoped to the CONTACT, and no further — see {@see self::session()} for what
- * that does and does not bound.
+ * Scope it as narrowly as the UI allows — {@see self::session()}.
  */
 final readonly class EmbedResource
 {
@@ -24,17 +23,17 @@ final readonly class EmbedResource
     /**
      * Mint a session token for a contact.
      *
-     * `$capabilities` and `$conversationId` are NOT yet enforced. The platform
-     * mints every token with its own default capability set and no conversation
-     * scope, so a token asked for as read-only, or as confined to one thread, is
-     * neither. Both arguments are sent and both are ignored; they stay so the
-     * call site already says what it wants when the platform starts honouring it.
+     * `$capabilities` is an UPPER BOUND: the issued token is never wider than
+     * what you ask for. Omit it and the platform's default set is issued; name a
+     * capability the platform does not issue and the call is refused rather than
+     * quietly narrowed, so you are never left believing the token is smaller than
+     * it is.
      *
-     * Until then, assume the token can do what the widget's default UI can do,
-     * for every conversation that contact has, until it expires.
+     * `$conversationId` confines the token to one thread. Omitted, it reaches
+     * every conversation that contact has.
      *
-     * @param  array<int, string>  $capabilities  what the widget should be allowed
-     *                                            to do — recorded, not yet enforced
+     * @param  array<int, string>  $capabilities  what the widget may do — keep it
+     *                                            to the minimum the UI needs
      * @return array<string, mixed>
      */
     public function session(string $contactId, array $capabilities = [], ?string $conversationId = null): array

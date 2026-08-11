@@ -106,12 +106,12 @@ final readonly class ContactsResource
     /**
      * Update the fields your side owns.
      *
-     * `$version` is sent as `_meta.version`, but DO NOT rely on it yet: the
-     * contract's ContactPatch declares `hostRefs` and `custom` only, and the
-     * platform acts on exactly those two. The version is decoded into nothing,
-     * so no `contact.version_conflict` is raised and a concurrent edit wins
-     * silently. The argument stays because the platform may yet honour it; until
-     * it does, serialise conflicting writes on your side.
+     * Pass the `version` you last read and the write applies only if nothing
+     * changed underneath; otherwise it fails with `contact.version_conflict` and
+     * you refetch and retry. Omit it and the update is last-writer-wins.
+     *
+     * Only `custom` is guarded. `hostRefs` are links rather than values, and
+     * adding one twice is not a conflict.
      *
      * Messenger-owned fields (phone, push name, avatar) are read-only — they are
      * projections of the channel and are refreshed from inbound traffic.
