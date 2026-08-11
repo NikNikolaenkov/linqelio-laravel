@@ -52,7 +52,7 @@ final readonly class ConversationsResource
         ], static fn ($v): bool => $v !== null));
 
         return [
-            'messages' => array_map(Message::fromArray(...), $response->items()),
+            'messages' => array_map(Message::fromArray(...), $response->collection('messages')),
             'nextCursor' => $response->nextCursor(),
         ];
     }

@@ -79,8 +79,21 @@ return [
         'path' => env('LINQELIO_WEBHOOK_PATH', 'linqelio/webhook'),
         'middleware' => ['api'],
 
-        // Reject deliveries older than this, and remember delivered ids for the
-        // same window, so a replayed request cannot be processed twice.
+        // Reject deliveries older than this, so a captured request cannot be
+        // replayed indefinitely.
+        //
+        // Applied as written when the platform sends X-Linqelio-Signature-V2,
+        // because that signature covers the per-attempt send timestamp: a retry
+        // arrives freshly stamped, a replay does not, and 300s is a real bound.
+        //
+        // Without v2 there is no authenticated per-attempt clock, so age has to
+        // come from the payload's signed `occurredAt`, which is fixed at event
+        // time. The platform's 6th and last attempt lands 930s after that, so on
+        // this path a 960s floor is enforced regardless of the value here —
+        // anything lower answers our own retries with a 401.
+        //
+        // Deliveries are remembered for at least 960s either way, so a late
+        // retry is recognised as a repeat rather than processed twice.
         'tolerance' => (int) env('LINQELIO_WEBHOOK_TOLERANCE', 300), // seconds
 
         'queue' => [

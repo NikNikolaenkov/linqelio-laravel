@@ -33,9 +33,24 @@ final readonly class Response
      */
     public function items(): array
     {
-        $items = $this->data['items'] ?? [];
+        return $this->collection('items');
+    }
 
-        return is_array($items) ? array_values($items) : [];
+    /**
+     * The array under `$key`, or an empty array.
+     *
+     * List responses are not uniform: conversations and contacts arrive under
+     * `items`, message pages under `messages`. Reading the wrong key yields an
+     * empty page rather than an error — which is exactly how a client can look
+     * healthy while returning nothing — so the caller names the key it means.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function collection(string $key): array
+    {
+        $values = $this->data[$key] ?? [];
+
+        return is_array($values) ? array_values($values) : [];
     }
 
     /** The cursor for the next page, when the response is paginated. */

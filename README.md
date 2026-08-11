@@ -42,6 +42,20 @@ Check it works:
 php artisan linqelio:channels
 ```
 
+### Serving several cabinets
+
+`LINQELIO_KEY` binds the package to one cabinet. An application that serves more
+than one asks for the key it needs at the call site:
+
+```php
+Linqelio::forKey($tenant->linqelio_key)->messages()->sendText($contactId, 'hello');
+```
+
+Do not rebind the container to switch cabinets. The client is a singleton, and
+under Octane or a queue worker it outlives the request that resolved it — the
+next request would inherit whatever key was set last. `forKey()` returns a
+separate instance and leaves the shared one alone.
+
 ## Sending
 
 ```php
@@ -146,6 +160,14 @@ neither.
 
 Deliveries are verified (HMAC-SHA256 over the raw body), rejected if older than
 the tolerance, processed once, and handled on a queue.
+
+Newer platforms also send `X-Linqelio-Signature-V2`, which signs the send
+timestamp and delivery id alongside the body. Where the older signature covers
+the body alone — leaving those two headers unauthenticated, and so unusable for
+telling a retry from a replay — v2 makes both trustworthy. The middleware uses it
+when it is there and falls back when it is not, so there is nothing to switch on;
+the only visible difference is that `webhooks.tolerance` can stay tight, because
+freshness is then measured per attempt rather than from the event.
 
 ### Managing subscriptions
 

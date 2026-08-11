@@ -7,6 +7,72 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Verification of `X-Linqelio-Signature-V2`, which the platform signs over the
+  send timestamp and delivery id as well as the body. Nothing to configure: a
+  delivery that carries it is judged on those headers — freshness per attempt,
+  single-use on the delivery id — and one that does not falls back to the signed
+  payload as before. This is what lets the freshness window stay at 300s without
+  rejecting the platform's own retries.
+- `Linqelio::forKey()` and `HttpClient::withKey()`, for applications serving more
+  than one cabinet. The container binds a single client built from
+  `linqelio.key`, and under a persistent worker it outlives the request that
+  resolved it — so the key has to travel with the call instead of being swapped
+  on the shared instance, where the next request would inherit it.
+
+### Fixed
+
+- `messages()->history()` and `conversations()->feed()` always returned an empty
+  page. Both read the response's `items`, but a message page arrives under
+  `messages`; only the conversation and contact lists use `items`. Since the
+  webhook deliberately carries no message body and there is no
+  `GET /messages/{id}`, these two calls are the only way to read one — so this
+  made inbound content unreadable rather than merely awkward.
+- Pagination was ignored, silently returning the first page forever.
+  `history()` sent `cursor` where the contract takes `before`, and
+  `contacts()->list()` sent `cursor` where it takes `since`. Both arguments keep
+  their names; only the wire parameter changed.
+- Webhook freshness rejected the platform's own retries. Age is measured from the
+  payload's signed `occurredAt`, which does not reset between attempts, while the
+  deliverer backs off up to 930s before its last one — so with the old 300s
+  tolerance attempts 5 and 6 were answered 401 and the delivery dead-lettered.
+  Anything replayed through `POST /channels/{id}/sync` was refused outright. The
+  default tolerance is now 1800s, with a 960s floor enforced in code.
+- Webhook single-use keys no longer depend on `X-Linqelio-Delivery`. The
+  signature covers the body alone, so that header is attacker-supplied; the key
+  now comes from the signed payload, falling back to a hash of the signed body
+  for events carrying no id. Deliveries are remembered for the full tolerance
+  window, closing the gap where a capture was too new to be stale and too old to
+  be recalled.
+- `channels()->create()` sent the label as `name`, but `CreateChannelRequest`
+  declares `label` and the platform reads only that — so every channel created
+  through this package was left unlabelled.
+- `HttpClient::VERSION` still read `0.1.0` after the 0.2.0 release, so the
+  `User-Agent` misreported the client version.
+
+### Documented
+
+Two arguments this package sends that the platform does not act on. Both are
+still sent and both docblocks now say so, rather than promising a guarantee that
+is not there:
+
+- `contacts()->update(version:)` — `ContactPatch` declares `hostRefs` and
+  `custom` only, so the version is dropped and `contact.version_conflict` cannot
+  be raised. Serialise conflicting writes on your side until it lands.
+- `embed()->session(capabilities:, conversationId:)` — the platform mints every
+  token with its own default capability set and no conversation scope. A token
+  asked for as read-only, or confined to one thread, is neither.
+
+### Testing
+
+- The contract parity gate now parses the contract instead of pattern-matching
+  it, and drives all 25 covered operations against a faked platform. Three new
+  checks compare what actually goes on the wire: query parameters, request body
+  fields, and the response field each page is read from. All three of the wire
+  defects fixed above were invisible to the old gate; the first run of the new
+  one found the `label` bug and both deviations documented above.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

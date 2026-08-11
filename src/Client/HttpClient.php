@@ -28,7 +28,7 @@ use Linqelio\Laravel\Exceptions\ExceptionFactory;
  */
 final class HttpClient
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.2.0';
 
     /**
      * @param  array{times:int, sleep:int}  $retry
@@ -41,6 +41,30 @@ final class HttpClient
         private readonly int $uploadTimeout = 60,
         private readonly array $retry = ['times' => 3, 'sleep' => 200],
     ) {}
+
+    /**
+     * The same transport, holding another cabinet's key.
+     *
+     * The container binds ONE client, built once from config. Under a persistent
+     * worker — Octane, a queue worker — that instance outlives the request that
+     * first resolved it, so an application serving more than one cabinet cannot
+     * swap the key on the shared object: the next request would inherit it and
+     * read somebody else's messages.
+     *
+     * This returns a new client and leaves the shared one untouched, which makes
+     * the key a property of the call site rather than of the process.
+     */
+    public function withKey(string $key): self
+    {
+        return new self(
+            http: $this->http,
+            baseUrl: $this->baseUrl,
+            key: $key,
+            timeout: $this->timeout,
+            uploadTimeout: $this->uploadTimeout,
+            retry: $this->retry,
+        );
+    }
 
     /**
      * @param  array<string, mixed>  $query

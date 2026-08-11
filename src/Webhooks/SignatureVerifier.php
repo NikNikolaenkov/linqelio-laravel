@@ -20,23 +20,60 @@ final readonly class SignatureVerifier
 {
     private const PREFIX = 'sha256=';
 
+    private const PREFIX_V2 = 'v2=';
+
     public function __construct(private string $secret) {}
 
     public function verify(string $rawBody, ?string $header): bool
     {
-        if ($this->secret === '' || $header === null || $header === '') {
-            return false;
-        }
+        $header = (string) $header;
 
         if (! str_starts_with($header, self::PREFIX)) {
             return false;
         }
 
-        return hash_equals($this->sign($rawBody), $header);
+        return $this->matches($this->sign($rawBody), $header);
     }
 
     public function sign(string $rawBody): string
     {
         return self::PREFIX.hash_hmac('sha256', $rawBody, $this->secret);
+    }
+
+    /**
+     * Verifies `X-Linqelio-Signature-V2`, which covers the delivery headers too.
+     *
+     * `X-Linqelio-Signature` authenticates the body and nothing else, so the two
+     * headers that describe the delivery — when it was sent, and which delivery
+     * it is — carry no proof of their own. That matters because they are exactly
+     * the values worth trusting: the timestamp is stamped per attempt, so it
+     * tells one of our retries apart from a captured request being replayed, and
+     * the delivery id is what makes a repeat identifiable as the same repeat.
+     *
+     * v2 binds both into the MAC, over "<timestamp>.<deliveryId>.<body>". A
+     * delivery that carries it can be judged on those headers; one that does not
+     * has to fall back on the body alone (see VerifySignature).
+     */
+    public function verifyV2(string $timestamp, string $deliveryId, string $rawBody, ?string $header): bool
+    {
+        $header = (string) $header;
+
+        if (! str_starts_with($header, self::PREFIX_V2)) {
+            return false;
+        }
+
+        return $this->matches($this->signV2($timestamp, $deliveryId, $rawBody), $header);
+    }
+
+    public function signV2(string $timestamp, string $deliveryId, string $rawBody): string
+    {
+        return self::PREFIX_V2.hash_hmac('sha256', $timestamp.'.'.$deliveryId.'.'.$rawBody, $this->secret);
+    }
+
+    private function matches(string $expected, string $header): bool
+    {
+        // An empty secret can only produce a MAC of the empty key, which would
+        // "verify" anything a misconfigured sender happened to send.
+        return $this->secret !== '' && hash_equals($expected, $header);
     }
 }

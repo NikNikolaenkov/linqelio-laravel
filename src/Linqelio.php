@@ -72,6 +72,22 @@ final class Linqelio
         return $this->webhooks ??= new WebhooksResource($this->client);
     }
 
+    /**
+     * An entry point bound to another cabinet's key.
+     *
+     *     Linqelio::forKey($tenant->linqelio_key)->messages()->sendText(...);
+     *
+     * Needed by anything that serves more than one cabinet. The container holds
+     * a single Linqelio built from `linqelio.key`, and it memoises its resources,
+     * so this returns a fresh instance rather than mutating the shared one —
+     * under a persistent worker, mutating it would leak the key into the next
+     * request. See HttpClient::withKey().
+     */
+    public function forKey(string $key): self
+    {
+        return new self($this->client->withKey($key));
+    }
+
     /** The transport, for calls this package has not wrapped yet. */
     public function client(): HttpClient
     {

@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Linqelio\Laravel\Resources\MediaResource media()
  * @method static \Linqelio\Laravel\Resources\ConversationsResource conversations()
  * @method static \Linqelio\Laravel\Resources\EmbedResource embed()
+ * @method static \Linqelio\Laravel\Resources\WebhooksResource webhooks()
+ * @method static \Linqelio\Laravel\Linqelio forKey(string $key)
  * @method static \Linqelio\Laravel\Client\HttpClient client()
  *
  * @see \Linqelio\Laravel\Linqelio

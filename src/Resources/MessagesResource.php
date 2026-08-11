@@ -83,12 +83,16 @@ final readonly class MessagesResource
     public function history(string $contactId, ?string $cursor = null, ?int $limit = null): array
     {
         $response = $this->client->get("/contacts/{$contactId}/messages", array_filter([
-            'cursor' => $cursor,
+            // `before` on the wire: this endpoint walks backwards, and the
+            // contract spells that cursor differently from the forward `since`
+            // the pool endpoints take. Both are the opaque `pageInfo.nextCursor`
+            // from the previous page, which is why the argument stays $cursor.
+            'before' => $cursor,
             'limit' => $limit,
         ], static fn ($v): bool => $v !== null));
 
         return [
-            'messages' => array_map(Message::fromArray(...), $response->items()),
+            'messages' => array_map(Message::fromArray(...), $response->collection('messages')),
             'nextCursor' => $response->nextCursor(),
         ];
     }

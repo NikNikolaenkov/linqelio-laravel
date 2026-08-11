@@ -20,11 +20,15 @@ final readonly class ChannelsResource
         return array_map(Channel::fromArray(...), $this->client->get('/channels')->items());
     }
 
+    /**
+     * @param  string|null  $name  operator-facing label shown in the admin
+     *                             channel list; `label` on the wire
+     */
     public function create(ChannelKind $kind, ?string $name = null): Channel
     {
         $body = array_filter([
             'kind' => $kind->value,
-            'name' => $name,
+            'label' => $name,
         ], static fn ($v): bool => $v !== null);
 
         return Channel::fromArray($this->client->post('/channels', $body)->data);

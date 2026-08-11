@@ -26,7 +26,10 @@ final readonly class ContactsResource
         ?string $q = null,
     ): array {
         $response = $this->client->get('/contacts', array_filter([
-            'cursor' => $cursor,
+            // `since` on the wire — the contract's forward cursor. The argument
+            // keeps the neutral name because what you pass is always just the
+            // previous page's `pageInfo.nextCursor`.
+            'since' => $cursor,
             'limit' => $limit,
             'status' => $status,
             'q' => $q,
@@ -103,8 +106,13 @@ final readonly class ContactsResource
     /**
      * Update the fields your side owns.
      *
-     * Pass the `version` you last read to make a concurrent edit fail with
-     * `contact.version_conflict` instead of overwriting somebody else's change.
+     * `$version` is sent as `_meta.version`, but DO NOT rely on it yet: the
+     * contract's ContactPatch declares `hostRefs` and `custom` only, and the
+     * platform acts on exactly those two. The version is decoded into nothing,
+     * so no `contact.version_conflict` is raised and a concurrent edit wins
+     * silently. The argument stays because the platform may yet honour it; until
+     * it does, serialise conflicting writes on your side.
+     *
      * Messenger-owned fields (phone, push name, avatar) are read-only — they are
      * projections of the channel and are refreshed from inbound traffic.
      *
