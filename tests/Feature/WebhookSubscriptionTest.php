@@ -27,12 +27,12 @@ it('lists subscriptions', function (): void {
         ->and($hooks[1]->eventTypes)->toBe([]);
 });
 
-it('registers an endpoint with a secret reference, never a key', function (): void {
+it('registers an endpoint against a secret reference', function (): void {
     Http::fake([
         '*' => Http::response(['id' => 'w-1', 'url' => 'https://host.test/hook', 'status' => 'active'], 201),
     ]);
 
-    Linqelio::webhooks()->register('https://host.test/hook', ['message.inbound'], 'secret://webhooks/host');
+    $registered = Linqelio::webhooks()->register('https://host.test/hook', ['message.inbound'], 'secret://webhooks/host');
 
     Http::assertSent(function ($request): bool {
         $body = $request->data();
@@ -40,8 +40,86 @@ it('registers an endpoint with a secret reference, never a key', function (): vo
         return $request->method() === 'POST'
             && $body['url'] === 'https://host.test/hook'
             && $body['eventTypes'] === ['message.inbound']
-            && $body['secretRef'] === 'secret://webhooks/host';
+            && $body['secretRef'] === 'secret://webhooks/host'
+            && ! array_key_exists('secret', $body);
     });
+
+    // Nothing to hand back: the key is already in a store the caller controls.
+    expect($registered->secret)->toBeNull()
+        ->and($registered->mintedSecret())->toBeFalse()
+        ->and($registered->id())->toBe('w-1');
+});
+
+// The registration that was impossible until the platform grew `secret`: the
+// contract took only a `secret://` reference, and no API call could put a key
+// behind one. An empty reference was the only reachable registration — and an
+// empty reference is what makes the platform deliver UNSIGNED, which this
+// package's own middleware rejects on arrival, every time.
+it('registers with a key the caller already has, and does not echo it back', function (): void {
+    Http::fake([
+        '*' => Http::response(['id' => 'w-1', 'url' => 'https://host.test/hook', 'status' => 'active'], 201),
+    ]);
+
+    $registered = Linqelio::webhooks()->register(
+        'https://host.test/hook',
+        ['message.inbound'],
+        secret: 'whsec_the_key_my_middleware_verifies_with',
+    );
+
+    Http::assertSent(function ($request): bool {
+        $body = $request->data();
+
+        return $body['secret'] === 'whsec_the_key_my_middleware_verifies_with'
+            && ! array_key_exists('secretRef', $body);
+    });
+
+    // Null because the caller supplied it: a key coming back would be a secret
+    // in a response body and a proxy log, bought for nothing.
+    expect($registered->secret)->toBeNull()
+        ->and($registered->mintedSecret())->toBeFalse();
+});
+
+it('asks the platform to mint a key when given neither, and surfaces it once', function (): void {
+    Http::fake([
+        '*' => Http::response([
+            'id' => 'w-1',
+            'url' => 'https://host.test/hook',
+            'status' => 'active',
+            'secret' => 'whsec_minted_by_the_platform',
+        ], 201),
+    ]);
+
+    $registered = Linqelio::webhooks()->register('https://host.test/hook');
+
+    // Neither field on the wire: their joint absence IS the request to mint.
+    Http::assertSent(function ($request): bool {
+        $body = $request->data();
+
+        return ! array_key_exists('secret', $body) && ! array_key_exists('secretRef', $body);
+    });
+
+    expect($registered->secret)->toBe('whsec_minted_by_the_platform')
+        ->and($registered->mintedSecret())->toBeTrue();
+});
+
+// Both would be two keys with no rule about which one signs; the platform answers
+// 400. Refusing here spends no round trip on a request that cannot succeed.
+it('refuses a key and a reference together', function (): void {
+    Linqelio::webhooks()->register('https://host.test/hook', [], 'secret://webhooks/host', 'whsec_key');
+})->throws(InvalidArgumentException::class);
+
+// The dangerous confusion: sent as $secret, a `secret://…` string is not resolved
+// — it is STORED, and every delivery is then signed with the literal text of a
+// reference. The receiver verifies against the real key and rejects everything,
+// which looks exactly like a platform fault.
+it('refuses a reference passed as the key', function (): void {
+    Linqelio::webhooks()->register('https://host.test/hook', [], secret: 'secret://webhooks/host');
+})->throws(InvalidArgumentException::class);
+
+// The listing's guarantee, stated as a type: Webhook has no key to carry, so no
+// read can leak one no matter what the platform sends.
+it('keeps the key off the type every read returns', function (): void {
+    expect(property_exists(Linqelio\Laravel\Data\Webhook::class, 'secret'))->toBeFalse();
 });
 
 // Omitting the event types must mean "every type", which the contract expresses

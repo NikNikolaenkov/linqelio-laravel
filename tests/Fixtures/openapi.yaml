@@ -675,15 +675,32 @@ paths:
       operationId: registerWebhook
       summary: Register an outbound webhook subscription.
       description: >
-        Subscribe an HTTPS endpoint to cabinet events (ADR-0031). `secretRef` is a
-        secret-store reference (secret://...) to the HMAC signing key — never the
-        key itself.
+        Subscribe an HTTPS endpoint to cabinet events (ADR-0031, ADR-0046).
+
+
+        The subscription's HMAC signing key arrives one of three ways, and
+        exactly one may be used: `secret` is the key itself, handed to the secret
+        store so only its reference is persisted; `secretRef` points at a key
+        already in that store, for a caller who manages the vault directly; and
+        when neither is given the platform mints one and returns it in this
+        response — the only place any signing key is ever returned.
+
+
+        A subscription registered here therefore always has a key. Registering
+        without one was the previous behaviour by omission, and it produced
+        deliveries carrying no signature at all — which any receiver that
+        verifies (the only kind worth having) rejects, one dead-letter at a time.
       tags:
         - webhooks
       x-error-codes:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        # The signing key could not be generated or could not be written to the
+        # secret store. Nothing is registered in that case: a subscription
+        # holding a reference to a key that was never written would look
+        # configured and deliver unsigned for the rest of its life.
+        - provider.unavailable
       requestBody:
         required: true
         content:
@@ -692,11 +709,14 @@ paths:
               $ref: '#/components/schemas/RegisterWebhookRequest'
       responses:
         '201':
-          description: The webhook subscription was registered.
+          description: >
+            The webhook subscription was registered. `secret` is present only
+            when the platform minted the key, and this response is the one and
+            only time it is shown.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WebhookSubscription'
+                $ref: '#/components/schemas/RegisterWebhookResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3371,18 +3391,65 @@ components:
         - items
     RegisterWebhookRequest:
       type: object
+      description: >
+        A new subscription. `secret` and `secretRef` are two ways of giving it a
+        signing key and are mutually exclusive; omitting both asks the platform
+        to mint one (ADR-0046).
       properties:
         url:
           type: string
+        secret:
+          type: string
+          writeOnly: true
+          description: >
+            The HMAC signing key itself. Handed straight to the secret store —
+            our database keeps only the reference, and no operation reads it
+            back. Write-only, exactly like the credentials on
+            setChannelCredentials (ADR-0011). Use this when the receiving
+            endpoint already has a key it expects us to sign with.
         secretRef:
           type: string
-          description: Secret-store reference (secret://...) to the HMAC key; never the key itself.
+          description: >
+            Secret-store reference (secret://...) to a key ALREADY placed in the
+            store, for a caller who manages the vault directly. Never the key
+            itself — that is `secret`.
         eventTypes:
           type: array
           items:
             type: string
       required:
         - url
+    RegisterWebhookResult:
+      type: object
+      description: >
+        A newly registered subscription. Identical to WebhookSubscription except
+        for `secret`, which carries a key the platform minted. A separate schema
+        so the listing keeps its guarantee intact: WebhookSubscription carries no
+        key, in any response, ever.
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        eventTypes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        secret:
+          type: string
+          readOnly: true
+          description: >
+            The minted HMAC signing key — shown once and unrecoverable. Nothing
+            else returns it: the platform holds only what the secret store holds,
+            and listWebhooks does not read even the reference. Configure the
+            receiver with it now; if it is lost, the way back is to delete this
+            subscription and register another.
+      required:
+        - id
+        - url
+        - status
     SetAccessPoolHealthRequest:
       type: object
       properties:

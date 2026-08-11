@@ -169,7 +169,7 @@ reached — so a 202 is "handed over", never "delivered". Subscribe to
 
 ```php
 Linqelio::webhooks()->register('https://your-app.test/linqelio/webhook',
-    ['message.inbound', 'message.status'], 'secret://webhooks/your-app');
+    ['message.inbound', 'message.status']);
 ```
 
 ```php
@@ -205,8 +205,11 @@ Registering is usually a one-off, but the rest of the lifecycle is not — an
 endpoint breaks, a deployment moves, a tenant leaves:
 
 ```php
-Linqelio::webhooks()->register('https://your-app.test/linqelio/webhook',
-    ['message.inbound'], 'secret://webhooks/your-app');
+$registered = Linqelio::webhooks()->register('https://your-app.test/linqelio/webhook',
+    ['message.inbound']);
+
+$registered->id();      // the subscription
+$registered->secret;    // the signing key — SHOWN ONCE, see below
 
 Linqelio::webhooks()->disable($id);   // stop delivering, keep the subscription
 Linqelio::webhooks()->enable($id);
@@ -217,6 +220,34 @@ Reach for `disable()` rather than `delete()` when an endpoint is merely broken:
 deleting takes the signing key with it, so coming back means handing out a new
 one. `delete()` is idempotent — deleting an id that is already gone succeeds, so
 a retry after a lost response is not an error.
+
+#### The signing key
+
+Every subscription is signed, and you choose where the key comes from:
+
+```php
+// The platform mints one and hands it back — the only time it is ever returned.
+$registered = Linqelio::webhooks()->register($url, ['message.inbound']);
+$registered->secret;   // put this in webhooks.secret before it goes out of scope
+
+// Or sign with a key your deployment already holds. It goes to the platform's
+// secret store; nothing reads it back.
+Linqelio::webhooks()->register($url, ['message.inbound'],
+    secret: config('linqelio.webhooks.secret'));
+
+// Or point at one already in that store, if you administer it yourself.
+Linqelio::webhooks()->register($url, ['message.inbound'],
+    secretRef: 'secret://webhooks/your-app');
+```
+
+`$registered->secret` is null in the last two cases — you already have the key —
+and set only when the platform generated it. It is not recoverable: no read
+returns it, so if it is lost the way back is `delete()` and register again.
+
+`secret` is the key; `secretRef` is a `secret://` address in the platform's own
+store. Passing a `secret://…` string as `secret` is refused rather than sent,
+because the platform would store and sign with it literally, and every delivery
+would then fail verification here for a reason nothing in the logs explains.
 
 ## Erasing a person
 

@@ -414,6 +414,11 @@ function contractDrivers(): array
             'paged' => true,
         ],
         'registerWebhook' => [
+            // `secret` is the one optional argument deliberately left out, and
+            // the only exception to the rule above: it and `secretRef` are
+            // mutually exclusive, so driving both would put a body on the wire
+            // the platform answers 400 to. The wrapper refuses that combination
+            // before the request — see WebhookSubscriptionTest.
             'call' => fn () => Linqelio::webhooks()->register(
                 'https://app.test/linqelio/webhook',
                 ['message.inbound'],

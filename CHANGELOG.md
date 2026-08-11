@@ -7,6 +7,45 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- `webhooks()->register()` now returns `RegisteredWebhook` instead of `Webhook`.
+  The subscription moved to `->subscription` (with `->id()` as a shortcut), and
+  the new `->secret` carries a signing key when the platform minted one. Code
+  that reads the return value needs updating; code that ignores it does not.
+
+  A separate type rather than a nullable field on `Webhook`, mirroring the
+  platform's own split: `Webhook` is what every read returns and it carries no
+  key, ever — a nullable property on it would soften that into "usually null".
+
+### Added
+
+- `webhooks()->register()` takes the signing key itself as `secret`, and asks the
+  platform to mint one when given neither `secret` nor `secretRef`.
+
+  Until the platform grew this, registering a working subscription through the
+  API was not possible. The contract accepted only `secretRef` — an address in
+  the platform's secret store — and no API call could put a key at one, so the
+  only registration an application could complete carried an empty reference. An
+  empty reference is exactly what makes the platform deliver **unsigned**, which
+  this package's own middleware rejects on arrival, every time. The example in
+  this README was one of those calls.
+
+  Passing both is refused before the request, and so is a `secret://…` string
+  passed as `secret` — sent that way the platform stores and signs with it
+  verbatim, and every delivery then fails verification here for a reason nothing
+  in the logs explains.
+
+- `Data\RegisteredWebhook`, the result type above.
+
+### Fixed
+
+- A platform carrying the same change no longer downgrades to an unsigned
+  delivery when a subscription has a signing key it momentarily cannot resolve —
+  it retries instead. Nothing changes in this package; the middleware was already
+  rejecting those. What stops is the rejections arriving for deliveries that were
+  supposed to be signed.
+
 ## [0.3.0] - 2026-08-11
 
 ### Changed

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Linqelio\Laravel\Resources;
 
 use Linqelio\Laravel\Client\HttpClient;
+use Linqelio\Laravel\Data\RegisteredWebhook;
 use Linqelio\Laravel\Data\Webhook;
 
 /**
@@ -30,21 +31,53 @@ final readonly class WebhooksResource
     /**
      * Subscribe an endpoint.
      *
-     * `$secretRef` is a `secret://` reference to the HMAC key that signs
-     * deliveries — never the key itself. Leave `$eventTypes` empty to receive
-     * every type.
+     * Every subscription registered here is signed, and there are three ways to
+     * decide with what. Pass neither `$secretRef` nor `$secret` and the platform
+     * mints a key, returning it on the result — the one and only time it is ever
+     * shown. Pass `$secret` to sign with a key your receiver already expects; it
+     * goes to the platform's secret store and no read returns it afterwards. Pass
+     * `$secretRef` — a `secret://` reference — when you manage that store
+     * yourself and the key is already in it.
+     *
+     * The two are mutually exclusive: passing both is a 400, because nothing then
+     * says which key signs. And `$secret` is the KEY, not a reference — a
+     * `secret://…` string passed there would be signed with literally, so it is
+     * refused here rather than at the far end of a delivery nobody can verify.
+     *
+     * Leave `$eventTypes` empty to receive every type.
      *
      * @param  array<int, string>  $eventTypes
+     *
+     * @throws \InvalidArgumentException when both key arguments are given, or
+     *                                   when $secret is a reference
      */
-    public function register(string $url, array $eventTypes = [], ?string $secretRef = null): Webhook
-    {
+    public function register(
+        string $url,
+        array $eventTypes = [],
+        ?string $secretRef = null,
+        ?string $secret = null,
+    ): RegisteredWebhook {
+        if ($secretRef !== null && $secret !== null) {
+            throw new \InvalidArgumentException(
+                'Pass $secret or $secretRef, not both: nothing would say which key signs deliveries.'
+            );
+        }
+
+        if ($secret !== null && str_starts_with($secret, 'secret://')) {
+            throw new \InvalidArgumentException(
+                'A secret:// value is a reference, not a key — pass it as $secretRef. '.
+                'Sent as $secret it would be stored and signed with verbatim.'
+            );
+        }
+
         $body = array_filter([
             'url' => $url,
             'eventTypes' => $eventTypes === [] ? null : array_values($eventTypes),
             'secretRef' => $secretRef,
+            'secret' => $secret,
         ], static fn ($v): bool => $v !== null);
 
-        return Webhook::fromArray($this->client->post('/webhooks', $body)->data);
+        return RegisteredWebhook::fromArray($this->client->post('/webhooks', $body)->data);
     }
 
     /**
