@@ -28,7 +28,15 @@ use Linqelio\Laravel\Exceptions\ExceptionFactory;
  */
 final class HttpClient
 {
-    public const VERSION = '0.2.0';
+    /**
+     * The released version, reported in the User-Agent.
+     *
+     * Kept honest by a test rather than by remembering: it read 0.1.0 for the
+     * whole of 0.2.0, so the platform's telemetry attributed a release's traffic
+     * to the one before it. VersionTest compares this against the newest release
+     * in CHANGELOG.md and fails when they drift.
+     */
+    public const VERSION = '0.3.0';
 
     /**
      * @param  array{times:int, sleep:int}  $retry

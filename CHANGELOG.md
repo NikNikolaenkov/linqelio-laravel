@@ -7,6 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-11
+
+### Changed
+
+- `ErasureResult::toArray()` now emits two more keys, `outbox` and `media`. Code
+  that compares the array strictly — an erasure journal asserting an exact shape,
+  as this package's own test did — will need updating. The counts themselves are
+  unchanged.
+- The webhook freshness window is enforced differently. `webhooks.tolerance`
+  still defaults to 300s and now applies as written when the platform sends
+  `X-Linqelio-Signature-V2`; without it a 960s floor is imposed, because age is
+  then measured from a timestamp fixed at event time and anything lower rejects
+  the platform's own retries.
+
 ### Added
 
 - `messages()->find()` and the `MessageStatusChanged` event, together answering
@@ -140,6 +154,7 @@ the fixes landed:
 - Contract parity test: every operation is wrapped or explicitly excluded with a
   reason, and every error code in the contract exists in `ErrorCode`.
 
-[Unreleased]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NikNikolaenkov/linqelio-laravel/releases/tag/v0.1.0
