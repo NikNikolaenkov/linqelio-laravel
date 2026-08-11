@@ -1,0 +1,63 @@
+name: Release
+
+# Packagist publishes from TAGS, so a tag is the moment a version becomes real
+# for everyone installing this package. Everything below runs then, and failing
+# here is the point: a tag can be deleted and re-pushed, a published release
+# cannot be recalled.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Version agrees with the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - uses: ramsey/composer-install@v3
+
+      # HttpClient::VERSION travels in the User-Agent of every request, which is
+      # how the platform attributes traffic to a release. It read 0.1.0 for the
+      # whole of 0.2.0 — nothing checked it, and nothing about tagging forced
+      # anyone to look.
+      #
+      # VersionTest already ties the constant to the newest CHANGELOG entry. This
+      # ties both to the tag, so the three cannot disagree: tag, constant,
+      # changelog.
+      - name: Constant matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(php -r 'require "vendor/autoload.php"; echo \Linqelio\Laravel\Client\HttpClient::VERSION;')
+          echo "tag:      $TAG"
+          echo "constant: $VERSION"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag v$TAG does not match HttpClient::VERSION ($VERSION)."
+            echo
+            echo "Update the constant and the CHANGELOG heading, then move the tag:"
+            echo "    git tag -d v$TAG && git push origin :refs/tags/v$TAG"
+            echo
+            echo "A mismatch ships a client that misreports itself to the platform's"
+            echo "telemetry for the life of the release."
+            exit 1
+          fi
+
+      - name: Changelog has an entry for this version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if ! grep -qE "^## \[${TAG}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${TAG}]' heading."
+            echo "Releasing without one leaves integrators to read the diff."
+            exit 1
+          fi
+
+      # The suite runs on every push already; running it again here is the last
+      # gate before a version becomes permanent.
+      - name: Tests
+        run: vendor/bin/pest
