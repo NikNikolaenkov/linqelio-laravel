@@ -31,9 +31,14 @@ info:
   version: 0.1.0
   description: >
     Unified multi-channel messaging control plane. Errors are RFC 9457
-    problem+json with a machine `code` from the ADR-0013 registry. Commands are
-    idempotent via `Idempotency-Key`; lists are cursor-paginated; the version is
-    pinned in the path (`/v1`).
+    problem+json with a machine `code` from the ADR-0013 registry; lists are
+    cursor-paginated; the version is pinned in the path (`/v1`).
+
+    Idempotency is per-operation, not universal. An operation takes
+    `Idempotency-Key` only where its own `parameters` say so: sends require it,
+    channel provisioning accepts it, and the rest of the command surface does not
+    read the header at all. Do not infer from "this is a command" that a retry is
+    safe — check the operation.
   license:
     name: Proprietary
 
@@ -124,14 +129,25 @@ paths:
         connect command to begin pairing (a QR for wa_web, ADR-0013
         channel.pairing_required). Provisioning is authorized against the connect
         policy budget (ADR-0019 policy seam).
+
+        Accepts `Idempotency-Key` (optional). With a key, replaying the same
+        request returns the channel the first call created instead of provisioning
+        a second one; the same key with a DIFFERENT kind or label is
+        idempotency.key_reused (409). Without a key the call is not idempotent —
+        which is why an integrator whose write is interrupted between our answer
+        and their own commit is left with a channel they can neither adopt nor
+        delete (there is no delete; disconnect is not the same thing).
       tags:
         - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       x-error-codes:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
         - tenancy.cabinet_not_found
+        - idempotency.key_reused
         - policy.rule_blocked
         - policy.quota_exceeded
       requestBody:
@@ -142,7 +158,11 @@ paths:
               $ref: '#/components/schemas/CreateChannelRequest'
       responses:
         '201':
-          description: The channel was provisioned (disconnected until paired).
+          description: >
+            The channel was provisioned (disconnected until paired). A replay of
+            the same Idempotency-Key answers 201 with the ORIGINAL channel, so a
+            retry and a first call are indistinguishable to the caller — which is
+            the point.
           content:
             application/json:
               schema:
@@ -155,6 +175,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -2026,6 +2048,24 @@ components:
         minLength: 1
         maxLength: 255
 
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        The same key with the same three outcomes as the required form, but
+        optional on this operation: it was added after clients already existed,
+        and a suddenly-required header would break every one of them.
+
+        Omitting it means the command is NOT idempotent — a retry after a lost
+        response provisions a second resource, and the first one is
+        indistinguishable from it afterwards. Send a key on any call you would
+        retry.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
     Cursor:
       name: since
       in: query
@@ -2858,12 +2898,24 @@ components:
           items:
             type: string
           description: >
-            What this key may do. Defaults to ["*"], the whole cabinet. Name the
-            scopes instead when the holder needs less: an integration that only
-            sends messages has no business reading secret references.
+            What this key may do. Defaults to ["*"], the whole cabinet.
 
-            Note `platform:admin` and `secrets:read` are NOT implied by "*" and
-            must be granted explicitly.
+            ENFORCEMENT IS PARTIAL. Two scopes are actually checked:
+            `platform:admin` (the /cabinets surface and dead-letters) and
+            `secrets:read` (disclosure of the access pool's credentialsRef).
+            Neither is implied by "*"; both must be granted explicitly. Every
+            other operation authenticates the key and does not read its scopes at
+            all — so a key issued with a narrower list can still do everything
+            else inside its own cabinet.
+
+            Cabinet isolation does not depend on this: it is enforced by the
+            key's cabinet binding and Postgres RLS (ADR-0042), whatever the
+            scopes say.
+
+            Name the scopes you actually intend anyway. They are stored, listed
+            and audited, and they are what the enforcement seam
+            (`internal/authz`) will read once it exists. Until then, do not treat
+            a narrow list as a security boundary.
         label:
           type: string
           description: >

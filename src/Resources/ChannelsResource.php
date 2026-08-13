@@ -7,6 +7,7 @@ namespace Linqelio\Laravel\Resources;
 use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Channel;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
+use Linqelio\Laravel\Exceptions\IdempotencyException;
 
 final readonly class ChannelsResource
 {
@@ -21,17 +22,43 @@ final readonly class ChannelsResource
     }
 
     /**
+     * Provision a channel.
+     *
+     * Pass an $idempotencyKey whenever the create is worth retrying. The
+     * transport already sends a generated one, which protects nothing on its
+     * own: a retry mints a fresh key and provisions a second channel. And a
+     * channel you did not mean to create cannot be cleaned up — the platform
+     * has disconnect, not delete — so the duplicate stays in the cabinet.
+     *
+     * With a pinned key the retry replays: the platform answers with the
+     * channel the first attempt created. Derive it from whatever names the
+     * intent on your side, the way a queued send does:
+     *
+     *     $channel = Linqelio::channels()->create(
+     *         ChannelKind::TgBot,
+     *         'support',
+     *         IdempotencyKey::forSubject('channel', (string) $tenant->id, 'tg-support'),
+     *     );
+     *
+     * Reuse the SAME key on the retry. A key that already named a different
+     * kind or label is refused with `idempotency.key_reused`
+     * ({@see IdempotencyException}).
+     *
      * @param  string|null  $name  operator-facing label shown in the admin
      *                             channel list; `label` on the wire
+     * @param  string|null  $idempotencyKey  pin it to make a retry replay
+     *                                       instead of provisioning again
      */
-    public function create(ChannelKind $kind, ?string $name = null): Channel
+    public function create(ChannelKind $kind, ?string $name = null, ?string $idempotencyKey = null): Channel
     {
         $body = array_filter([
             'kind' => $kind->value,
             'label' => $name,
         ], static fn ($v): bool => $v !== null);
 
-        return Channel::fromArray($this->client->post('/channels', $body)->data);
+        $response = $this->client->post('/channels', $body, idempotencyKey: $idempotencyKey);
+
+        return Channel::fromArray($response->data);
     }
 
     /**

@@ -7,6 +7,34 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `channels()->create()` takes an optional `$idempotencyKey`. The platform now
+  reads the header on channel provisioning, so a retry carrying the same key
+  replays — it answers with the channel the first attempt created instead of
+  provisioning a second one.
+
+  Pin the key whenever the create is worth retrying. The transport has always
+  generated one, but a generated key protects nothing here: the retry mints a
+  fresh one and the platform sees a second, unrelated create. And a channel you
+  did not mean to create cannot be removed — the contract has disconnect, not
+  delete — so the duplicate stays in the cabinet.
+
+  A key that already named a different kind or label is refused with
+  `idempotency.key_reused` (`IdempotencyException`), rather than answered with
+  the first channel.
+
+  Nothing breaks if you ignore this: without a pinned key the call behaves
+  exactly as before.
+
+### Changed
+
+- `tests/Fixtures/openapi.yaml` refreshed from the platform contract. Besides
+  the channel parameter it carries two description fixes worth reading: the
+  spec no longer claims that all commands are idempotent (the header is
+  per-operation), and `scopes` on key issuance now states that only
+  `platform:admin` and `secrets:read` are actually enforced today.
+
 ## [0.4.0] - 2026-08-11
 
 ### Changed
