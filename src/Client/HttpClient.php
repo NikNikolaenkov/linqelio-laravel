@@ -36,7 +36,7 @@ final class HttpClient
      * to the one before it. VersionTest compares this against the newest release
      * in CHANGELOG.md and fails when they drift.
      */
-    public const VERSION = '0.5.0';
+    public const VERSION = '0.6.0';
 
     /**
      * @param  array{times:int, sleep:int}  $retry

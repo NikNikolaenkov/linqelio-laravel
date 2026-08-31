@@ -7,6 +7,31 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-31
+
+### Added
+
+- `Contact` carries `hostRefs`, with `hostRef('crm')` to read one back. They were
+  writable through `contacts()->update()` and unreadable from the result, so the
+  one question a link exists to answer — "is this person already my customer
+  4711?" — could not be asked of the object you were handed. Reading it back
+  needed a second call and a raw array.
+
+### Changed
+
+- `Contact::displayName()` falls back to an identity's `username` after its push
+  name. A Telegram account often carries nothing else, so the previous stop at
+  push name reported such a contact as nameless while the platform, whose own
+  fallback goes on to the handle, showed a name for the same person. Callers that
+  relied on `null` to mean "no name at all" now get the handle instead.
+
+- `contacts()->create()` documents what happens on an address that already
+  exists: attributes you pass are refreshed, ones you omit are left alone. This
+  matters more than it reads, because the call doubles as the address resolve
+  before a send, where all a caller has is the `providerId` — the platform now
+  treats an omitted field as "did not look" rather than "cleared", and an empty
+  string does not erase anything.
+
 ## [0.5.0] - 2026-08-13
 
 ### Added
@@ -225,7 +250,8 @@ the fixes landed:
 - Contract parity test: every operation is wrapped or explicitly excluded with a
   reason, and every error code in the contract exists in `ErrorCode`.
 
-[Unreleased]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NikNikolaenkov/linqelio-laravel/compare/v0.2.0...v0.3.0
