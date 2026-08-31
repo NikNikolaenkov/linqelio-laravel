@@ -22,6 +22,7 @@ final readonly class Contact
      * @param  array<int, Identity>  $identities
      * @param  array<string, mixed>  $profile
      * @param  array<string, mixed>  $custom
+     * @param  array<int, HostRef>  $hostRefs
      */
     public function __construct(
         public string $id,
@@ -30,6 +31,7 @@ final readonly class Contact
         public array $profile = [],
         public array $custom = [],
         public ?int $version = null,
+        public array $hostRefs = [],
     ) {}
 
     /**
@@ -44,6 +46,13 @@ final readonly class Contact
             }
         }
 
+        $hostRefs = [];
+        foreach ($data['hostRefs'] ?? [] as $ref) {
+            if (is_array($ref)) {
+                $hostRefs[] = HostRef::fromArray($ref);
+            }
+        }
+
         return new self(
             id: (string) ($data['id'] ?? ''),
             cabinetId: (string) ($data['cabinetId'] ?? ''),
@@ -51,7 +60,26 @@ final readonly class Contact
             profile: is_array($data['profile'] ?? null) ? $data['profile'] : [],
             custom: is_array($data['custom'] ?? null) ? $data['custom'] : [],
             version: isset($data['_meta']['version']) ? (int) $data['_meta']['version'] : null,
+            hostRefs: $hostRefs,
         );
+    }
+
+    /**
+     * The id this contact is linked to in one of your systems, if any.
+     *
+     * `hostRefs` were writable through `update()` and unreadable here, so the one
+     * question the link exists to answer — "is this person already my customer
+     * 4711?" — could not be asked of the object you got back.
+     */
+    public function hostRef(string $system): ?string
+    {
+        foreach ($this->hostRefs as $ref) {
+            if ($ref->system === $system) {
+                return $ref->externalId;
+            }
+        }
+
+        return null;
     }
 
     public function displayName(): ?string
@@ -64,6 +92,16 @@ final readonly class Contact
         foreach ($this->identities as $identity) {
             if ($identity->pushName !== null) {
                 return $identity->pushName;
+            }
+        }
+
+        // A handle is a poor name and a good deal better than none. Telegram
+        // accounts often carry nothing else, and stopping at push name left them
+        // reading as anonymous in every list built from this method — while the
+        // platform, whose own fallback goes on to the username, showed a name.
+        foreach ($this->identities as $identity) {
+            if ($identity->username !== null) {
+                return $identity->username;
             }
         }
 

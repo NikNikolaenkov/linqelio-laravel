@@ -84,6 +84,12 @@ final readonly class ContactsResource
      * duplicate. `providerId` defaults to the phone, which is how WhatsApp and
      * Viber address people; Telegram accounts get re-keyed to their numeric id
      * once the messenger resolves the number.
+     *
+     * On an address that already exists the attributes you pass are refreshed
+     * and the ones you omit are left alone. Because this call doubles as the
+     * address resolve people run before sending — where all you have is the
+     * `providerId` — omitting a field has to mean "I did not look", never "it is
+     * gone". Do not pass an empty string expecting it to clear anything.
      */
     public function create(
         ChannelKind $channelType,
