@@ -6,6 +6,7 @@ namespace Linqelio\Laravel\Resources;
 
 use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Channel;
+use Linqelio\Laravel\Data\ChannelDeletion;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
 use Linqelio\Laravel\Exceptions\IdempotencyException;
 
@@ -160,5 +161,30 @@ final readonly class ChannelsResource
     public function sync(string $id, array $options = []): array
     {
         return $this->client->post("/channels/{$id}/sync", $options)->data;
+    }
+
+    /**
+     * Retire a channel for good, with everything it carried.
+     *
+     * Deliberately NOT {@see self::disconnect()}: that closes the live link and
+     * keeps the channel, so it can be reconnected. This keeps nothing —
+     * conversations, their messages and attachments, outbound work still queued,
+     * and the channel's inbox on the operator desk go with it, and none of it
+     * comes back.
+     *
+     * The live session is torn down FIRST, and the call fails closed with
+     * `provider.unavailable` if it cannot be: after the row is gone there is no
+     * handle left to log that session out with, and a WhatsApp pairing would
+     * stay live with nothing on our side able to reach it. A channel that is
+     * already disconnected has no session to close, so disconnect first, then
+     * delete, is how to retire one whose provider is gone for good.
+     *
+     * Idempotent: an id that names nothing succeeds with
+     * {@see ChannelDeletion::wasAlreadyDeleted()} true, so a retry after a lost
+     * response is not an error.
+     */
+    public function delete(string $id): ChannelDeletion
+    {
+        return ChannelDeletion::fromArray($this->client->delete("/channels/{$id}")->data);
     }
 }

@@ -39,6 +39,7 @@ final class Contract
         'setChannelCredentials' => 'channels()->setCredentials()',
         'updateChannelSettings' => 'channels()->settings()',
         'syncChannel' => 'channels()->sync()',
+        'deleteChannel' => 'channels()->delete()',
 
         'listContacts' => 'contacts()->list()',
         'getContact' => 'contacts()->find()',
@@ -378,6 +379,9 @@ function contractDrivers(): array
             // The options are the caller's, passed through verbatim, so the
             // package makes no claim about this body and the gate checks none.
             'call' => fn (): array => Linqelio::channels()->sync('ch-1'),
+        ],
+        'deleteChannel' => [
+            'call' => fn () => Linqelio::channels()->delete('ch-1'),
         ],
 
         'listContacts' => [
