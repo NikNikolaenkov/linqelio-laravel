@@ -134,9 +134,9 @@ paths:
         request returns the channel the first call created instead of provisioning
         a second one; the same key with a DIFFERENT kind or label is
         idempotency.key_reused (409). Without a key the call is not idempotent —
-        which is why an integrator whose write is interrupted between our answer
-        and their own commit is left with a channel they can neither adopt nor
-        delete (there is no delete; disconnect is not the same thing).
+        so an integrator whose write is interrupted between our answer and their
+        own commit is left with a channel they cannot adopt. deleteChannel is the
+        way back out of that; the key is still the way to avoid needing it.
       tags:
         - channels
       parameters:
@@ -179,6 +179,71 @@ paths:
           $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+
+  /channels/{id}:
+    delete:
+      operationId: deleteChannel
+      summary: Delete a channel and the correspondence that belongs to it.
+      description: >
+        Removes the channel with its conversations, its messages and their
+        attachments, the queued outbound work that has not left yet, and the
+        inbox this channel owns on the operator desk — the desk conversations and
+        their message history go with it. This is the channel-level counterpart of
+        deleteCabinet, and it is not reversible.
+
+
+        It is deliberately NOT disconnect. Disconnect closes the live link and
+        keeps the channel, so it can be reconnected; this keeps nothing. And it is
+        deliberately not a plain row delete either: `messages.channel_id` is
+        ON DELETE SET NULL, so dropping the row would leave every message the
+        channel ever carried in place — bodies, chat ids and contact references
+        intact — attached to nothing and reachable by nothing. Deleting a channel
+        has to mean deleting what it carried, and this operation does.
+
+
+        The live session is torn down FIRST and the operation fails closed with
+        provider.unavailable (503) if it cannot be: after the row is gone there is
+        no handle left to log that session out with, so a WhatsApp pairing or a
+        Viber callback would stay live with nothing on our side able to reach it.
+        The same applies to the operator desk — an inbox we cannot delete while we
+        still know its id is an inbox whose history nobody can delete afterwards.
+        A channel that is already disconnected has no live session to close, so it
+        deletes whether or not the provider answers: disconnect first, then delete,
+        is the way to retire a channel whose provider is gone for good.
+
+
+        The audit trail is not touched. The cabinet outlives the channel, so
+        unlike a tenant offboarding nothing needs archiving — the record of this
+        deletion, with its counts, simply stays where every other entry is.
+
+
+        Requires the cabinet's own key; a channel outside the caller's cabinet is
+        invisible to it. IDEMPOTENT: an id that is already gone answers 200 with
+        zero counts and `deleted: false`, because the requested state — this
+        channel is not here — holds either way.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - tenancy.cross_cabinet_denied
+        - provider.unavailable
+      responses:
+        '200':
+          description: What the deletion removed (all zeros if nothing was left).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelDeletion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /channels/{id}/connect:
     post:
@@ -2779,6 +2844,61 @@ components:
       required:
         - items
 
+    ChannelDeletion:
+      type: object
+      description: >
+        What deleting a channel removed. Reported for the same reason
+        ErasureResult is: "we asked and it said nothing was there" and "it removed
+        a channel and 412 messages with it" are different facts, and after the
+        fact the only place either one is recorded is the caller's own log and
+        ours.
+      properties:
+        deleted:
+          type: boolean
+          description: >
+            true when a channel row was actually removed; false when the id named
+            nothing in this cabinet. Both are successful outcomes — the requested
+            state holds either way — so this is how a caller tells a deletion from
+            a replay of one.
+        conversations:
+          type: integer
+          description: Conversations removed with the channel.
+        messages:
+          type: integer
+          description: >
+            Messages removed. Found both by the channel and through its
+            conversations, because a message may carry either link and losing
+            one is not losing the other.
+        outbox:
+          type: integer
+          description: >
+            Queued outbound rows removed. Each holds its own full copy of the
+            envelope, and one still pending is an outbound message that will now
+            never be sent — which is the intended answer for a channel that is
+            being deleted.
+        media:
+          type: integer
+          description: >
+            Attachments queued for removal from the object store. Queued rather
+            than deleted inline: the object store is not in the deletion's
+            transaction, so the keys are committed with it and a background sweep
+            removes the bytes immediately afterwards.
+        deskInboxRemoved:
+          type: boolean
+          description: >
+            true when the channel's inbox on the operator desk was deleted, taking
+            the desk-side conversations and their message history with it. false
+            when the channel never had one, or no desk is configured — never when
+            a desk was configured and refused, which fails the whole operation
+            with provider.unavailable instead.
+      required:
+        - deleted
+        - conversations
+        - messages
+        - outbox
+        - media
+        - deskInboxRemoved
+
     CreateChannelRequest:
       type: object
       description: >
@@ -3292,6 +3412,18 @@ components:
           type: string
         caption:
           type: string
+        note:
+          type: boolean
+          description: >
+            Marks a message RECORDED in the client — a voice message or a video
+            note ("кружечок") — as opposed to an audio/video FILE that happens to
+            be attached. A presentation hint, not a payload type: it rides beside
+            `type` instead of becoming a MsgType member so that an adapter which
+            does not know it sends an ordinary audio/video rather than answering
+            `ErrPermanent`, which would drop the message entirely. Honoured on
+            tg_client for both forms and on tg_bot for voice only — the Bot API
+            refuses a URL for sendVideoNote, so a round frame degrades to a
+            plain video there.
       required:
         - url
 

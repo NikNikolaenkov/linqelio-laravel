@@ -7,6 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `MediaContent::$note` marks a message RECORDED in the client — a voice message
+  or a video note ("кружечок") — and is both read from an incoming message and
+  sent with an outgoing one. Such a message arrives as ordinary `audio`/`video`,
+  because that is what it is; without this flag an incoming round note was
+  indistinguishable from a clip somebody attached, and an outgoing one could not
+  be asked for at all. It stays a flag rather than a message type deliberately: a
+  type of its own would make every channel that has not learned it refuse the
+  message outright, while an unread flag costs only the shape. Telegram honours
+  both forms over a user account and the voice form over a bot; a round frame
+  degrades to a plain video there, because the Bot API will not take a URL for a
+  video note.
+
 ## [0.6.0] - 2026-08-31
 
 ### Added
