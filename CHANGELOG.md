@@ -9,6 +9,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `channels()->delete()` retires a channel with everything it carried —
+  conversations, their messages and attachments, outbound work still queued, and
+  the inbox the channel owns on the operator desk. The platform grew the
+  operation and this package neither wrapped nor excluded it, so the one way to
+  retire a channel was to leave the package and call the API by hand. It is
+  deliberately not `disconnect()`, which keeps the channel so it can be
+  reconnected; and it is idempotent, so an id that names nothing answers
+  `wasAlreadyDeleted()` rather than failing a retry.
+
 - `MediaContent::$note` marks a message RECORDED in the client — a voice message
   or a video note ("кружечок") — and is both read from an incoming message and
   sent with an outgoing one. Such a message arrives as ordinary `audio`/`video`,
