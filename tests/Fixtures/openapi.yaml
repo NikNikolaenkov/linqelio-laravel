@@ -24,6 +24,26 @@
 # self-cycles / undefined types. Physically splitting the files would require a
 # bundle step in the Taskfile/CI `gen` target (out of this slice's scope). See
 # the S0.2 report for details and remediation.
+#
+# --- On x-permission (ADR-0050 §4) ---------------------------------------------
+# EVERY operation declares `x-permission`. The control plane reads it from the
+# embedded copy of this document (api/permissions) and enforces it in a
+# middleware BEFORE the handler runs; the api/parity gate fails CI when an
+# operation has none or names an unknown value. There is no default: an
+# operation nobody classified is not served. Allowed values:
+#   - an internal/authz permission (`channels:read`, `channels:manage`,
+#     `messages:send`, `contacts:write`, `settings:manage`, `audit:read`, ...):
+#     checked against the caller's Principal (a client key today, a human
+#     session later — one type for both);
+#   - `platform:admin`: cross-tenant operator surface (tenants, their keys, the
+#     dead-letter queue spanning every tenant). The `platform:admin` key scope,
+#     which no cabinet permission — not even the "*" master key — implies;
+#   - `none`, together with a non-empty `x-permission-reason`: the operation is
+#     not authorized by a cabinet principal at all (the public health probe, the
+#     embed-token Plane B). `none` may not be put on an operation that accepts
+#     clientApiKey — it describes the credential, it is not a way around a check.
+# A permission-checked operation must also declare a 403 response and list
+# auth.forbidden_scope in x-error-codes: that is the refusal the middleware sends.
 openapi: 3.0.3
 
 info:
@@ -68,6 +88,9 @@ paths:
   /healthz:
     get:
       operationId: healthCheck
+      x-permission: none
+      x-permission-reason: >
+        Unauthenticated liveness/readiness probe: no credential, no cabinet, no data.
       summary: Liveness/readiness probe.
       description: Reports service health. Unauthenticated; safe to poll.
       tags:
@@ -97,6 +120,7 @@ paths:
   /channels:
     get:
       operationId: listChannels
+      x-permission: 'channels:read'
       summary: List channels configured in the cabinet.
       description: >
         Returns the channels visible in the caller's cabinet with their kind,
@@ -123,6 +147,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     post:
       operationId: createChannel
+      x-permission: 'channels:manage'
       summary: Provision a new channel in the cabinet.
       description: >
         Create a channel of the given kind. It starts disconnected; call the
@@ -183,6 +208,7 @@ paths:
   /channels/{id}:
     delete:
       operationId: deleteChannel
+      x-permission: 'channels:manage'
       summary: Delete a channel and the correspondence that belongs to it.
       description: >
         Removes the channel with its conversations, its messages and their
@@ -248,6 +274,7 @@ paths:
   /channels/{id}/connect:
     post:
       operationId: connectChannel
+      x-permission: 'channels:manage'
       summary: Start (or refresh) a channel's pairing session.
       description: >
         Begin connecting the channel. For QR channels (wa_web) this returns a
@@ -288,6 +315,7 @@ paths:
   /channels/{id}/credentials:
     put:
       operationId: setChannelCredentials
+      x-permission: 'channels:manage'
       summary: Set the channel's provider credential (write-only).
       description: >
         Store the channel's provider credential (e.g. a Telegram bot token or a
@@ -329,6 +357,7 @@ paths:
   /channels/{id}/sync:
     post:
       operationId: syncChannel
+      x-permission: 'channels:manage'
       summary: Import contacts (and request history) from the channel's source.
       description: >
         Backfill from the provider account itself: pulls the address book into
@@ -377,6 +406,7 @@ paths:
   /channels/{id}/settings:
     put:
       operationId: updateChannelSettings
+      x-permission: 'channels:manage'
       summary: Replace a channel's non-secret provider configuration.
       description: >
         Store the channel's provider *identifiers* — the values that come from
@@ -426,6 +456,7 @@ paths:
   /channels/{id}/disconnect:
     post:
       operationId: disconnectChannel
+      x-permission: 'channels:manage'
       summary: Disconnect a channel.
       description: >
         Tears the channel's live link down: wa_web logs the WhatsApp instance
@@ -459,6 +490,7 @@ paths:
   /channels/{id}/status:
     get:
       operationId: getChannelStatus
+      x-permission: 'channels:read'
       summary: Get a channel's live connection/pairing status.
       description: >
         Returns the channel's current connection state and, while pairing, the QR
@@ -502,6 +534,7 @@ paths:
   /cabinets:
     get:
       operationId: listCabinets
+      x-permission: 'platform:admin'
       summary: List all cabinets (platform admin).
       tags:
         - tenancy
@@ -522,6 +555,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createCabinet
+      x-permission: 'platform:admin'
       summary: Provision a new client cabinet (platform admin).
       description: >
         Creates an organization + cabinet pair for a new client. The cabinet is
@@ -557,6 +591,7 @@ paths:
   /cabinets/{id}:
     delete:
       operationId: deleteCabinet
+      x-permission: 'platform:admin'
       summary: Offboard a tenant — delete the cabinet and everything in it.
       description: >
         Removes the cabinet with its channels, users, memberships, API keys,
@@ -597,6 +632,7 @@ paths:
   /cabinets/{id}/keys:
     get:
       operationId: listCabinetKeys
+      x-permission: 'platform:admin'
       summary: List a cabinet's API keys (platform admin; never the secrets).
       tags:
         - tenancy
@@ -622,6 +658,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     post:
       operationId: issueCabinetKey
+      x-permission: 'platform:admin'
       summary: Issue a new API key for a cabinet (platform admin).
       description: >
         Mints a client bearer token for the cabinet. The secret is returned in
@@ -662,6 +699,7 @@ paths:
   /cabinets/{id}/keys/{kid}/rotate:
     post:
       operationId: rotateCabinetKey
+      x-permission: 'platform:admin'
       summary: Rotate a cabinet's API key with an overlap window (platform admin).
       description: >
         Mints a replacement and puts the outgoing key into a grace window instead
@@ -713,6 +751,7 @@ paths:
   /cabinets/{id}/keys/{kid}:
     delete:
       operationId: revokeCabinetKey
+      x-permission: 'platform:admin'
       summary: Revoke a cabinet's API key (platform admin).
       tags:
         - tenancy
@@ -740,12 +779,14 @@ paths:
   /webhooks:
     get:
       operationId: listWebhooks
+      x-permission: 'settings:manage'
       summary: List outbound webhook subscriptions in the cabinet.
       tags:
         - webhooks
       x-error-codes:
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -760,6 +801,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: registerWebhook
+      x-permission: 'settings:manage'
       summary: Register an outbound webhook subscription.
       description: >
         Subscribe an HTTPS endpoint to cabinet events (ADR-0031, ADR-0046).
@@ -783,6 +825,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
         # The signing key could not be generated or could not be written to the
         # secret store. Nothing is registered in that case: a subscription
         # holding a reference to a key that was never written would look
@@ -821,6 +864,7 @@ paths:
           type: string
     patch:
       operationId: updateWebhook
+      x-permission: 'settings:manage'
       summary: Enable or disable a webhook subscription.
       description: >
         Suspend delivery without losing the subscription — its url, event types
@@ -858,6 +902,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       operationId: deleteWebhook
+      x-permission: 'settings:manage'
       summary: Unsubscribe an endpoint permanently.
       description: >
         Remove the subscription. Without this a tenant cannot stop receiving
@@ -882,6 +927,7 @@ paths:
   /access-pool:
     get:
       operationId: listAccessPool
+      x-permission: 'channels:read'
       summary: List access-pool credentials for a channel kind.
       tags:
         - access-pool
@@ -895,6 +941,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
       responses:
         '200':
           description: The access-pool entries for the cabinet + kind.
@@ -910,6 +957,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: addAccessPoolEntry
+      x-permission: 'channels:manage'
       summary: Add a provider credential to the access pool.
       description: >
         Register an auth-out credential (ADR-0029). `credentialsRef` is a
@@ -920,6 +968,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
       requestBody:
         required: true
         content:
@@ -943,6 +992,7 @@ paths:
   /access-pool/{id}/health:
     put:
       operationId: setAccessPoolHealth
+      x-permission: 'channels:manage'
       summary: Set a pool entry's health, returning it to rotation or pulling it out.
       description: >
         A credential that fails a send with a permanent auth or ban error is
@@ -973,6 +1023,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
         - tenancy.cross_cabinet_denied
       responses:
         '204':
@@ -989,6 +1040,7 @@ paths:
   /access-pool/rotate:
     post:
       operationId: rotateAccessPool
+      x-permission: 'channels:manage'
       summary: Rotate the access pool for a channel kind (zero-downtime).
       description: >
         Promote the healthy `next` credential to active and retire the current
@@ -1000,6 +1052,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
       requestBody:
         required: true
         content:
@@ -1025,6 +1078,7 @@ paths:
   /dead-letters:
     get:
       operationId: listDeadLetters
+      x-permission: 'platform:admin'
       summary: List webhook deliveries the platform gave up on.
       description: >
         The dead-letter window (ADR-0031 §5). A delivery that exhausts its
@@ -1077,6 +1131,7 @@ paths:
   /dead-letters/{id}/replay:
     post:
       operationId: replayDeadLetter
+      x-permission: 'platform:admin'
       summary: Put a dead-lettered delivery back in the queue.
       description: >
         Requeues the delivery, due immediately, with its attempt counter reset so
@@ -1113,6 +1168,7 @@ paths:
   /audit:
     get:
       operationId: listAudit
+      x-permission: 'audit:read'
       summary: List the cabinet's audit log (append-only, newest first).
       description: >
         Query the cabinet's audit trail (ADR-0028). Optional `action` filters by
@@ -1146,6 +1202,7 @@ paths:
       x-error-codes:
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -1165,6 +1222,7 @@ paths:
   /contacts:
     get:
       operationId: listContacts
+      x-permission: 'channels:read'
       summary: List / poll contacts (cursor pagination).
       description: >
         Cursor-paginated pool of contacts (ADR-0008 §3 receive flow). Use `since`
@@ -1215,6 +1273,7 @@ paths:
   /media:
     post:
       operationId: uploadMedia
+      x-permission: 'messages:send'
       summary: Upload an attachment to send.
       description: >
         Stores a file in the platform's object store and returns the reference to
@@ -1273,6 +1332,7 @@ paths:
   /messages/{id}:
     get:
       operationId: getMessage
+      x-permission: 'channels:read'
       summary: Read one message and its current status.
       description: >
         The single-message read path. A send is accepted with 202 and reaches the
@@ -1317,6 +1377,7 @@ paths:
   /messages/{id}/media:
     get:
       operationId: getMessageMedia
+      x-permission: 'channels:read'
       summary: Download a message's media attachment.
       description: >
         Streams the attachment bytes of a media message THROUGH the platform. The
@@ -1358,6 +1419,7 @@ paths:
   /conversations:
     get:
       operationId: listConversations
+      x-permission: 'channels:read'
       summary: List the cabinet's conversations, most recently active first.
       description: >
         The dialog list: one row per conversation with its contact, channel kind,
@@ -1369,7 +1431,11 @@ paths:
         - name: channelId
           in: query
           required: false
-          description: Only conversations on this channel.
+          description: >
+            Only conversations on this channel. It can only NARROW the caller's
+            channel scope (ADR-0050): a channel outside it yields an empty page,
+            never a wider one. A caller scoped to several channels must name one
+            (validation.invalid_request otherwise).
           schema:
             type: string
         - name: status
@@ -1381,6 +1447,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       x-error-codes:
+        - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
@@ -1392,6 +1459,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversationList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1400,6 +1469,7 @@ paths:
   /conversations/{id}/feed:
     get:
       operationId: listConversationMessages
+      x-permission: 'channels:read'
       summary: Read one conversation's messages (admin).
       description: >
         Backward-paginated thread of a single conversation, oldest→newest within
@@ -1437,6 +1507,7 @@ paths:
   /contacts/create:
     post:
       operationId: createContact
+      x-permission: 'contacts:write'
       summary: Create a contact from a channel identity (idempotent).
       description: >
         Register a person the cabinet has not messaged yet — e.g. to start a
@@ -1484,6 +1555,7 @@ paths:
   /contacts/{id}/invite:
     post:
       operationId: createContactInvite
+      x-permission: 'contacts:write'
       summary: Mint a deep-link invite that opts a contact into a bot channel.
       description: >
         Bot channels cannot start a conversation (Telegram requires /start, Viber
@@ -1538,6 +1610,7 @@ paths:
   /contacts/{id}:
     get:
       operationId: getContact
+      x-permission: 'channels:read'
       summary: Fetch one contact by id.
       tags:
         - contacts
@@ -1564,6 +1637,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     patch:
       operationId: updateContact
+      x-permission: 'contacts:write'
       summary: Update host-owned contact fields.
       description: >
         Partial update of host-owned fields only — `hostRefs` and `custom`
@@ -1610,6 +1684,7 @@ paths:
   /contacts/{id}/erase:
     post:
       operationId: eraseContact
+      x-permission: 'compliance:manage'
       summary: Erase a person's data from the cabinet.
       description: >
         Remove the contact AND redact every trace of the person from the records
@@ -1661,6 +1736,7 @@ paths:
   /contacts/{id}/messages:
     get:
       operationId: listContactMessages
+      x-permission: 'channels:read'
       summary: Read a contact's message history (all channels).
       description: >
         Backward-paginated history of every message exchanged with the contact
@@ -1699,6 +1775,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     post:
       operationId: sendContactMessage
+      x-permission: 'messages:send'
       summary: Send an outbound message to a contact.
       description: >
         Enqueue an outbound message to the contact (ADR-0012 outbound flow). This
@@ -1768,6 +1845,7 @@ paths:
   /embed/session:
     post:
       operationId: createEmbedSession
+      x-permission: 'messages:send'
       summary: Initialize an embed widget session (M0 stub).
       description: >
         Init/token stub for the embeddable conversation widget (ADR-0007 /
@@ -1779,6 +1857,7 @@ paths:
         - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
+        - auth.forbidden_scope
         - embed.token_expired
         - embed.scope_violation
       requestBody:
@@ -1804,6 +1883,9 @@ paths:
   /embed/contacts/{id}:
     get:
       operationId: getEmbedContact
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
       summary: Read the embed-scoped contact.
       description: >
         Plane B (ADR-0009 §4): the widget hydrates the contact bound to its token
@@ -1835,6 +1917,9 @@ paths:
           $ref: '#/components/responses/NotFound'
     patch:
       operationId: patchEmbedContact
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
       summary: Patch host-owned custom fields of the embed-scoped contact.
       description: >
         Plane B (ADR-0009 §4): optimistic-concurrency write of host-owned custom
@@ -1886,6 +1971,9 @@ paths:
   /embed/contacts/{id}/conversations:
     post:
       operationId: startEmbedBotConversation
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
       summary: Start a bot conversation via deep-link (click-to-chat).
       description: >
         Plane B (ADR-0009 §6): bots cannot message first, so a bot session is
@@ -1933,6 +2021,9 @@ paths:
   /embed/conversations/{id}:
     get:
       operationId: getEmbedConversation
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
       summary: Read the embed-scoped conversation feed.
       description: >
         Plane B (ADR-0009 §5): the scoped, append-only message feed (cap
@@ -1979,6 +2070,9 @@ paths:
   /embed/conversations/{id}/messages:
     post:
       operationId: sendEmbedMessage
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
       summary: Send an outbound message from the widget.
       description: >
         Plane B (ADR-0009 §5): send a text message into the scoped conversation
@@ -2268,6 +2362,18 @@ components:
         - embed.field_ownership_denied
         - provider.upstream_error
         - provider.unavailable
+        # --- additive (ADR-0013 §4): appended, never reordered -----------------
+        # team.*: membership integrity (ADR-0050 §6, 409). Emitted by
+        # internal/authz.CheckMembershipChange; no team endpoint exists yet.
+        - team.last_org_owner
+        - team.last_cabinet_admin
+        - team.self_demotion_denied
+        # A typed contact field (ADR-0061) rejected a value: 422 with one
+        # errors[] entry per offending field.
+        - contact.field_invalid
+        # A settings write carried a stale version (If-Match) — 412. Reserved:
+        # the settings endpoint does not exist yet.
+        - settings.version_conflict
 
     ValidationError:
       type: object
@@ -2314,7 +2420,10 @@ components:
           description: Correlation id for logs/traces (ADR-0013 §1).
         errors:
           type: array
-          description: Field-level failures; present for validation.invalid_request.
+          description: >
+            Field-level failures; present for validation.invalid_request and
+            contact.field_invalid (one entry per offending field; `reason` is the
+            stable machine reason, e.g. `type_mismatch`, `not_in_enum`).
           items:
             $ref: '#/components/schemas/ValidationError'
       required:
@@ -3020,22 +3129,33 @@ components:
           description: >
             What this key may do. Defaults to ["*"], the whole cabinet.
 
-            ENFORCEMENT IS PARTIAL. Two scopes are actually checked:
-            `platform:admin` (the /cabinets surface and dead-letters) and
-            `secrets:read` (disclosure of the access pool's credentialsRef).
-            Neither is implied by "*"; both must be granted explicitly. Every
-            other operation authenticates the key and does not read its scopes at
-            all — so a key issued with a narrower list can still do everything
-            else inside its own cabinet.
+            ENFORCED ON EVERY OPERATION. Each operation declares an
+            `x-permission`, and the key's scopes are resolved into exactly that
+            vocabulary before the handler runs (ADR-0050 §4), so a narrow list is
+            now a real boundary rather than a label.
 
-            Cabinet isolation does not depend on this: it is enforced by the
-            key's cabinet binding and Postgres RLS (ADR-0042), whatever the
+            A scope is one of: `*` (everything inside this cabinet — the
+            cabinet_admin permission set, which does NOT include
+            `platform:admin` or `billing:manage`), `platform:admin` (the
+            cross-tenant operator surface: /cabinets, the keyring, dead
+            letters), `secrets:read` (disclosure of the access pool's
+            credentialsRef), or the exact name of a permission —
+            `channels:read`, `channels:manage`, `messages:send`,
+            `contacts:write`, `contacts:export`, `campaigns:manage`,
+            `policy:manage`, `team:manage`, `ai:manage`, `compliance:read`,
+            `compliance:manage`, `analytics:read`, `audit:read`,
+            `settings:manage`, `billing:manage`.
+
+            ANYTHING ELSE IS REFUSED with `validation.invalid_request`. An
+            unrecognised scope grants nothing, so a key carrying one would
+            authenticate, look correctly narrow in the key list and be unable to
+            call a single operation; the refusal names the scopes it did not
+            understand. Keys issued before this check are untouched — they keep
+            granting whatever their recognised scopes grant.
+
+            Cabinet isolation does not depend on any of this: it is enforced by
+            the key's cabinet binding and Postgres RLS (ADR-0042), whatever the
             scopes say.
-
-            Name the scopes you actually intend anyway. They are stored, listed
-            and audited, and they are what the enforcement seam
-            (`internal/authz`) will read once it exists. Until then, do not treat
-            a narrow list as a security boundary.
         label:
           type: string
           description: >
@@ -3070,7 +3190,10 @@ components:
           type: array
           items:
             type: string
-          description: Scopes for the replacement. Defaults to the outgoing key's.
+          description: >
+            Scopes for the replacement. Defaults to the outgoing key's. Same
+            vocabulary and the same refusal as `IssueApiKeyRequest.scopes`: a
+            rotation mints a key, so it is the same door.
         label:
           type: string
           description: Label for the replacement. Defaults to the outgoing key's.
@@ -3537,6 +3660,15 @@ components:
             than deleted inline: the object store is not in the erasure's
             transaction, so the keys are committed with the redaction and a
             background sweep removes the bytes immediately afterwards.
+        waLidPairs:
+          type: integer
+          description: >
+            WhatsApp lid↔phone pairs forgotten. WhatsApp discloses that a LID and
+            a phone number are the same person, and we remember it so the two
+            halves of a contact converge (ADR-0060 §5). That memory IS the phone
+            number, in its own table, reachable from the LID — so an erasure that
+            redacted every message and left it behind would have left the number
+            behind.
       required:
         - contacts
         - identities
@@ -3544,6 +3676,7 @@ components:
         - messages
         - outbox
         - media
+        - waLidPairs
 
     UpdateWebhookRequest:
       type: object
