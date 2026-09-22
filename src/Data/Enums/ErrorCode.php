@@ -50,6 +50,20 @@ enum ErrorCode: string
     case ContactMergeConflict = 'contact.merge_conflict';
     case ContactIdentityConflict = 'contact.identity_conflict';
     case ContactVersionConflict = 'contact.version_conflict';
+    /** A typed contact field failed validation; the problem carries errors[] per field. */
+    case ContactFieldInvalid = 'contact.field_invalid';
+
+    /**
+     * Membership integrity (409). The change would leave a cabinet or an
+     * organisation without an administrator, or would let someone lower their
+     * own role — an escalation path with nobody else in the loop.
+     */
+    case TeamLastOrgOwner = 'team.last_org_owner';
+    case TeamLastCabinetAdmin = 'team.last_cabinet_admin';
+    case TeamSelfDemotionDenied = 'team.self_demotion_denied';
+
+    /** A settings section was written from a stale version (412). */
+    case SettingsVersionConflict = 'settings.version_conflict';
 
     case EmbedTokenExpired = 'embed.token_expired';
     case EmbedScopeViolation = 'embed.scope_violation';
