@@ -34,6 +34,7 @@ enum ErrorCode: string
 
     case TenancyCabinetNotFound = 'tenancy.cabinet_not_found';
     case TenancyCrossCabinetDenied = 'tenancy.cross_cabinet_denied';
+    case TenancyQuotaExceeded = 'tenancy.quota_exceeded';
 
     case KeyringRotationOverlapRequired = 'keyring.rotation_overlap_required';
 
@@ -53,6 +54,9 @@ enum ErrorCode: string
     case MessageNotFound = 'message.not_found';
 
     case ConversationNotFound = 'conversation.not_found';
+    case WebhookNotFound = 'webhook.not_found';
+    case AccessPoolNotFound = 'accesspool.not_found';
+    case DeadLetterNotFound = 'deadletter.not_found';
 
     case IdempotencyKeyReused = 'idempotency.key_reused';
 

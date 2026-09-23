@@ -127,6 +127,12 @@ final class Contract
         'previewMembershipInvite' => 'human session only — x-permission self',
         'acceptMembershipInvite' => 'human session only — x-permission self',
 
+        // Cabinet settings (ADR-0057, issue #89): administered in the console.
+        // A key with settings:manage can call them, but no integration need
+        // exists yet; secrets there are write-only credentials of the cabinet.
+        'getSettingsSection' => 'console cabinet settings — no integration use case yet',
+        'putSettingsSection' => 'console cabinet settings — no integration use case yet',
+
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
         'listPlatformOperators' => 'platform:admin only',

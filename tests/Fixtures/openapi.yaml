@@ -178,6 +178,14 @@ paths:
         so an integrator whose write is interrupted between our answer and their
         own commit is left with a channel they cannot adopt. deleteChannel is the
         way back out of that; the key is still the way to avoid needing it.
+
+
+        Plan quota (ADR-0051 §3): channels are sold per kind, so a new channel
+        takes one `channels.<kind>` of the ORGANIZATION that owns the cabinet
+        (counted across all its cabinets). At the limit the create is refused
+        with 403 tenancy.quota_exceeded, whose `quota` member names the metric,
+        the limit and the current use. A replay of an Idempotency-Key is not a
+        new channel and is answered even at the limit.
       tags:
         - channels
       parameters:
@@ -195,6 +203,9 @@ paths:
         - idempotency.key_reused
         - policy.rule_blocked
         - policy.quota_exceeded
+        # R6-C (#33, ADR-0051 §3): the organization's plan allows no more
+        # channels of this kind (403; `quota` in the problem body).
+        - tenancy.quota_exceeded
       requestBody:
         required: true
         content:
@@ -280,6 +291,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - provider.unavailable
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: What the deletion removed (all zeros if nothing was left).
@@ -287,6 +300,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelDeletion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -320,6 +335,8 @@ paths:
         - channel.not_connected
         - channel.pairing_required
         - policy.rate_limited
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The current pairing/connection status (with QR if pairing).
@@ -327,6 +344,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -419,6 +438,8 @@ paths:
         - channel.not_found
         - channel.not_connected
         - channel.capability_unsupported
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: Import result.
@@ -426,6 +447,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyncResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -511,6 +534,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The channel's state after disconnecting.
@@ -518,6 +543,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -546,6 +573,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - channel.not_found
         - channel.not_connected
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The channel's current connection/pairing status.
@@ -553,6 +582,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -615,6 +646,9 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
+        # R6-C (#33, ADR-0051 §3): the organization's plan allows no more
+        # cabinets (403; `quota` in the problem body).
+        - tenancy.quota_exceeded
       requestBody:
         required: true
         content:
@@ -663,6 +697,7 @@ paths:
           description: The cabinet id.
           schema:
             type: string
+            format: uuid # issue #119: a malformed id is a 400 before any store/driver call
       x-error-codes:
         - auth.invalid_key
         - auth.key_expired
@@ -672,9 +707,13 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.cabinet_not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The cabinet is gone (whether or not it existed).
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -697,6 +736,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The cabinet's keys (hashes/secrets are never returned).
@@ -704,6 +745,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiKeyList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -829,9 +872,13 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.cabinet_not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The key was revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -935,6 +982,7 @@ paths:
         description: The webhook subscription id.
         schema:
           type: string
+          format: uuid # issue #119: a malformed id is a 400 before any store/driver call
     patch:
       operationId: updateWebhook
       x-permission: 'settings:manage'
@@ -944,6 +992,12 @@ paths:
         and signing secret survive, so re-enabling does not mean re-registering
         and re-sharing a key. Use this to stop a noisy or broken endpoint;
         use deleteWebhook to unsubscribe for good.
+
+        An id that names no subscription of this cabinet — unknown or another
+        cabinet's, indistinguishably — answers 404 `webhook.not_found` (before
+        issue #119 that 404 carried `tenancy.cross_cabinet_denied`; the status
+        is unchanged, so a client keyed on the status keeps working). A
+        malformed (non-uuid) id answers 400 `validation.invalid_request`.
       tags:
         - webhooks
       x-error-codes:
@@ -955,6 +1009,9 @@ paths:
         - auth.second_factor_required
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
+        # issue #119: an unknown or another cabinet's webhook id (it was
+        # answered tenancy.cross_cabinet_denied).
+        - webhook.not_found
       requestBody:
         required: true
         content:
@@ -995,9 +1052,13 @@ paths:
         - auth.second_factor_required
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The subscription is gone (whether or not it existed).
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1090,6 +1151,12 @@ paths:
         Setting `healthy` returns the entry to rotation; `degraded` and `banned`
         take it out. Audited either way: this decides which of a cabinet's
         credentials its messages leave through.
+
+        An id that names no pool entry of this cabinet — unknown or another
+        cabinet's, indistinguishably — answers 404 `accesspool.not_found`
+        (before issue #119 that 404 carried `tenancy.cross_cabinet_denied`; the
+        status is unchanged). A malformed (non-uuid) id answers 400
+        `validation.invalid_request`.
       tags:
         - access-pool
       parameters:
@@ -1099,6 +1166,7 @@ paths:
           description: The pool entry id.
           schema:
             type: string
+            format: uuid # issue #119: a malformed id is a 400 before any store/driver call
       requestBody:
         required: true
         content:
@@ -1114,6 +1182,9 @@ paths:
         - auth.second_factor_required
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
+        # issue #119: an unknown or another cabinet's pool entry id (it was
+        # answered tenancy.cross_cabinet_denied).
+        - accesspool.not_found
       responses:
         '204':
           description: The entry's health was updated.
@@ -1239,6 +1310,12 @@ paths:
         replaying twice is harmless and a replay cannot disturb one still being
         retried. Recorded in the audit trail — this sends traffic to somebody
         else's endpoint.
+
+        An id that names no failed delivery — unknown, or a delivery still being
+        retried or already delivered — answers 404 `deadletter.not_found`
+        (before issue #119 that 404 carried `provider.unavailable`; the status is
+        unchanged). A malformed (non-uuid) id answers 400
+        `validation.invalid_request` (it used to reach the database).
       tags:
         - webhooks
       parameters:
@@ -1247,6 +1324,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid # issue #119: a malformed id is a 400 before any store/driver call
       x-error-codes:
         - auth.invalid_key
         - auth.key_expired
@@ -1255,9 +1333,16 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
+        # issue #119: no failed delivery with that id (it was answered
+        # provider.unavailable).
+        - deadletter.not_found
       responses:
         '204':
           description: The delivery was requeued.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1382,6 +1467,7 @@ paths:
           description: The operator's account id.
           schema:
             type: string
+            format: uuid # issue #119: a malformed id is a 400 before any store/driver call
       x-error-codes:
         - auth.invalid_key
         - auth.key_expired
@@ -1392,9 +1478,13 @@ paths:
         - auth.origin_rejected
         - platform.operator_not_found
         - platform.last_operator
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The grant was revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1753,6 +1843,8 @@ paths:
         - tenancy.cross_cabinet_denied
         # issue #115: 404 for an unknown, foreign or out-of-scope conversation.
         - conversation.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: A page of the conversation's messages.
@@ -1760,6 +1852,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversationFeed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1894,6 +1988,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - contact.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The contact.
@@ -1901,6 +1997,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Contact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1996,6 +2094,8 @@ paths:
         - auth.second_factor_required
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: What the erasure touched (all zeros if nothing was left).
@@ -2003,6 +2103,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErasureResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2040,6 +2142,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - contact.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: A page of the contact's message history.
@@ -2047,6 +2151,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessageHistory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2192,6 +2298,8 @@ paths:
         - embed.token_expired
         - embed.scope_violation
         - contact.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The scoped contact.
@@ -2199,6 +2307,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Contact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2347,6 +2457,8 @@ paths:
         # issue #115: a missing conversation answers its own code (it was
         # contact.not_found).
         - conversation.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '200':
           description: The scoped conversation feed.
@@ -2354,6 +2466,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversationFeed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3196,9 +3310,13 @@ paths:
         - team.last_org_owner
         - team.last_cabinet_admin
         - team.self_demotion_denied
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The person is no longer a member of the cabinet.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3274,6 +3392,10 @@ paths:
         # R5-C (ADR-0076): the account is already a member here.
         - team.already_member
         - channel.not_found
+        # R6-C (#33, ADR-0051 §3): the person would take a seat the
+        # organization's plan does not have (403; `quota` in the problem body).
+        # Somebody who already holds a seat of the organization takes none.
+        - tenancy.quota_exceeded
         # The link's base (CONSOLE_PUBLIC_URL) is not configured: no link can be
         # built, so no invite is created.
         - provider.unavailable
@@ -3323,9 +3445,13 @@ paths:
         - tenancy.cross_cabinet_denied
         - team.invite_not_found
         - team.role_ceiling_exceeded
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
       responses:
         '204':
           description: The invite is revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3333,6 +3459,154 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
   # END team management (R4-T)
+
+  # ===========================================================================
+  # settings.yaml — cabinet settings, one SECTION at a time (issue #89, ADR-0057)
+  # ===========================================================================
+  # BEGIN R6-A cabinet settings (paths). Kept as one block so parallel contract
+  # work does not interleave with it; the schemas live in the matching
+  # "BEGIN R6-A schemas" block at the end of components.schemas.
+  #
+  # Both operations need `settings:manage` (held by org_owner, org_admin,
+  # cabinet_admin, platform_admin and keys carrying it, "*" included). READING
+  # is gated as tightly as writing on purpose: a section carries integration
+  # endpoints and account names (SMTP host and user, bucket, SIP account, desk
+  # URL) — the map of where a cabinet's credentials are used — and no role
+  # below cabinet_admin has a job that needs it. Widening read later is one
+  # additive permission; narrowing it once clients rely on it is not.
+  /settings/{section}:
+    parameters:
+      - name: section
+        in: path
+        required: true
+        description: The settings section (closed vocabulary, ADR-0057 §2).
+        schema:
+          $ref: '#/components/schemas/SettingsSection'
+    get:
+      operationId: getSettingsSection
+      x-permission: 'settings:manage'
+      summary: Read one section of the cabinet's settings.
+      description: >
+        Returns the section's non-secret values, a presence flag per secret key
+        (`secrets`: set / not set — never the value and never its secret-store
+        reference, ADR-0057 §4) and the section's `version`, also sent as the
+        `ETag` header (`"<version>"`).
+
+
+        A section that has never been written is not an error: it reads as an
+        empty `value` at version 0 — the version the first write then sends in
+        `If-Match`. A section name outside the vocabulary is a malformed request
+        (400): every listed section exists for every cabinet.
+      tags:
+        - settings
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The section, masked.
+          headers:
+            ETag:
+              description: The section version as a strong entity tag, e.g. `"3"`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CabinetSettingsSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: putSettingsSection
+      x-permission: 'settings:manage'
+      summary: Replace one section of the cabinet's settings.
+      description: >
+        Replaces the section's value, validated against the section's schema
+        (see `value` in PutSettingsSectionRequest). The write is guarded by
+        `If-Match: "<version>"` — the ETag / `version` of the section as last
+        read (`"0"` for a section never written). A stale version writes NOTHING
+        and answers 412 settings.version_conflict: re-read the section and
+        re-apply the edit.
+
+
+        Secret keys are WRITE-ONLY (ADR-0057 §4, the model of ADR-0046): a
+        string value is placed in the secret store FIRST and only its reference
+        is kept; the response carries `secrets.<key>: true`, never the value.
+        OMITTING a secret key keeps what is stored (the client never received
+        it, so it cannot resend it); an explicit `null` clears it. A
+        `secret://…` reference is never accepted as a value — for any key.
+
+
+        Every successful write is audited (`cabinet.settings`, with a diff in
+        which secrets appear only as "set"/"unset") and publishes the
+        `settings.updated` event carrying the cabinet, the section and the new
+        version — no values.
+      tags:
+        - settings
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: >
+            The section version the edit is based on, as the entity tag the read
+            returned (`"<version>"`; `"0"` for a section never written).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutSettingsSectionRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - settings.version_conflict
+        - provider.unavailable
+      responses:
+        '200':
+          description: The section after the write, masked.
+          headers:
+            ETag:
+              description: The new section version as a strong entity tag.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CabinetSettingsSection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '412':
+          description: >
+            The section changed since it was read (settings.version_conflict).
+            Nothing was written; re-read and re-apply.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # END R6-A cabinet settings (paths)
 
 components:
   # ===========================================================================
@@ -3405,25 +3679,28 @@ components:
       name: id
       in: path
       required: true
-      description: Contact identifier (our ULID).
+      description: Contact identifier (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
     ChannelId:
       name: id
       in: path
       required: true
-      description: Channel identifier (our ULID).
+      description: Channel identifier (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
     ConversationId:
       name: id
       in: path
       required: true
-      description: Conversation identifier (our ULID).
+      description: Conversation identifier (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
     CabinetPathId:
       name: id
@@ -3432,6 +3709,7 @@ components:
       description: Cabinet identifier (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
     SessionId:
       name: sessionId
@@ -3489,6 +3767,7 @@ components:
       description: The member's account id (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
     TeamInviteId:
       name: inviteId
       in: path
@@ -3496,6 +3775,7 @@ components:
       description: The invite id (uuid).
       schema:
         type: string
+        format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
     Cursor:
       name: since
@@ -3651,8 +3931,8 @@ components:
         # A typed contact field (ADR-0061) rejected a value: 422 with one
         # errors[] entry per offending field.
         - contact.field_invalid
-        # A settings write carried a stale version (If-Match) — 412. Reserved:
-        # the settings endpoint does not exist yet.
+        # A settings write carried a stale version (If-Match) — 412, emitted by
+        # putSettingsSection (issue #89, ADR-0057 §5).
         - settings.version_conflict
         # auth.*: human identity and sessions (ADR-0049). Login never says which
         # half of the credentials was wrong, nor whether the account exists.
@@ -3689,6 +3969,54 @@ components:
         # holds a membership reaching the cabinet.
         - team.invite_wrong_account
         - team.already_member
+        # --- issue #119: the remaining per-resource not-found (404) ------------
+        # A webhook subscription / access-pool entry id that names nothing in the
+        # cabinet — another cabinet's id answers exactly the same, never an
+        # oracle. Previously answered as tenancy.cross_cabinet_denied.
+        - webhook.not_found
+        - accesspool.not_found
+        # No dead-lettered (failed) delivery with that id: unknown, or not in the
+        # failed state. Previously answered as provider.unavailable.
+        - deadletter.not_found
+        # --- R6-C (issues #32/#33, ADR-0051 §3): plan quotas ---------------------
+        # A create would take the organization past a limit of its plan (with the
+        # manual override applied): 403, with the metric, the limit and the
+        # current use in the problem's `quota` member. Not policy.quota_exceeded:
+        # that one is a 429 of the send path, where waiting helps; a plan limit
+        # does not lift by waiting, and a client that retries a 429 would retry
+        # this one forever.
+        - tenancy.quota_exceeded
+
+    # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
+    QuotaExceeded:
+      type: object
+      description: >
+        Which limit refused the request (RFC 9457 extension member `quota`,
+        present only with tenancy.quota_exceeded). The refusal explains itself:
+        the client can tell the customer what to free or which plan to ask for
+        without contacting support.
+      properties:
+        metric:
+          type: string
+          description: >
+            The limited metric, in the form plans use: `cabinets`, `seats`, or
+            `channels.<kind>` (e.g. `channels.wa_web`).
+          example: channels.wa_web
+        limit:
+          type: integer
+          format: int64
+          description: The organization's effective limit (plan, with its manual override applied).
+          example: 3
+        used:
+          type: integer
+          format: int64
+          description: How much of it the organization uses now, across all its cabinets.
+          example: 3
+      required:
+        - metric
+        - limit
+        - used
+    # --- end R6-C ---------------------------------------------------------------
 
     ValidationError:
       type: object
@@ -3741,6 +4069,9 @@ components:
             stable machine reason, e.g. `type_mismatch`, `not_in_enum`).
           items:
             $ref: '#/components/schemas/ValidationError'
+        # R6-C (#33, ADR-0051 §3): present only with tenancy.quota_exceeded.
+        quota:
+          $ref: '#/components/schemas/QuotaExceeded'
       required:
         - type
         - title
@@ -5954,3 +6285,365 @@ components:
         - invitedBy
         - expiresAt
     # END R5-C schemas
+
+    # =========================================================================
+    # settings.yaml — cabinet settings (issue #89, ADR-0057). BEGIN R6-A schemas.
+    # =========================================================================
+    # One schema per section validates the `value` of putSettingsSection; the
+    # control plane validates against THESE definitions (read from the embedded
+    # contract), so the contract is the only place a section's shape is stated.
+    # Conventions shared by every section:
+    #   - closed (additionalProperties: false) and every key optional: a section
+    #     is replaced whole, and a key left out is simply not configured;
+    #   - a SECRET key is `writeOnly` (+ nullable): the client sends the value,
+    #     the platform stores it in the secret store and keeps a reference; reads
+    #     report it only in `secrets.<key>`. Omitted = keep, null = clear. The
+    #     write-only keys of each schema are exactly the secret keys the store
+    #     declares (internal/store/cabinetsettings.go) — a test holds them equal;
+    #   - no string anywhere may be a `secret://…` reference.
+    SettingsSection:
+      type: string
+      description: A section of cabinet settings (ADR-0057 §2). Closed vocabulary.
+      enum:
+        - ai
+        - ai_guard
+        - ai_profile
+        - compliance
+        - notifications
+        - exports
+        - calls
+        - messaging_defaults
+        - desk
+
+    CabinetSettingsSection:
+      type: object
+      description: >
+        One section as a client sees it: the non-secret values, a set / not-set
+        flag per secret key, and the version to send back in If-Match.
+      properties:
+        section:
+          $ref: '#/components/schemas/SettingsSection'
+        value:
+          type: object
+          additionalProperties: true
+          description: >
+            The section's non-secret keys, shaped by the section's schema
+            (AiSettings, NotificationsSettings, ...) minus its write-only keys.
+            `{}` for a section never written.
+        secrets:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: >
+            Every secret key of the section -> whether it is configured. The value
+            and its secret-store reference are never returned.
+        version:
+          type: integer
+          minimum: 0
+          description: 0 for a section never written; +1 on every write. Also the ETag.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the section was last written. Absent at version 0.
+        updatedBy:
+          type: string
+          description: >
+            The account id of the person who last wrote the section. Absent at
+            version 0 and for a write made with an API key (the audit trail names
+            the key).
+      required:
+        - section
+        - value
+        - secrets
+        - version
+
+    PutSettingsSectionRequest:
+      type: object
+      description: The whole new value of one section.
+      properties:
+        value:
+          type: object
+          additionalProperties: true
+          description: >
+            Validated against the section's schema: ai -> AiSettings, ai_guard ->
+            AiGuardSettings, ai_profile -> AiProfileSettings, compliance ->
+            ComplianceSettings, notifications -> NotificationsSettings, exports ->
+            ExportsSettings, calls -> CallsSettings, messaging_defaults ->
+            MessagingDefaultsSettings, desk -> DeskSettings. A failure is 400
+            validation.invalid_request with one errors[] entry per offending key.
+      required:
+        - value
+
+    AiSettings:
+      type: object
+      additionalProperties: false
+      description: The model provider binding.
+      properties:
+        provider:
+          type: string
+          enum: [openai, anthropic, azure_openai, google, openai_compatible]
+        model:
+          type: string
+          minLength: 1
+          maxLength: 200
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https?://'
+          description: Only for a self-hosted or compatible endpoint.
+        api_key:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+          description: Write-only. Omit to keep, null to clear.
+
+    AiGuardSettings:
+      type: object
+      additionalProperties: false
+      description: What the assistant is not allowed to do, and when it hands over.
+      properties:
+        blocked_topics:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        escalation_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Confidence below which a conversation is handed to a person.
+        moderation_provider:
+          type: string
+          minLength: 1
+          maxLength: 100
+        api_key:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+          description: The moderation provider's key. Write-only.
+
+    AiProfileSettings:
+      type: object
+      additionalProperties: false
+      description: Who the assistant is.
+      properties:
+        persona:
+          type: string
+          maxLength: 4000
+        tone:
+          type: string
+          enum: [neutral, friendly, formal, concise]
+        languages:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+          description: BCP 47 language tags, e.g. uk, en, pt-BR.
+
+    ComplianceSettings:
+      type: object
+      additionalProperties: false
+      description: Retention and consent wording.
+      properties:
+        retention_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: How long conversation history is kept.
+        consent_text:
+          type: string
+          maxLength: 4000
+
+    NotificationsSettings:
+      type: object
+      additionalProperties: false
+      description: Where operational notices go — mail, a webhook, a Telegram chat.
+      properties:
+        email_to:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 320
+            pattern: '^[^@\s]+@[^@\s]+$'
+        from_email:
+          type: string
+          maxLength: 320
+          pattern: '^[^@\s]+@[^@\s]+$'
+        smtp_host:
+          type: string
+          minLength: 1
+          maxLength: 253
+        smtp_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        smtp_username:
+          type: string
+          maxLength: 320
+        smtp_password:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        webhook_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https?://'
+        webhook_secret:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        telegram_chat_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        telegram_bot_token:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+
+    ExportsSettings:
+      type: object
+      additionalProperties: false
+      description: The destination and format of data exports.
+      properties:
+        destination:
+          type: string
+          enum: [s3, sftp]
+        format:
+          type: string
+          enum: [csv, jsonl]
+        s3_endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https?://'
+        s3_bucket:
+          type: string
+          minLength: 1
+          maxLength: 255
+        s3_region:
+          type: string
+          maxLength: 64
+        s3_access_key_id:
+          type: string
+          maxLength: 256
+        s3_secret_key:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        sftp_host:
+          type: string
+          minLength: 1
+          maxLength: 253
+        sftp_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        sftp_username:
+          type: string
+          maxLength: 320
+        sftp_password:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        sftp_path:
+          type: string
+          maxLength: 1024
+
+    CallsSettings:
+      type: object
+      additionalProperties: false
+      description: Telephony — the provider binding and recording.
+      properties:
+        provider:
+          type: string
+          minLength: 1
+          maxLength: 100
+        sip_uri:
+          type: string
+          maxLength: 2048
+          pattern: '^sips?:'
+        sip_username:
+          type: string
+          maxLength: 320
+        sip_password:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        provider_token:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+        recording_enabled:
+          type: boolean
+
+    MessagingDefaultsSettings:
+      type: object
+      additionalProperties: false
+      description: What a send inherits when it says nothing — signature, locale, quiet hours.
+      properties:
+        signature:
+          type: string
+          maxLength: 1000
+        locale:
+          type: string
+          pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+        quiet_hours_start:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: HH:MM, local to `timezone`.
+        quiet_hours_end:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        timezone:
+          type: string
+          maxLength: 64
+          description: IANA time zone name, e.g. Europe/Kyiv.
+
+    DeskSettings:
+      type: object
+      additionalProperties: false
+      description: The operator desk binding (ADR-0053).
+      properties:
+        provider:
+          type: string
+          enum: [chatwoot]
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          pattern: '^https?://'
+        account_id:
+          type: integer
+          minimum: 1
+        api_token:
+          type: string
+          writeOnly: true
+          nullable: true
+          minLength: 1
+          maxLength: 4096
+    # END R6-A schemas
