@@ -23,6 +23,14 @@ enum ErrorCode: string
     case AuthInvalidKey = 'auth.invalid_key';
     case AuthKeyExpired = 'auth.key_expired';
     case AuthForbiddenScope = 'auth.forbidden_scope';
+    case AuthInvalidCredentials = 'auth.invalid_credentials';
+    case AuthAccountLocked = 'auth.account_locked';
+    case AuthSessionInvalid = 'auth.session_invalid';
+    case AuthOriginRejected = 'auth.origin_rejected';
+    case AuthTokenInvalid = 'auth.token_invalid';
+    case AuthSecondFactorRequired = 'auth.second_factor_required';
+    case AuthSecondFactorInvalid = 'auth.second_factor_invalid';
+    case AuthSecondFactorConflict = 'auth.second_factor_conflict';
 
     case TenancyCabinetNotFound = 'tenancy.cabinet_not_found';
     case TenancyCrossCabinetDenied = 'tenancy.cross_cabinet_denied';

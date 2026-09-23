@@ -33,8 +33,8 @@
 # operation nobody classified is not served. Allowed values:
 #   - an internal/authz permission (`channels:read`, `channels:manage`,
 #     `messages:send`, `contacts:write`, `settings:manage`, `audit:read`, ...):
-#     checked against the caller's Principal (a client key today, a human
-#     session later — one type for both);
+#     checked against the caller's Principal (a client key or a human session —
+#     one type for both);
 #   - `platform:admin`: cross-tenant operator surface (tenants, their keys, the
 #     dead-letter queue spanning every tenant). The `platform:admin` key scope,
 #     which no cabinet permission — not even the "*" master key — implies;
@@ -42,7 +42,12 @@
 #     not authorized by a cabinet principal at all (the public health probe, the
 #     embed-token Plane B). `none` may not be put on an operation that accepts
 #     clientApiKey — it describes the credential, it is not a way around a check.
-# A permission-checked operation must also declare a 403 response and list
+#   - `self`, together with `x-permission-reason`: the operation acts on the
+#     CALLER'S OWN account (/auth/me, own sessions, own second factor). The
+#     middleware requires a valid session cookie and consults no role; it must
+#     accept sessionCookie and must not accept clientApiKey (a key has no person).
+# A permission-checked operation must accept BOTH clientApiKey and sessionCookie
+# (the middleware takes either), declare a 403 response and list
 # auth.forbidden_scope in x-error-codes: that is the refusal the middleware sends.
 openapi: 3.0.3
 
@@ -66,8 +71,12 @@ servers:
   - url: /v1
     description: Version 1 (path-versioned; breaking changes ship as /v2).
 
+# Either credential authorizes a cabinet operation: an API key, or a person's
+# session cookie (+ the X-Linqelio-Cabinet header; see sessionCookie). Both
+# become the same Principal before the x-permission check (ADR-0050 §3).
 security:
   - clientApiKey: []
+  - sessionCookie: []
 
 tags:
   - name: health
@@ -80,6 +89,8 @@ tags:
     description: Outbound message commands.
   - name: embed
     description: Embeddable conversation widget sessions (ADR-0007/0009).
+  - name: auth
+    description: Human identity — login, sessions, invites, password reset, second factor (ADR-0049).
 
 paths:
   # ===========================================================================
@@ -131,6 +142,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -171,6 +185,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
         - idempotency.key_reused
         - policy.rule_blocked
@@ -255,6 +273,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - provider.unavailable
       responses:
@@ -289,6 +310,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
         - channel.not_connected
@@ -334,6 +358,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
       requestBody:
@@ -383,6 +410,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
         - channel.not_connected
@@ -429,6 +459,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
       requestBody:
@@ -471,6 +504,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
       responses:
@@ -503,6 +539,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - channel.not_found
         - channel.not_connected
@@ -542,6 +580,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
       responses:
         '200':
           description: All cabinets on the platform.
@@ -568,6 +609,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
       requestBody:
         required: true
         content:
@@ -620,6 +665,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
       responses:
         '204':
@@ -642,6 +691,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -679,6 +731,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
       responses:
         '201':
@@ -730,6 +786,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
         - keyring.rotation_overlap_required
       responses:
@@ -762,6 +822,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
       responses:
         '204':
@@ -787,6 +851,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -826,6 +893,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         # The signing key could not be generated or could not be written to the
         # secret store. Nothing is registered in that case: a subscription
         # holding a reference to a key that was never written would look
@@ -878,6 +949,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
       requestBody:
         required: true
@@ -915,6 +989,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
       responses:
         '204':
@@ -942,6 +1019,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
       responses:
         '200':
           description: The access-pool entries for the cabinet + kind.
@@ -969,6 +1049,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
       requestBody:
         required: true
         content:
@@ -1024,6 +1108,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
       responses:
         '204':
@@ -1053,6 +1140,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
       requestBody:
         required: true
         content:
@@ -1116,6 +1207,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
       responses:
         '200':
           description: Dead-lettered deliveries, newest first.
@@ -1155,6 +1249,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
       responses:
         '204':
           description: The delivery was requeued.
@@ -1203,6 +1301,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -1248,6 +1349,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -1308,6 +1412,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - message.too_large
       responses:
         '201':
@@ -1358,6 +1466,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - message.not_found
       responses:
@@ -1399,6 +1509,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - message.not_found
       responses:
@@ -1451,6 +1563,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
         - tenancy.cabinet_not_found
       responses:
         '200':
@@ -1489,6 +1604,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
       responses:
         '200':
@@ -1524,6 +1641,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - tenancy.cabinet_not_found
         - contact.identity_conflict
       requestBody:
@@ -1581,6 +1702,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - contact.not_found
         - channel.not_found
@@ -1620,6 +1744,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - contact.not_found
       responses:
@@ -1658,6 +1784,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - contact.not_found
         - contact.identity_conflict
@@ -1717,6 +1846,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
       responses:
         '200':
@@ -1758,6 +1890,8 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - contact.not_found
       responses:
@@ -1798,6 +1932,9 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - contact.not_found
         - channel.not_connected
@@ -1858,6 +1995,10 @@ paths:
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
         - embed.token_expired
         - embed.scope_violation
       requestBody:
@@ -2126,6 +2267,472 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  # ===========================================================================
+  # auth.yaml — human identity and sessions (ADR-0049)
+  # ===========================================================================
+  # Two kinds of operation live here, and x-permission says which:
+  #   - `none`: BEFORE a session exists (login, logout, invite acceptance,
+  #     password reset). No cabinet principal can authorize them — there is no
+  #     caller yet — and they accept no credential (security: []).
+  #   - `self`: the caller's OWN account (/auth/me, sessions, second factor).
+  #     The middleware requires a valid session cookie and nothing else: these act
+  #     on the person, not on a cabinet, so no role is consulted — a person with
+  #     no membership at all must still be able to see who they are, log out
+  #     their other devices and turn on 2FA. An API key is refused: it has no
+  #     person behind it to be "self".
+  # Every unsafe request that does not carry an Authorization header is subject
+  # to the Origin check described on the sessionCookie scheme.
+  /auth/login:
+    post:
+      operationId: login
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: this operation is how a person obtains a session in the first place, so no cabinet principal exists to authorize it. The password (and second factor) in the body is the credential, verified by internal/authn with lockout.
+      summary: Log in with email and password (and the second factor when enabled).
+      description: >
+        Verifies the password and, on success, opens a server-side session and
+        sets it as an httpOnly, Secure, SameSite=Strict cookie
+        (`__Host-linqelio_session`, Path=/, expiring with the session — 12 h).
+        The cookie value is never returned in the body and only its sha256 is
+        stored (ADR-0049 §2).
+
+
+        Second factor: when the account has TOTP enabled and the body carries no
+        code, the answer is 202 with `secondFactorRequired` and NO session. The
+        client re-posts the same body with `totpCode` (or, when the authenticator
+        is lost, `recoveryCode`). There is deliberately no half-authenticated
+        server state between the two posts: every code attempt re-proves the
+        password, and a wrong code counts toward the lockout exactly like a wrong
+        password.
+
+
+        Lockout: 5 failed attempts lock the account for 15 minutes (423). An
+        unknown email, a wrong password, an account without a password and a
+        blocked account all answer the same 401 auth.invalid_credentials.
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_credentials
+        - auth.second_factor_invalid
+        - auth.account_locked
+        - auth.origin_rejected
+      responses:
+        '200':
+          description: Logged in. The session cookie is set.
+          headers:
+            Set-Cookie:
+              description: The session cookie (`__Host-linqelio_session=...; Path=/; Secure; HttpOnly; SameSite=Strict`).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResult'
+        '202':
+          description: Password accepted; the second factor is required. No session was opened.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecondFactorChallenge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '423':
+          $ref: '#/components/responses/Locked'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      x-permission: none
+      x-permission-reason: >
+        Logout must succeed whatever state the cookie is in (valid, expired, revoked or garbage) and always clears it; requiring a valid session would make logout an oracle for cookie validity and strand a dead cookie in the browser. It revokes only the session the cookie itself names.
+      summary: Log out — revoke the current session and clear the cookie.
+      description: >
+        Revokes the session named by the request's cookie (if any) and answers
+        with an expired cookie. Always 204: an unknown or already-dead cookie is
+        not an error.
+      tags:
+        - auth
+      security: []
+      x-error-codes:
+        - auth.origin_rejected
+      responses:
+        '204':
+          description: Logged out; the cookie is cleared.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/me:
+    get:
+      operationId: getMe
+      x-permission: self
+      x-permission-reason: >
+        Describes the caller's own account, which every person with a live session may read regardless of role — including a person with no membership at all, who must be able to see that they have none. A cabinet permission would lock exactly that person out.
+      summary: Who am I — account, memberships and effective rights.
+      description: >
+        Returns the account behind the session, every membership it holds, and —
+        when a cabinet is selected (the `X-Linqelio-Cabinet` header, or the only
+        cabinet the person belongs to) — the effective roles, permissions and
+        channel scope in that cabinet, computed exactly as the authorization
+        middleware computes them. A selected cabinet the person is not a member
+        of is refused (403 tenancy.cross_cabinet_denied) rather than silently
+        ignored.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/sessions:
+    get:
+      operationId: listMySessions
+      x-permission: self
+      x-permission-reason: >
+        Lists only the caller's own sessions (the account is taken from the session, never from the request). Seeing where you are logged in is a right of the person, not of a cabinet role.
+      summary: List my live sessions.
+      description: >
+        Every live (not revoked, not expired) session of the caller's account,
+        newest first, with the current one marked. Session ids are sha256
+        digests of the cookie — enough to revoke a session, useless for
+        replaying one.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+      responses:
+        '200':
+          description: The caller's sessions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sessions/{sessionId}:
+    delete:
+      operationId: revokeMySession
+      x-permission: self
+      x-permission-reason: >
+        Revokes one of the caller's own sessions ("log out that other device"). Ownership is checked against the account behind the session; another person's session id answers 404, the same as an unknown one.
+      summary: Revoke one of my sessions.
+      description: >
+        Revokes the named session of the caller's own account. Takes effect on
+        this replica at once and on every replica within the 30 s session cache
+        (ADR-0049 §2). Revoking the current session is allowed and equals logout
+        (the cookie is cleared).
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      x-error-codes:
+        - auth.session_invalid
+        - auth.origin_rejected
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The session is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/invites/accept:
+    post:
+      operationId: acceptInvite
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: the invited person has no password and no session yet. The single-use invite token from the email is the credential, verified by internal/authn.
+      summary: Accept an invite and choose a password.
+      description: >
+        Redeems a single-use invite token (72 h) and sets the password the person
+        chose — a password is never generated for anyone and never mailed
+        (ADR-0049 §3). Does not log in: the person logs in next, which is also
+        where a mandatory second factor is enrolled. A weak password is refused
+        BEFORE the token is spent.
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenPasswordRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.token_invalid
+        - auth.origin_rejected
+      responses:
+        '204':
+          description: The account is active with the chosen password.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/password-reset:
+    post:
+      operationId: requestPasswordReset
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: a person who forgot their password has no credential. The answer is identical whether or not the address has an account, so the operation grants nothing and discloses nothing.
+      summary: Request a password-reset link.
+      description: >
+        Always answers 202 with no body, whether or not the address belongs to an
+        account — and the answer does not wait for the lookup: the token is issued
+        and the mail sent asynchronously, so neither the status nor the response
+        time says whether the account exists. The link (1 h, single use) goes
+        only to the account's own mailbox.
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.origin_rejected
+      responses:
+        '202':
+          description: If the address is registered, a reset link is on its way.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: the single-use reset token from the email is the credential, verified by internal/authn.
+      summary: Set a new password with a reset token.
+      description: >
+        Redeems a reset token and sets the new password. Every session of the
+        account is revoked: a reset usually means somebody else may know the old
+        password, and their session must not outlive it.
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenPasswordRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.token_invalid
+        - auth.origin_rejected
+      responses:
+        '204':
+          description: The password is changed and every session revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/second-factor/totp/enrollment:
+    post:
+      operationId: startTotpEnrollment
+      x-permission: self
+      x-permission-reason: >
+        Enrols a second factor on the caller's own account. Any person may protect their own account, and org_owner / platform_admin must be able to do it before holding any cabinet right (ADR-0049 §4 makes 2FA mandatory for them).
+      summary: Start TOTP enrolment — get a fresh seed to scan.
+      description: >
+        Generates a new TOTP seed, stores it in the secret store (never in the
+        database, ADR-0049 §4) and returns it once, with an otpauth:// URI for the
+        client to render as a QR code LOCALLY — never through a third-party QR
+        service. Nothing changes on the account until enableTotp confirms a code
+        read from the seed.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.second_factor_conflict
+      responses:
+        '201':
+          description: A fresh seed, pending confirmation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpEnrollment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/second-factor/totp/enable:
+    post:
+      operationId: enableTotp
+      x-permission: self
+      x-permission-reason: >
+        Turns the second factor on for the caller's own account; the enrolment it confirms is bound to that account server-side.
+      summary: Confirm enrolment with a code and turn TOTP on.
+      description: >
+        Checks the code against the seed of the named enrolment and turns the
+        second factor on. Returns the recovery codes — the ONLY time they exist in
+        plaintext: show them once. A wrong code is refused but does not count
+        toward the lockout (a mis-scan, not a guess). Sessions opened from now on
+        must pass the factor; the current one keeps its state.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnableTotpRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.second_factor_invalid
+        - auth.second_factor_conflict
+      responses:
+        '200':
+          description: TOTP is on. The recovery codes, shown once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodes'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/second-factor/totp/disable:
+    post:
+      operationId: disableTotp
+      x-permission: self
+      x-permission-reason: >
+        Turns the second factor off for the caller's own account, and only with a CURRENT code: a session alone — possibly a stolen cookie — must not be enough to strip the factor (ADR-0049 §4).
+      summary: Turn TOTP off (requires a current code).
+      description: >
+        Requires a current TOTP code; a recovery code is not accepted here (it is
+        a way back in, not a way to remove the factor). A wrong code counts
+        toward the lockout; once locked, even the right code is refused (423).
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecondFactorCode'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.second_factor_invalid
+        - auth.second_factor_conflict
+        - auth.account_locked
+      responses:
+        '204':
+          description: TOTP is off and the recovery codes are deleted.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '423':
+          $ref: '#/components/responses/Locked'
+
+  /auth/second-factor/recovery-codes:
+    post:
+      operationId: regenerateRecoveryCodes
+      x-permission: self
+      x-permission-reason: >
+        Replaces the recovery codes of the caller's own account, and only with a current TOTP code, for the same reason disableTotp requires one.
+      summary: Replace my recovery codes (requires a current code).
+      description: >
+        Every old code dies; the new set is returned once. A wrong code counts
+        toward the lockout.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecondFactorCode'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.second_factor_invalid
+        - auth.second_factor_conflict
+        - auth.account_locked
+      responses:
+        '200':
+          description: The new recovery codes, shown once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodes'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '423':
+          $ref: '#/components/responses/Locked'
+
 components:
   # ===========================================================================
   # Security
@@ -2148,6 +2755,38 @@ components:
         and a capability set (cap[]). The widget is its ONLY holder — the host page
         never sees it. Distinct from clientApiKey: it authorizes ONLY the /embed/*
         Plane-B surface, scoped to a single contact.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-linqelio_session
+      description: >
+        A person's server-side session (ADR-0049), set by POST /auth/login:
+        httpOnly, Secure, SameSite=Strict, Path=/, expiring with the session
+        (12 h). Only its sha256 is stored; blocking the account or revoking the
+        session takes effect within the 30 s session cache.
+
+
+        Precedence: an `Authorization` header always wins. A request that carries
+        one is authenticated by it alone — an invalid key is a 401, never a fall
+        back to the cookie.
+
+
+        Cabinet: a session belongs to a PERSON, who may be a member of several
+        cabinets, so a cabinet operation names the cabinet in the
+        `X-Linqelio-Cabinet` request header (a cabinet id). It is checked against
+        the person's memberships on every request; a cabinet they are not a
+        member of is 403 tenancy.cross_cabinet_denied. The header may be omitted
+        only when the person belongs to exactly one cabinet. The person's rights
+        there are their role(s) — and, for an agent, only their assigned
+        channels.
+
+
+        Cross-site requests: an unsafe request (anything but GET/HEAD/OPTIONS)
+        WITHOUT an Authorization header must come from the console's own origin —
+        a browser's `Sec-Fetch-Site`/`Origin` naming another site is refused with
+        403 auth.origin_rejected. SameSite=Strict already keeps the cookie off
+        cross-site requests; this closes the same-SITE gap (a sibling subdomain
+        is same-site) and login CSRF, where no cookie is involved at all.
 
   # ===========================================================================
   # params.yaml — reusable parameters (path/query/header)
@@ -2184,6 +2823,15 @@ components:
       description: Cabinet identifier (uuid).
       schema:
         type: string
+
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: A session id as listMySessions reports it (the sha256 hex of the cookie).
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
 
     KeyKid:
       name: kid
@@ -2265,7 +2913,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     Unauthorized:
-      description: Missing, invalid, or expired client API key.
+      description: Missing, invalid, or expired client API key or session.
       content:
         application/problem+json:
           schema:
@@ -2296,6 +2944,14 @@ components:
             $ref: '#/components/schemas/Problem'
     UnprocessableEntity:
       description: Well-formed but semantically unsupported by the target channel/type.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Locked:
+      description: >
+        The account is temporarily locked after repeated failed attempts
+        (auth.account_locked, ADR-0049 §3: 5 failures -> 15 minutes).
       content:
         application/problem+json:
           schema:
@@ -2374,6 +3030,16 @@ components:
         # A settings write carried a stale version (If-Match) — 412. Reserved:
         # the settings endpoint does not exist yet.
         - settings.version_conflict
+        # auth.*: human identity and sessions (ADR-0049). Login never says which
+        # half of the credentials was wrong, nor whether the account exists.
+        - auth.invalid_credentials
+        - auth.second_factor_invalid
+        - auth.second_factor_conflict
+        - auth.account_locked
+        - auth.session_invalid
+        - auth.token_invalid
+        - auth.origin_rejected
+        - auth.second_factor_required
 
     ValidationError:
       type: object
@@ -3950,3 +4616,294 @@ components:
             $ref: '#/components/schemas/AuditEntry'
       required:
         - items
+
+    # =========================================================================
+    # auth.yaml — human identity and sessions (ADR-0049)
+    # =========================================================================
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          minLength: 1
+          maxLength: 320
+        password:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        totpCode:
+          type: string
+          description: The current TOTP code. Omit on the first post; send it after a 202.
+          maxLength: 16
+        recoveryCode:
+          type: string
+          description: >
+            A single-use recovery code, INSTEAD of totpCode when the authenticator
+            is lost. Ignored when totpCode is also present (no code is burned).
+          maxLength: 64
+      required:
+        - email
+        - password
+    SecondFactorChallenge:
+      type: object
+      description: The password was right; post again with a second-factor code.
+      properties:
+        secondFactorRequired:
+          type: boolean
+        methods:
+          type: array
+          description: The codes the next post may carry.
+          items:
+            type: string
+            enum:
+              - totp
+              - recovery_code
+      required:
+        - secondFactorRequired
+        - methods
+    AccountSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        locale:
+          type: string
+          description: uk | en | ru
+        secondFactorEnabled:
+          type: boolean
+      required:
+        - id
+        - email
+        - displayName
+        - locale
+        - secondFactorEnabled
+    CurrentSession:
+      type: object
+      properties:
+        id:
+          type: string
+          description: sha256 hex of the cookie — the id listMySessions and revokeMySession use.
+        expiresAt:
+          type: string
+          format: date-time
+        secondFactorPassed:
+          type: boolean
+      required:
+        - id
+        - expiresAt
+        - secondFactorPassed
+    LoginResult:
+      type: object
+      properties:
+        account:
+          $ref: '#/components/schemas/AccountSummary'
+        session:
+          $ref: '#/components/schemas/CurrentSession'
+      required:
+        - account
+        - session
+    MembershipLevel:
+      type: string
+      description: Where a membership lives (ADR-0050 §1). `platform` is a property of the account, not a row.
+      enum:
+        - platform
+        - organization
+        - cabinet
+    Role:
+      type: string
+      description: One of the seven ADR-0050 roles.
+      enum:
+        - platform_admin
+        - org_owner
+        - org_admin
+        - cabinet_admin
+        - supervisor
+        - agent
+        - viewer
+    AccountMembership:
+      type: object
+      properties:
+        level:
+          $ref: '#/components/schemas/MembershipLevel'
+        organizationId:
+          type: string
+          description: Set for an organization-level membership.
+        cabinetId:
+          type: string
+          description: Set for a cabinet-level membership.
+        role:
+          $ref: '#/components/schemas/Role'
+      required:
+        - level
+        - role
+    CabinetAccess:
+      type: object
+      description: >
+        The effective rights in one cabinet — the same Principal the
+        authorization middleware builds for a request to that cabinet.
+      properties:
+        cabinetId:
+          type: string
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        permissions:
+          type: array
+          description: The union of the roles' permissions (internal/authz), sorted.
+          items:
+            type: string
+        allChannels:
+          type: boolean
+          description: >
+            True when the rights reach every channel of the cabinet. False for an
+            agent, who reaches exactly `channelIds` — which may be EMPTY (no
+            assignment means no channel, never every channel).
+        channelIds:
+          type: array
+          description: The assigned channels when allChannels is false; empty otherwise.
+          items:
+            type: string
+      required:
+        - cabinetId
+        - roles
+        - permissions
+        - allChannels
+        - channelIds
+    Me:
+      type: object
+      properties:
+        account:
+          $ref: '#/components/schemas/AccountSummary'
+        session:
+          $ref: '#/components/schemas/CurrentSession'
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountMembership'
+        currentCabinet:
+          $ref: '#/components/schemas/CabinetAccess'
+      required:
+        - account
+        - session
+        - memberships
+    AuthSessionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        current:
+          type: boolean
+          description: True for the session this request was made with.
+        createdAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
+          description: Refreshed at most once per 30 s cache window.
+        expiresAt:
+          type: string
+          format: date-time
+        ip:
+          type: string
+        userAgent:
+          type: string
+        secondFactorPassed:
+          type: boolean
+      required:
+        - id
+        - current
+        - createdAt
+        - lastSeenAt
+        - expiresAt
+        - userAgent
+        - secondFactorPassed
+    AuthSessionList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthSessionSummary'
+      required:
+        - items
+    TokenPasswordRequest:
+      type: object
+      description: A single-use invite or reset token from the email, and the password the person chose.
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        password:
+          type: string
+          description: At least 12 characters (NIST SP 800-63B favours length over composition rules).
+          minLength: 1
+          maxLength: 1024
+      required:
+        - token
+        - password
+    PasswordResetRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          minLength: 1
+          maxLength: 320
+      required:
+        - email
+    TotpEnrollment:
+      type: object
+      properties:
+        enrollmentId:
+          type: string
+          description: Names this pending seed in enableTotp. Bound to the caller's account server-side.
+        secret:
+          type: string
+          description: The base32 seed. Shown once; render the QR code from otpauthUri locally.
+        otpauthUri:
+          type: string
+          description: otpauth://totp/... (SHA1, 6 digits, 30 s) for authenticator apps.
+      required:
+        - enrollmentId
+        - secret
+        - otpauthUri
+    EnableTotpRequest:
+      type: object
+      properties:
+        enrollmentId:
+          type: string
+          minLength: 1
+          maxLength: 64
+        code:
+          type: string
+          minLength: 1
+          maxLength: 16
+      required:
+        - enrollmentId
+        - code
+    SecondFactorCode:
+      type: object
+      properties:
+        code:
+          type: string
+          description: The CURRENT TOTP code (a recovery code is not accepted).
+          minLength: 1
+          maxLength: 16
+      required:
+        - code
+    RecoveryCodes:
+      type: object
+      properties:
+        recoveryCodes:
+          type: array
+          description: Single-use codes, shown once. Store them offline.
+          items:
+            type: string
+      required:
+        - recoveryCodes
