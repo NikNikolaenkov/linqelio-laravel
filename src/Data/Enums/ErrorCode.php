@@ -48,6 +48,15 @@ enum ErrorCode: string
     case PolicyRateLimited = 'policy.rate_limited';
     case PolicyQuotaExceeded = 'policy.quota_exceeded';
     case PolicyRuleBlocked = 'policy.rule_blocked';
+    case PolicyConfirmationRequired = 'policy.confirmation_required';
+    case PolicyConsentMissing = 'policy.consent_missing';
+    case PolicyDailyLimit = 'policy.daily_limit';
+    case PolicyHourlyLimit = 'policy.hourly_limit';
+    case PolicyContactFrequency = 'policy.contact_frequency';
+    case PolicyDuplicateContent = 'policy.duplicate_content';
+    case PolicyOutsideBusinessHours = 'policy.outside_business_hours';
+    case PolicyDialogFrozen = 'policy.dialog_frozen';
+    case PolicyMonthlyQuotaNear = 'policy.monthly_quota_near';
 
     case AccessPoolNoNext = 'accesspool.no_next';
 
