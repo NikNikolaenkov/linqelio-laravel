@@ -149,6 +149,20 @@ final class Contract
         'getMyOrganizationUsage' => 'console "My company" — no integration use case yet',
         'updateMyOrganization' => 'console "My company" requisites — needs billing:manage',
 
+        // Round 8 (ADR-0082/0084, ADR-0061 §10). These ARE integration surface —
+        // a host records consent (source host_api), writes typed contact fields
+        // and previews a send — but the wrappers are not written yet. Listed
+        // here so the gap is visible, not forgotten; tracked as a follow-up.
+        'checkSendPolicy' => 'not wrapped yet — send-policy dry run (follow-up)',
+        'listContactConsents' => 'not wrapped yet — contact consent (follow-up)',
+        'grantContactConsent' => 'not wrapped yet — contact consent, source host_api (follow-up)',
+        'revokeContactConsent' => 'not wrapped yet — contact consent (follow-up)',
+        'getContactFields' => 'not wrapped yet — typed contact fields (follow-up)',
+        'setContactFields' => 'not wrapped yet — typed contact fields (follow-up)',
+        'listContactFields' => 'console field schema editor; read side not wrapped yet (follow-up)',
+        'putContactField' => 'console field schema editor — settings:manage',
+        'deleteContactField' => 'console field schema editor — settings:manage',
+
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
         'listPlatformOperators' => 'platform:admin only',

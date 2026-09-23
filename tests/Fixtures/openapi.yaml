@@ -2316,6 +2316,165 @@ paths:
           $ref: '#/components/responses/Forbidden'
 
   # ===========================================================================
+  # R8-B (issue #44, ADR-0084): contact consent with a source — BEGIN
+  # (a self-contained block: paths here, schemas in the matching block under
+  # components/schemas, the error code at the end of ErrorCode)
+  # ===========================================================================
+  /contacts/{id}/consents:
+    get:
+      operationId: listContactConsents
+      x-permission: 'channels:read'
+      summary: Read a contact's consent, per channel.
+      description: >
+        The consent recorded for the contact on each channel of the cabinet
+        (ADR-0084): whether it is granted or revoked, where it came from
+        (`source`: inbound_message, import, host_api, deep_link, manual), when,
+        by whom, and on what evidence. Consent is per CHANNEL, not per channel
+        kind — opt-in is given to a sender (a business number, a bot). A channel
+        with no entry has nothing recorded: a send there is refused with
+        policy.consent_missing while the cabinet enforces consent.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The contact's recorded consents (possibly none).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactConsentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contacts/{id}/consents/{channelId}:
+    put:
+      operationId: grantContactConsent
+      x-permission: 'contacts:write'
+      summary: Record the contact's consent on one channel.
+      description: >
+        Record that the contact agreed to be messaged on this channel. The
+        source is not chosen by the caller, it is WHO calls: a person in the
+        console records `manual`, an API key records `host_api`; the author is
+        kept with the consent and in the audit log. `evidence` is a short
+        reference to where the consent came from (a form id, a CRM record) —
+        never personal data.
+
+
+        Idempotent: an ACTIVE consent is left as it is (`changed: false`) —
+        the first grant stands, because its provenance is the earliest evidence.
+        A REVOKED consent is re-granted: a manual or host grant is an explicit
+        act and lifts an earlier opt-out (an automatic grant from an inbound
+        message never does).
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/ConsentChannelId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantConsentRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - channel.not_found
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The consent as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactConsentChange'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contacts/{id}/consents/{channelId}/revoke:
+    post:
+      operationId: revokeContactConsent
+      x-permission: 'contacts:write'
+      x-suspension: allowed
+      x-suspension-reason: >
+        An opt-out is the data subject withdrawing consent; honouring it only stops messages, and refusing it while the organization is suspended would keep the person reachable the moment the organization resumes (ADR-0084).
+      summary: Record that the contact withdrew consent on one channel.
+      description: >
+        Revoke the contact's consent on this channel: from now on a send there
+        is refused with policy.consent_missing (while the cabinet enforces
+        consent). The revocation is kept with its moment and author, and it
+        also holds when nothing had been granted yet — "do not message me" then
+        stops a later automatic grant from an inbound message. Only an explicit
+        grant (manual, host API, a deep-link opt-in) lifts it.
+
+
+        Idempotent: revoking a revoked consent changes nothing
+        (`changed: false`; the first revocation's moment stands).
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/ConsentChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - channel.not_found
+      responses:
+        '200':
+          description: The consent as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactConsentChange'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # ===========================================================================
+  # R8-B (issue #44, ADR-0084): contact consent with a source — END
+  # ===========================================================================
+
+  # ===========================================================================
   # messages.yaml — outbound message commands
   # ===========================================================================
   /contacts/{id}/messages:
@@ -2410,13 +2569,27 @@ paths:
         - provider.unavailable
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R8-D (#42, ADR-0082): a confirmed send met a warning it did not acknowledge.
+        - policy.confirmation_required
+        # R8-B (#44, ADR-0084): the contact has no consent on the sending channel.
+        - policy.consent_missing
+        # R8-C (#40, #121): send-rule checkers. 429 + Retry-After for a full
+        # window; 403 for a frozen dialog; 403 tenancy.quota_exceeded (with the
+        # `quota` member) at the plan's messages.month cap.
+        - policy.daily_limit
+        - policy.hourly_limit
+        - policy.dialog_frozen
+        - tenancy.quota_exceeded
       responses:
+        # R8-D (#109, ADR-0082): SentMessage = the Envelope + policyWarnings.
         '202':
-          description: The message was accepted and queued for delivery.
+          description: >
+            The message was accepted and queued for delivery. `policyWarnings`
+            lists the send-policy warnings it went out with, if any.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Envelope'
+                $ref: '#/components/schemas/SentMessage'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2437,6 +2610,73 @@ paths:
           $ref: '#/components/responses/BadGateway'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  # --- R8-D (#42, ADR-0082): send-policy dry run ---------------------------------
+  /contacts/{id}/messages/policy-check:
+    post:
+      operationId: checkSendPolicy
+      x-permission: 'messages:send'
+      # Side-effect free; a suspended organization gets its answer as a finding.
+      x-suspension: allowed
+      x-suspension-reason: >
+        A dry run that changes nothing (ADR-0082): it answers what a send would get, and for a suspended organization that answer is a deny finding with code tenancy.suspended — refusing the question instead would hide the reason from the composer.
+      summary: Dry-run send policy for a prospective message (no side effects).
+      description: >
+        Answers what send policy would say about sending this message to the
+        contact NOW, without sending it and without consuming anything — no
+        rate budget, no counters, no decision-journal row (ADR-0082). Returns
+        the verdict, every finding (code + params to localize), the current
+        limits (`meters`) and, for a defer, when the send may go. Call it while
+        the operator composes; send with `acknowledgedWarnings` = the answer's
+        `warningKeys` once they confirm. Same body, same permission and same
+        channel scope as sendContactMessage; no Idempotency-Key (nothing is
+        created).
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - channel.not_found
+        - channel.capability_unsupported
+        - message.type_unsupported
+        - provider.unavailable
+      responses:
+        '200':
+          description: The send-policy answer for this prospective send.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendPolicyCheck'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # --- end R8-D ------------------------------------------------------------------
 
   # ===========================================================================
   # embed.yaml — embeddable widget sessions
@@ -2731,13 +2971,23 @@ paths:
         - provider.upstream_error
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R8-B (#44, ADR-0084): the contact has no consent on the sending channel.
+        - policy.consent_missing
+        # R8-C (#40, #121): send-rule checkers (see sendContactMessage).
+        - policy.daily_limit
+        - policy.hourly_limit
+        - policy.dialog_frozen
+        - tenancy.quota_exceeded
       responses:
+        # R8-D (#109, ADR-0082): SentMessage = the Envelope + policyWarnings.
         '202':
-          description: The message was accepted and queued for delivery.
+          description: >
+            The message was accepted and queued for delivery. `policyWarnings`
+            lists the send-policy warnings it went out with, if any.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Envelope'
+                $ref: '#/components/schemas/SentMessage'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -4265,6 +4515,254 @@ paths:
   # END R7-A organizations (paths)
   # ===========================================================================
 
+  # ===========================================================================
+  # contact-fields.yaml — typed contact field schema (issue #48, ADR-0061)
+  # ===========================================================================
+  # BEGIN R8-F contact fields (paths). Kept as one block so parallel contract
+  # work does not interleave with it; the schemas live in the matching
+  # "BEGIN R8-F schemas" block at the end of components.schemas, the path
+  # parameter under "R8-F" in components.parameters.
+  #
+  # The SCHEMA (field definitions) is cabinet configuration: reading it is open
+  # to everyone who reads contacts (the contact card renders from it), writing
+  # it needs `settings:manage`. VALUES live on the contact: read like the
+  # contact (`channels:read`), written with `contacts:write`. Value provenance
+  # is derived from the CALLER, never from the body: a person's session writes
+  # as `human`, an API key as `host` (ADR-0061 §4).
+  /contact-fields:
+    get:
+      operationId: listContactFields
+      x-permission: 'channels:read'
+      summary: List the cabinet's typed contact field definitions.
+      description: >
+        Every field definition of the cabinet, in display order (`position`,
+        then `key`). The schema belongs to the cabinet (ADR-0061 §1): there are
+        no platform-wide or industry fields — a "car dealer" set is a sample a
+        cabinet creates, not something the platform ships.
+      tags:
+        - contacts
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The cabinet's field definitions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactFieldList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contact-fields/{key}:
+    parameters:
+      - $ref: '#/components/parameters/ContactFieldKey'
+    put:
+      operationId: putContactField
+      x-permission: 'settings:manage'
+      summary: Create or update one contact field definition.
+      description: >
+        Creates the field, or updates it in place. Everything is editable EXCEPT
+        the `type` (ADR-0061 §8): values stored under the key were validated
+        against it, so a different type is a new field. A type change writes
+        nothing and answers 422 contact.field_invalid with the entry
+        `{field: <key>, reason: "type_immutable"}`; an invalid definition (an
+        enum without options, options on a non-enum, ...) answers the same code
+        with its own reason.
+
+
+        Removing an enum option does not touch contacts that already hold it;
+        new writes of that value are refused. Every successful write is audited
+        (`contact.field.put`).
+      tags:
+        - contacts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutContactFieldRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.field_invalid
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The definition as stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactFieldDef'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: The definition is invalid, or would change the field's type (contact.field_invalid).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    delete:
+      operationId: deleteContactField
+      x-permission: 'settings:manage'
+      summary: Delete one contact field definition (values are kept).
+      description: >
+        Removes the DEFINITION only (ADR-0061 §8). Values stored under the key
+        stay on the contacts as orphans: they are no longer shown, projected
+        into the desk or offered to the AI, and re-creating the key with the
+        same type brings them back. Erasing a person's data is
+        `POST /contacts/{id}/erase`, not this.
+
+
+        Idempotent: deleting a key the cabinet does not have answers 204 too.
+        Audited (`contact.field.delete`, with whether a definition was found).
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '204':
+          description: The definition is gone (or never existed).
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contacts/{id}/fields:
+    parameters:
+      - $ref: '#/components/parameters/ContactId'
+    get:
+      operationId: getContactFields
+      x-permission: 'channels:read'
+      summary: Read a contact's typed field values with their provenance.
+      description: >
+        The values of the fields the cabinet currently DEFINES, each with its
+        read-only provenance — what kind of writer set it (`human`, `host`,
+        `platform`, `ai`), when, and which actor. Values under a deleted
+        definition are not returned (ADR-0061 §8).
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+      responses:
+        '200':
+          description: The contact's typed values and their provenance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactFieldValues'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: setContactFields
+      x-permission: 'contacts:write'
+      summary: Set (or clear) typed field values on a contact.
+      description: >
+        Writes values under the cabinet's schema (ADR-0061). `null` clears a
+        field. The write is ALL-OR-NOTHING on validity: every value is checked
+        first, and if any fails nothing is written and the answer is 422
+        contact.field_invalid with one `errors[]` entry per offending field
+        (`reason`: `type_mismatch` — e.g. text sent to a `number` field —,
+        `not_in_enum`, `bad_date`, `bad_phone`, `bad_email`, `bad_url`,
+        `too_long`, `unknown_field`). A write into a field the caller may not
+        write at all is 403 embed.field_ownership_denied.
+
+
+        Provenance comes from the caller: a person's session writes as `human`,
+        an API key as `host`. A value set by a more authoritative writer
+        (`human > host > platform > ai`) is NOT overwritten and NOT an error: it
+        is reported in `kept[]` with reason `lower_authority` (ADR-0061 §4).
+        Fields flagged `syncToDesk` are projected into the cabinet's desk after
+        the write (best effort, ADR-0053). Audited (`contact.fields.set`, keys
+        only — never values).
+      tags:
+        - contacts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetContactFieldsRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - contact.field_invalid
+        - embed.field_ownership_denied
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The values after the write, with what was applied, cleared and kept.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetContactFieldsResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: One or more values failed validation (contact.field_invalid); nothing was written.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  # ===========================================================================
+  # END R8-F contact fields (paths)
+  # ===========================================================================
+
 components:
   # ===========================================================================
   # Security
@@ -4332,6 +4830,17 @@ components:
   # params.yaml — reusable parameters (path/query/header)
   # ===========================================================================
   parameters:
+    # R8-F (#48, ADR-0061): a contact field's machine key, the shape the
+    # store's CHECK constraint enforces — a malformed key is a 400 up front.
+    ContactFieldKey:
+      name: key
+      in: path
+      required: true
+      description: The field's machine key (lower case letters, digits, underscores; starts with a letter).
+      schema:
+        type: string
+        pattern: '^[a-z][a-z0-9_]{0,62}$'
+
     ContactId:
       name: id
       in: path
@@ -4340,6 +4849,16 @@ components:
       schema:
         type: string
         format: uuid # issue #119: a malformed id is a 400 before any store/driver call
+
+    # R8-B (issue #44, ADR-0084): the channel a contact's consent is recorded for.
+    ConsentChannelId:
+      name: channelId
+      in: path
+      required: true
+      description: The channel the consent is for (uuid).
+      schema:
+        type: string
+        format: uuid
 
     ChannelId:
       name: id
@@ -4655,6 +5174,47 @@ components:
         # An organization id (path, or createCabinet's organizationId) that
         # names no organization: 404.
         - tenancy.organization_not_found
+        # --- R8-D (issues #42/#109, ADR-0082): confirmed sends -------------------
+        # confirmation_required (409): the send carried acknowledgedWarnings, and
+        # send policy now raises a warning that is not among them (it appeared
+        # after the caller's checkSendPolicy). Nothing was sent. The new warnings
+        # are in the problem's `policyFindings`; re-run checkSendPolicy, show
+        # them, and send again with them acknowledged.
+        - policy.confirmation_required
+        # --- end R8-D -------------------------------------------------------------
+        # --- R8-B (issue #44, ADR-0084): contact consent -------------------------
+        # consent_missing (403): the recipient has no active consent on the
+        # sending channel — never recorded, or revoked. Its own code, not
+        # policy.rule_blocked: the remedy is specific (record consent, e.g. a
+        # deep-link opt-in), and waiting does not help, so it is never a 429.
+        - policy.consent_missing
+        # =====================================================================
+        # BEGIN R8-C send-policy checkers (issue #40, #121; ADR-0058 §9)
+        # =====================================================================
+        # Finding codes of the send-rule pipeline. A deferred send answers 429
+        # with Retry-After and the blocking finding's code; a denied one the
+        # status below. The monthly messages cap reuses tenancy.quota_exceeded
+        # (403 + `quota` member) — a plan limit does not lift by retrying.
+        #   daily_limit / hourly_limit: the channel's send window (cabinet time
+        #     zone) is full — 429 until it resets.
+        #   contact_frequency: too many messages to this contact in the period —
+        #     429 (campaigns are rescheduled; interactive sends only warned).
+        #   duplicate_content: the same normalized content was sent recently —
+        #     409 when a campaign would repeat it to one contact; a warning
+        #     otherwise.
+        #   outside_business_hours: inside the cabinet's quiet hours — 429 for a
+        #     campaign; a warning for an interactive send.
+        #   dialog_frozen: the conversation is frozen — 403.
+        #   monthly_quota_near: a WARNING only (80 % of messages.month used);
+        #     never an HTTP error status — listed so warnings share the i18n keys.
+        - policy.daily_limit
+        - policy.hourly_limit
+        - policy.contact_frequency
+        - policy.duplicate_content
+        - policy.outside_business_hours
+        - policy.dialog_frozen
+        - policy.monthly_quota_near
+        # END R8-C send-policy checkers
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -4800,6 +5360,18 @@ components:
         # R6-C (#33, ADR-0051 §3): present only with tenancy.quota_exceeded.
         quota:
           $ref: '#/components/schemas/QuotaExceeded'
+        # R8-D (#42/#109, ADR-0082): why send policy held a send.
+        policyFindings:
+          type: array
+          description: >
+            Send-policy findings behind this refusal (ADR-0082), present on a
+            send refused by policy: with policy.confirmation_required the
+            UNACKNOWLEDGED warnings; with policy.rate_limited / quota_exceeded /
+            rule_blocked every finding of the run that held it. Render each by
+            its `code` (and `params`); fall back to `detail` for a code the
+            client does not know.
+          items:
+            $ref: '#/components/schemas/PolicyFinding'
       required:
         - type
         - title
@@ -5053,9 +5625,195 @@ components:
             specific channel; the contact must be addressable there (it needs an
             identity of that channel's kind, or a conversation on it) — otherwise
             the send fails with channel.capability_unsupported.
+        # R8-D (#42, ADR-0082): a confirmed send.
+        acknowledgedWarnings:
+          type: array
+          description: >
+            Makes this a CONFIRMED send (ADR-0082): the `key`s of the policy
+            warnings the caller was shown by checkSendPolicy and confirmed
+            (`warningKeys` of that answer). The send goes through only if every
+            warning send policy raises now is listed; otherwise it is refused
+            with 409 policy.confirmation_required and the new warnings in
+            `policyFindings` — nothing is sent. An empty array confirms "no
+            warnings". Omitted: an unconfirmed send, where warnings never block
+            and are only reported back in `policyWarnings` (the behaviour before
+            ADR-0082). Ignored by checkSendPolicy.
+          items:
+            type: string
       required:
         - type
         - content
+
+    # --- R8-D (#42/#109, ADR-0082): send-policy dry run and warnings ---------------
+    PolicyVerdict:
+      type: string
+      description: >
+        A send-policy stance (ADR-0058 §2). `allow`: nothing to say. `warn`:
+        sendable, but the operator must be told. `defer`: not now — retry from
+        `retryAt`. `deny`: not this send. Clients must treat an unknown value as
+        `deny`.
+      enum:
+        - allow
+        - warn
+        - defer
+        - deny
+
+    PolicyFinding:
+      type: object
+      description: >
+        One send-policy checker's answer about a send (ADR-0058/0082). The set
+        of checkers grows (rate, consent, frequency, duplicates, business hours,
+        ...), so clients render a finding GENERICALLY: localize by `code` with
+        `params` interpolated, and fall back to `detail` (then to the raw
+        `code`) for a code they do not know.
+      properties:
+        check:
+          type: string
+          description: The checker that produced it (stable machine id, e.g. `rate`).
+          example: rate
+        verdict:
+          $ref: '#/components/schemas/PolicyVerdict'
+        key:
+          type: string
+          description: >
+            What acknowledges this finding when it is a warning: send it in
+            `acknowledgedWarnings`. The `code`, or the `check` when there is none.
+          example: policy.rate_limited
+        code:
+          type: string
+          description: >
+            Machine code, the i18n message key (`errors.<code>`). Usually an
+            ErrorCode, but a newer checker may send one this client's contract
+            copy does not list yet — hence not the enum. Absent when the checker
+            has nothing to report beyond its verdict.
+          example: policy.rate_limited
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Values to interpolate into the localized message.
+        until:
+          type: string
+          format: date-time
+          description: For `defer` — the moment the send may be retried.
+        detail:
+          type: string
+          description: Operator-facing English context; the fallback text.
+      required:
+        - check
+        - verdict
+        - key
+
+    PolicyMeter:
+      type: object
+      description: >
+        One CURRENT limit as a checker sees it (ADR-0082): how much is used and
+        when it is whole again — the bars of the pre-send panel. A snapshot, not
+        a reservation.
+      properties:
+        check:
+          type: string
+          description: The checker that reports it.
+          example: rate
+        name:
+          type: string
+          description: >
+            Stable machine id of the limit (e.g. `rate.burst`, the channel's
+            burst budget; media sends draw more of it). Localize it, fall back
+            to the raw name.
+          example: rate.burst
+        used:
+          type: integer
+          format: int64
+          example: 3
+        limit:
+          type: integer
+          format: int64
+          example: 20
+        resetAt:
+          type: string
+          format: date-time
+          description: When it is fully available again. Absent = whole now or unknown.
+      required:
+        - check
+        - name
+        - used
+        - limit
+
+    SendPolicyCheck:
+      type: object
+      description: >
+        What send policy would say about this send NOW (ADR-0082, #42) —
+        everything a pre-send panel needs, in one answer. Computed by a dry run
+        that consumes nothing: no rate budget, no counters, no journal row.
+      properties:
+        verdict:
+          $ref: '#/components/schemas/PolicyVerdict'
+        sendable:
+          type: boolean
+          description: '`verdict` is `allow` or `warn`: the send would go through now.'
+        warningKeys:
+          type: array
+          description: >
+            The `key`s of the `warn` findings — exactly what to send back in
+            `acknowledgedWarnings` once the operator confirms them. Empty = no
+            confirmation needed.
+          items:
+            type: string
+        findings:
+          type: array
+          description: Every finding of the run, in evaluation order (allow included).
+          items:
+            $ref: '#/components/schemas/PolicyFinding'
+        meters:
+          type: array
+          description: The current limits, across all checkers that report one.
+          items:
+            $ref: '#/components/schemas/PolicyMeter'
+        channelId:
+          type: string
+          description: The channel the send would leave through (resolved like sendContactMessage does).
+        cost:
+          type: integer
+          description: The rate budget this send would draw (media costs more than text).
+          example: 1
+        retryAt:
+          type: string
+          format: date-time
+          description: For `defer` — when the send may go (every blocker cleared).
+        retryAfterSeconds:
+          type: integer
+          description: For `defer` — `retryAt` as seconds from `evaluatedAt`, rounded up.
+        evaluatedAt:
+          type: string
+          format: date-time
+      required:
+        - verdict
+        - sendable
+        - warningKeys
+        - findings
+        - meters
+        - channelId
+        - cost
+        - evaluatedAt
+
+    SentMessage:
+      description: >
+        The accepted outbound message (the Envelope), plus the send-policy
+        warnings it went out with (#109, ADR-0082).
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            policyWarnings:
+              type: array
+              description: >
+                The `warn` findings send policy raised for this send (e.g. a
+                limit nearly used up). The message WAS accepted; show them to
+                the operator. Absent when there were none.
+              items:
+                $ref: '#/components/schemas/PolicyFinding'
+    # --- end R8-D ---------------------------------------------------------------
 
     # =========================================================================
     # contact.yaml — Contact (mirrors internal/contacts/contact.go)
@@ -5217,6 +5975,118 @@ components:
       required:
         - items
         - pageInfo
+
+    # =========================================================================
+    # R8-B (issue #44, ADR-0084): contact consent with a source — BEGIN
+    # =========================================================================
+    ConsentSource:
+      type: string
+      description: >
+        Where a consent came from. inbound_message: the person wrote to the
+        cabinet on this channel; import: a bulk import with an explicit consent
+        column; host_api: the host asserted it with an API key; deep_link: the
+        person opted in through a deep-link invite; manual: a person in the
+        console recorded it.
+      enum: [inbound_message, import, host_api, deep_link, manual]
+
+    ConsentStatus:
+      type: string
+      description: >
+        granted — an active consent is on record; revoked — the person opted
+        out on this channel; missing — nothing is recorded.
+      enum: [granted, revoked, missing]
+
+    ConsentActor:
+      type: object
+      description: Who granted or revoked (the audit vocabulary, ADR-0028).
+      properties:
+        type:
+          type: string
+          # Deliberately not an enum: `system` would collide with MsgType's
+          # `system` and rename every generated MsgType constant.
+          description: account | api_key | system.
+        id:
+          type: string
+          description: The account id or key id; empty for the system.
+      required:
+        - type
+
+    ContactConsent:
+      type: object
+      description: >
+        The consent of one contact on one channel (ADR-0084). `source`,
+        `grantedAt` and `grantedBy` describe the grant in force — or the last
+        one, when revoked — and are absent for an opt-out recorded before any
+        grant.
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        channelKind:
+          $ref: '#/components/schemas/ChannelKind'
+        status:
+          $ref: '#/components/schemas/ConsentStatus'
+        source:
+          $ref: '#/components/schemas/ConsentSource'
+        grantedAt:
+          type: string
+          format: date-time
+        grantedBy:
+          $ref: '#/components/schemas/ConsentActor'
+        evidence:
+          type: string
+          maxLength: 500
+          description: A short reference to where the consent came from; never personal data.
+        revokedAt:
+          type: string
+          format: date-time
+        revokedBy:
+          $ref: '#/components/schemas/ConsentActor'
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - channelId
+        - channelKind
+        - status
+        - updatedAt
+
+    ContactConsentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactConsent'
+      required:
+        - items
+
+    ContactConsentChange:
+      type: object
+      description: The result of a grant or a revocation.
+      properties:
+        changed:
+          type: boolean
+          description: False when the call changed nothing (already in that state, or an opt-out the source may not lift).
+        consent:
+          $ref: '#/components/schemas/ContactConsent'
+      required:
+        - changed
+        - consent
+
+    GrantConsentRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        evidence:
+          type: string
+          maxLength: 500
+          description: >
+            Where the consent came from — a signed form's id, the host's CRM
+            record. Kept with the consent. Never personal data.
+    # =========================================================================
+    # R8-B (issue #44, ADR-0084): contact consent with a source — END
+    # =========================================================================
 
     # =========================================================================
     # channel.yaml — channel read view (Capabilities mirrors channels.Capabilities)
@@ -7208,6 +8078,17 @@ components:
         consent_text:
           type: string
           maxLength: 4000
+        # R8-B (issue #44, ADR-0084).
+        consent_enforcement:
+          type: string
+          enum: [enforce, observe]
+          description: >
+            How the send policy applies contact consent. observe (the default,
+            also when unset): a send to a contact without consent on that channel
+            goes out, and the missing consent is journaled and reported as a
+            warning (policy.consent_missing). enforce: such a send is refused
+            with policy.consent_missing — the cabinet's own switch, once it
+            collects consent.
 
     NotificationsSettings:
       type: object
@@ -7369,7 +8250,53 @@ components:
         timezone:
           type: string
           maxLength: 64
-          description: IANA time zone name, e.g. Europe/Kyiv.
+          description: >
+            IANA time zone name, e.g. Europe/Kyiv. The send windows and quiet
+            hours are counted in it; unset (or a name the server does not know)
+            means UTC — never the server's own zone.
+        # --- BEGIN R8-C send-policy limits (issue #40, ADR-0058 §9) -----------
+        # Read by the send-rule checkers. Quiet hours above are the business
+        # hours rule: a campaign send inside them is rescheduled to their end,
+        # an interactive one is warned.
+        daily_limit:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: >
+            Messages per channel per calendar day (in `timezone`). 0 disables the
+            daily window. Unset: the platform default for the channel kind
+            (1000 for wa_web and tg_client, none for official APIs). Media counts
+            like text. At the limit sends are deferred to the next day.
+        hourly_limit:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: >
+            Messages per channel per clock hour (in `timezone`). 0 disables the
+            hourly window. Unset: the platform default for the channel kind
+            (200 for wa_web and tg_client, none for official APIs).
+        contact_limit:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: >
+            Messages to ONE contact within `contact_limit_hours` (a sliding
+            window). 0 or unset: no per-contact limit. At the limit a campaign
+            send is deferred; an interactive one is sent with a warning.
+        contact_limit_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          description: The per-contact period in hours. Unset means 24.
+        duplicate_window_hours:
+          type: integer
+          minimum: 0
+          maximum: 168
+          description: >
+            How long a sent text counts as recent for the duplicate rule. 0
+            disables it; unset means 24. Texts are compared after normalization
+            (case, whitespace, punctuation, URLs and numbers masked).
+        # --- END R8-C send-policy limits ----------------------------------------
 
     DeskSettings:
       type: object
@@ -7697,3 +8624,270 @@ components:
         - items
         - pageInfo
     # END R7-A organizations (schemas)
+
+    # =========================================================================
+    # BEGIN R8-F schemas: typed contact field schema (issue #48, ADR-0061).
+    # Mirrors internal/contacts/fields.go; the paths are the "BEGIN R8-F
+    # contact fields (paths)" block.
+    # =========================================================================
+    ContactFieldType:
+      type: string
+      description: >
+        The value type of a contact field — a CLOSED set (ADR-0061 §2). Values
+        travel in one JSON shape per type: `text`/`enum`/`phone`/`email`/`url`
+        a string, `date` a `YYYY-MM-DD` string, `number` a JSON number (a
+        numeric-looking string is refused), `bool` a boolean, `multi_enum` an
+        array of option values.
+      enum:
+        - text
+        - number
+        - date
+        - bool
+        - enum
+        - multi_enum
+        - phone
+        - email
+        - url
+      # Explicit Go names: a bare `Text` would collide with MsgType's and make
+      # the generator rename every MsgType constant under its callers.
+      x-enum-varnames:
+        - ContactFieldTypeText
+        - ContactFieldTypeNumber
+        - ContactFieldTypeDate
+        - ContactFieldTypeBool
+        - ContactFieldTypeEnum
+        - ContactFieldTypeMultiEnum
+        - ContactFieldTypePhone
+        - ContactFieldTypeEmail
+        - ContactFieldTypeUrl
+
+    ContactFieldOwner:
+      type: string
+      description: >
+        Who may write the field's value at all (ADR-0061 §3): a person may
+        correct any field; the host (API key) writes `host` fields only; the AI
+        writes `ai` fields and those flagged `aiExtract`.
+      enum:
+        - platform
+        - host
+        - ai
+
+    ContactFieldValueSource:
+      type: string
+      description: >
+        What kind of writer put a value there (ADR-0061 §4). Settles conflicts
+        on the ladder `human > host > platform > ai`: a lower writer never
+        overwrites a higher one's value.
+      enum:
+        - human
+        - host
+        - platform
+        - ai
+
+    ContactFieldLabel:
+      type: object
+      description: Localized label, locale -> text (`uk`, `en`, `ru`; ADR-0016).
+      additionalProperties:
+        type: string
+
+    ContactFieldOption:
+      type: object
+      description: One choice of an `enum` / `multi_enum` field.
+      properties:
+        value:
+          type: string
+          minLength: 1
+          description: The stable machine value — what is stored on the contact.
+        label:
+          $ref: '#/components/schemas/ContactFieldLabel'
+      required:
+        - value
+
+    ContactFieldDef:
+      type: object
+      description: One typed field of the cabinet's contact schema (ADR-0061 §1).
+      properties:
+        key:
+          type: string
+          description: Machine key; stable for the field's life (a rename is a label change).
+        label:
+          $ref: '#/components/schemas/ContactFieldLabel'
+        type:
+          $ref: '#/components/schemas/ContactFieldType'
+        options:
+          type: array
+          description: Choices of an `enum` / `multi_enum` field; empty for every other type.
+          items:
+            $ref: '#/components/schemas/ContactFieldOption'
+        owner:
+          $ref: '#/components/schemas/ContactFieldOwner'
+        aiExtract:
+          type: boolean
+          description: The AI may fill this field from conversations.
+        aiHint:
+          type: string
+          description: What the AI should look for, in the cabinet's own words.
+        syncToDesk:
+          type: boolean
+          description: Project this field into the cabinet's desk (ADR-0053) — e.g. a Chatwoot contact attribute.
+        position:
+          type: integer
+          minimum: 0
+          description: Display order in the contact card and the schema editor.
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+        - key
+        - label
+        - type
+        - options
+        - owner
+        - aiExtract
+        - aiHint
+        - syncToDesk
+        - position
+
+    PutContactFieldRequest:
+      type: object
+      description: >
+        The whole definition of one field (PUT replaces it). The key is the
+        path; the `type` must equal the stored one when the field exists.
+      properties:
+        label:
+          $ref: '#/components/schemas/ContactFieldLabel'
+        type:
+          $ref: '#/components/schemas/ContactFieldType'
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactFieldOption'
+        owner:
+          # Defaults to `host` when omitted (the store's default).
+          $ref: '#/components/schemas/ContactFieldOwner'
+        aiExtract:
+          type: boolean
+        aiHint:
+          type: string
+          maxLength: 1000
+        syncToDesk:
+          type: boolean
+        position:
+          type: integer
+          minimum: 0
+      required:
+        - type
+
+    ContactFieldList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactFieldDef'
+      required:
+        - items
+
+    ContactFieldValueOrigin:
+      type: object
+      description: >
+        Read-only provenance of ONE stored value: what kind of writer set it,
+        when, and which actor (an account id, an API key id, an AI job id).
+      properties:
+        source:
+          $ref: '#/components/schemas/ContactFieldValueSource'
+        at:
+          type: string
+          format: date-time
+        by:
+          type: string
+      required:
+        - source
+        - at
+
+    ContactFieldValues:
+      type: object
+      description: >
+        A contact's typed values (key -> value, one JSON shape per type) and,
+        per key, the value's provenance. Only fields the cabinet currently
+        defines appear.
+      properties:
+        fields:
+          type: object
+          additionalProperties: true
+        provenance:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ContactFieldValueOrigin'
+      required:
+        - fields
+        - provenance
+
+    SetContactFieldsRequest:
+      type: object
+      description: >
+        key -> new value; `null` clears the field. Provenance is not part of the
+        body: it is the caller's (a session writes as `human`, an API key as
+        `host`).
+      properties:
+        fields:
+          type: object
+          additionalProperties: true
+      required:
+        - fields
+
+    ContactFieldKept:
+      type: object
+      description: >
+        A field the write did NOT change and why — not an error. `lower_authority`:
+        the stored value came from a more authoritative writer (ADR-0061 §4).
+      properties:
+        field:
+          type: string
+        reason:
+          type: string
+        held:
+          $ref: '#/components/schemas/ContactFieldValueSource'
+        offered:
+          $ref: '#/components/schemas/ContactFieldValueSource'
+      required:
+        - field
+        - reason
+        - held
+        - offered
+
+    SetContactFieldsResult:
+      type: object
+      description: The contact's values after the write, and what the write did.
+      properties:
+        fields:
+          type: object
+          additionalProperties: true
+        provenance:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ContactFieldValueOrigin'
+        applied:
+          type: array
+          items:
+            type: string
+        cleared:
+          type: array
+          items:
+            type: string
+        kept:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactFieldKept'
+      required:
+        - fields
+        - provenance
+        - applied
+        - cleared
+        - kept
+    # END R8-F schemas
