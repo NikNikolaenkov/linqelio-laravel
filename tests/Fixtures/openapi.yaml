@@ -49,6 +49,17 @@
 # A permission-checked operation must accept BOTH clientApiKey and sessionCookie
 # (the middleware takes either), declare a 403 response and list
 # auth.forbidden_scope in x-error-codes: that is the refusal the middleware sends.
+#
+# --- On x-suspension (R7-B, issue #36, ADR-0080) -------------------------------
+# A suspended organization's cabinets are read-only. Which operations that
+# refuses is DERIVED, not listed: every operation that acts in a cabinet (a
+# cabinet x-permission, or the embed token) with a method other than
+# GET/HEAD/OPTIONS is refused with 403 tenancy.suspended — so a new mutating
+# operation is refused by default. The exceptions carry `x-suspension: allowed`
+# with an `x-suspension-reason`. The api/parity gate holds the contract to it:
+# an operation that can be refused lists tenancy.suspended in x-error-codes and
+# declares 403; one that cannot does not list it; x-suspension on a read, a
+# platform or a self operation is an error.
 openapi: 3.0.3
 
 info:
@@ -206,6 +217,8 @@ paths:
         # R6-C (#33, ADR-0051 §3): the organization's plan allows no more
         # channels of this kind (403; `quota` in the problem body).
         - tenancy.quota_exceeded
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -293,6 +306,8 @@ paths:
         - provider.unavailable
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: What the deletion removed (all zeros if nothing was left).
@@ -337,6 +352,8 @@ paths:
         - policy.rate_limited
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The current pairing/connection status (with QR if pairing).
@@ -384,6 +401,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -440,6 +459,8 @@ paths:
         - channel.capability_unsupported
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: Import result.
@@ -489,6 +510,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -536,6 +559,8 @@ paths:
         - channel.not_found
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The channel's state after disconnecting.
@@ -609,7 +634,17 @@ paths:
       summary: List all cabinets (platform admin).
       tags:
         - tenancy
+      parameters:
+        # R7-A (#34): the cabinets of one organization.
+        - name: organizationId
+          in: query
+          required: false
+          description: Only the cabinets of this organization.
+          schema:
+            type: string
+            format: uuid
       x-error-codes:
+        - validation.invalid_request
         - auth.invalid_key
         - auth.key_expired
         - auth.forbidden_scope
@@ -618,11 +653,13 @@ paths:
         - tenancy.cross_cabinet_denied
       responses:
         '200':
-          description: All cabinets on the platform.
+          description: All cabinets on the platform (or of one organization).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CabinetList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -632,9 +669,12 @@ paths:
       x-permission: 'platform:admin'
       summary: Provision a new client cabinet (platform admin).
       description: >
-        Creates an organization + cabinet pair for a new client. The cabinet is
-        the tenant boundary (RLS): keys issued for it can only ever see its own
-        channels, contacts, and messages.
+        Creates a cabinet in the organization named by `organizationId`,
+        reserving one `cabinets` of its plan (403 tenancy.quota_exceeded past
+        the limit). Without `organizationId` (deprecated, kept for existing
+        callers) it creates an organization + cabinet pair for a new client,
+        as before. The cabinet is the tenant boundary (RLS): keys issued for it
+        can only ever see its own channels, contacts, and messages.
       tags:
         - tenancy
       x-error-codes:
@@ -649,6 +689,8 @@ paths:
         # R6-C (#33, ADR-0051 §3): the organization's plan allows no more
         # cabinets (403; `quota` in the problem body).
         - tenancy.quota_exceeded
+        # R7-A (#34): organizationId names no organization (404).
+        - tenancy.organization_not_found
       requestBody:
         required: true
         content:
@@ -668,6 +710,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /cabinets/{id}:
     delete:
@@ -951,6 +995,8 @@ paths:
         # holding a reference to a key that was never written would look
         # configured and deliver unsigned for the rest of its life.
         - provider.unavailable
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -1012,6 +1058,8 @@ paths:
         # issue #119: an unknown or another cabinet's webhook id (it was
         # answered tenancy.cross_cabinet_denied).
         - webhook.not_found
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -1036,6 +1084,10 @@ paths:
     delete:
       operationId: deleteWebhook
       x-permission: 'settings:manage'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        Reduces egress: removing a subscription stops the cabinet's data from being delivered to a URL the customer no longer trusts; nothing is created (ADR-0080 §3).
       summary: Unsubscribe an endpoint permanently.
       description: >
         Remove the subscription. Without this a tenant cannot stop receiving
@@ -1116,6 +1168,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -1185,6 +1239,8 @@ paths:
         # issue #119: an unknown or another cabinet's pool entry id (it was
         # answered tenancy.cross_cabinet_denied).
         - accesspool.not_found
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '204':
           description: The entry's health was updated.
@@ -1217,6 +1273,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -1497,6 +1555,141 @@ paths:
   # end of platform operators (ADR-0075)
   # ===========================================================================
 
+  # ===========================================================================
+  # R7-B — organization suspension (issue #36, ADR-0051 §5, ADR-0080)
+  # ===========================================================================
+  # OWNED BY R7-B: only these two operations. Reading and listing organizations
+  # is the organizations API (#34, ADR-0079, /platform/organizations below);
+  # its Organization carries `status` and `suspendedReason`, and these two
+  # operations write the organization's trail (organization_audit) like it does.
+  #
+  # A suspended organization is READ-ONLY in every one of its cabinets: every
+  # cabinet mutation — the operations that list tenancy.suspended in
+  # x-error-codes, whatever the credential — is refused with 403
+  # tenancy.suspended; reads keep working; the operations marked
+  # `x-suspension: allowed` keep working too (erasure, cutting access, the embed
+  # read session). A worker holds the organization's channels: their live
+  # provider links are closed, their credentials kept, so resuming brings them
+  # back without re-pairing where the provider allows it.
+  /platform/organizations/{organizationId}/suspend:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: suspendOrganization
+      x-permission: 'platform:admin'
+      summary: Suspend an organization — all its cabinets become read-only (platform admin).
+      description: >
+        Makes every cabinet of the organization read-only (ADR-0080): each
+        cabinet mutation is refused with 403 tenancy.suspended — sends included,
+        from the API, the embed widget and an operator desk alike — while reads
+        keep working, so the customer still sees their data. Messages accepted
+        before the suspension that have not left yet are failed with reason
+        `tenancy.suspended` instead of being sent. The organization's channels
+        are then held by a background worker: the live provider link is closed
+        and the credentials are kept.
+
+
+        Idempotent: suspending an organization that is already suspended changes
+        nothing — the original reason, time and author stand — and answers 200
+        with `changed: false`. Recorded in the audit trail of every cabinet of
+        the organization.
+      tags:
+        - platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspendOrganizationRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.organization_not_found
+      responses:
+        '200':
+          description: The organization is suspended (now, or already was — see `changed`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSuspension'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /platform/organizations/{organizationId}/resume:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: resumeOrganization
+      x-permission: 'platform:admin'
+      summary: Lift an organization's suspension (platform admin).
+      description: >
+        Makes the organization's cabinets writable again at once — the very next
+        mutation is served — and has the worker bring its held channels back:
+        reconnected where the provider keeps the session (wa_web, tg_client,
+        tg_bot), with nothing to do for the webhook kinds (viber_bot, wa_cloud).
+        A wa_web channel whose session the provider no longer has is left
+        disconnected, to be paired again, and says so in the cabinet's audit
+        trail.
+
+
+        Idempotent: resuming an active organization changes nothing and answers
+        200 with `changed: false`. Recorded in the audit trail of every cabinet
+        of the organization.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.organization_not_found
+      responses:
+        '200':
+          description: The organization is active (now, or already was — see `changed`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationSuspension'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # ===========================================================================
+  # end of R7-B organization suspension
+  # ===========================================================================
+
   /audit:
     get:
       operationId: listAudit
@@ -1651,6 +1844,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - message.too_large
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '201':
           description: The stored attachment.
@@ -1887,6 +2082,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cabinet_not_found
         - contact.identity_conflict
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       requestBody:
         required: true
         content:
@@ -1949,6 +2146,8 @@ paths:
         - contact.not_found
         - channel.not_found
         - channel.capability_unsupported
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '201':
           description: The invite link (single use, short-lived).
@@ -2036,6 +2235,8 @@ paths:
         - contact.identity_conflict
         - contact.merge_conflict
         - embed.field_ownership_denied
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The updated contact.
@@ -2058,6 +2259,10 @@ paths:
     post:
       operationId: eraseContact
       x-permission: 'compliance:manage'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        GDPR erasure (Art. 17) is the controller's legal duty toward the data subject and its deadline keeps running while the customer is suspended; refusing it would make the platform the reason the erasure is late (ADR-0080 §3).
       summary: Erase a person's data from the cabinet.
       description: >
         Remove the contact AND redact every trace of the person from the records
@@ -2203,6 +2408,8 @@ paths:
         - idempotency.key_reused
         - provider.upstream_error
         - provider.unavailable
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '202':
           description: The message was accepted and queued for delivery.
@@ -2238,6 +2445,10 @@ paths:
     post:
       operationId: createEmbedSession
       x-permission: 'messages:send'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        Mints a read session for the embed widget, the host-side window onto conversations the customer may still read; every mutation the token could make (send, patch, start) is itself refused while suspended (ADR-0080 §3).
       summary: Initialize an embed widget session (M0 stub).
       description: >
         Init/token stub for the embeddable conversation widget (ADR-0007 /
@@ -2348,6 +2559,8 @@ paths:
         - contact.not_found
         - contact.version_conflict
         - idempotency.key_reused
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The updated contact.
@@ -2402,6 +2615,8 @@ paths:
         - channel.not_found
         - channel.not_connected
         - idempotency.key_reused
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '201':
           description: A pending bot session with a deep-link to opt in.
@@ -2514,6 +2729,8 @@ paths:
         - policy.rate_limited
         - idempotency.key_reused
         - provider.upstream_error
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '202':
           description: The message was accepted and queued for delivery.
@@ -3258,6 +3475,8 @@ paths:
         - team.last_cabinet_admin
         - team.self_demotion_denied
         - channel.not_found
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The member after the change.
@@ -3278,6 +3497,10 @@ paths:
     delete:
       operationId: removeMember
       x-permission: 'team:manage'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        Reduces access: an owner must be able to cut off a person who left, suspended or not — keeping a former employee inside the data is the one outcome worse than a read-only cabinet (ADR-0080 §3).
       summary: Remove a person from the cabinet.
       description: >
         Deletes the person's cabinet-level membership AND their membership in
@@ -3399,6 +3622,8 @@ paths:
         # The link's base (CONSOLE_PUBLIC_URL) is not configured: no link can be
         # built, so no invite is created.
         - provider.unavailable
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '201':
           description: >
@@ -3427,6 +3652,10 @@ paths:
     delete:
       operationId: revokeInvite
       x-permission: 'team:manage'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        Reduces access: withdrawing a pending invite lets nobody new in; blocking it would keep a link to the data alive for the whole suspension (ADR-0080 §3).
       summary: Revoke a pending invite.
       description: >
         The invite can no longer be accepted and its link is spent. Unknown,
@@ -3578,6 +3807,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - settings.version_conflict
         - provider.unavailable
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
       responses:
         '200':
           description: The section after the write, masked.
@@ -3607,6 +3838,432 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   # END R6-A cabinet settings (paths)
+
+  # ===========================================================================
+  # BEGIN R7-A organizations (paths) — issue #34, ADR-0051 / ADR-0079
+  # ===========================================================================
+  # The organization is the customer (ADR-0051 §1): requisites, plan, manual
+  # limit overrides, trial and — read-only here — status. Two surfaces:
+  #
+  #   /platform/organizations, /platform/plans   platform:admin. Any
+  #       organization, by id. Every change of plan, limitsOverride, trial or
+  #       requisites is written to the organization's own append-only trail
+  #       (organization_audit) in the same transaction, with the author and a
+  #       before/after diff — readable via listOrganizationAudit.
+  #   /organization                               the CALLER'S organization:
+  #       the one owning the cabinet the request acts in (the key's cabinet, or
+  #       the session's X-Linqelio-Cabinet, which is membership-checked). There
+  #       is no organization id to name, so there is none to forge.
+  #
+  # Suspension (status, suspendedReason) is exposed READ-ONLY; changing it is
+  # issue #36.
+  /platform/organizations:
+    get:
+      operationId: listOrganizations
+      x-permission: 'platform:admin'
+      summary: List organizations (platform admin).
+      description: >
+        Newest first, cursor-paginated. Each item carries its plan, status and
+        cabinet count. `status` filters by exact status (`active`,
+        `suspended`, ...).
+      tags:
+        - platform
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only organizations in this status.
+          schema:
+            type: string
+            maxLength: 32
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: One page of organizations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createOrganization
+      x-permission: 'platform:admin'
+      summary: Create an organization — a customer — with no cabinet yet (platform admin).
+      description: >
+        Creates the organization on `planId` (default `base`) with optional
+        requisites, manual limit overrides and trial end. Cabinets are added
+        with createCabinet and its `organizationId`, each reserving one
+        `cabinets` of the organization's plan. Recorded in the organization's
+        trail (`organization.create`).
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationRequest'
+      responses:
+        '201':
+          description: The organization was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /platform/organizations/{organizationId}:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getOrganization
+      x-permission: 'platform:admin'
+      summary: Read one organization (platform admin).
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.organization_not_found
+      responses:
+        '200':
+          description: The organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateOrganization
+      x-permission: 'platform:admin'
+      summary: Change an organization's plan, limit overrides, trial or requisites (platform admin).
+      description: >
+        Merge semantics: an omitted field is unchanged. `limitsOverride`, when
+        present, REPLACES the whole override (`{}` clears it); it is validated
+        by the same rules as a plan's limits (known metrics, integers >= -1,
+        where -1 is unlimited). `planId` must name an existing plan.
+        `clearTrialUntil: true` removes the trial end (it cannot be combined
+        with `trialUntil`).
+
+
+        A request that changes something writes ONE `organization.update`
+        entry to the organization's trail, in the same transaction as the
+        change: the author and, per changed field, `{before, after}`. A request
+        that changes nothing writes nothing and answers 200 with the
+        organization. Lowering a limit below current use is allowed: it
+        refuses NEW consumption only (ADR-0051 §3), nothing is removed.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.organization_not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationRequest'
+      responses:
+        '200':
+          description: The organization after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /platform/organizations/{organizationId}/usage:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getOrganizationUsage
+      x-permission: 'platform:admin'
+      summary: An organization's consumption against its effective limits (platform admin).
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.organization_not_found
+      responses:
+        '200':
+          description: Usage per metric.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUsage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /platform/organizations/{organizationId}/audit:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listOrganizationAudit
+      x-permission: 'platform:admin'
+      summary: The organization's trail of manual changes (platform admin).
+      description: >
+        Append-only, newest first, cursor-paginated: `organization.create`,
+        `organization.update` (platform changes of plan, overrides, trial,
+        requisites), `organization.requisites.update` (the organization's own
+        edit through /organization) and `cabinet.create` (a cabinet added to
+        it). Each entry names its author and carries the diff in `detail`.
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.organization_not_found
+      responses:
+        '200':
+          description: One page of the trail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAuditList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /platform/plans:
+    get:
+      operationId: listPlans
+      x-permission: 'platform:admin'
+      summary: The plan catalog (platform admin).
+      description: >
+        Every plan with its full limits declaration. Read-only: plans are
+        seeded and changed by migration for now; a plan CRUD is a later issue.
+      tags:
+        - platform
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: All plans, by id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # The caller's own organization. Reading needs settings:manage (the
+  # administrative roles: org_owner, org_admin, cabinet_admin, platform_admin —
+  # the people who add channels and people and so run into the limits);
+  # changing requisites needs billing:manage (org_owner, platform_admin): legal
+  # name, billing email and tax id are the contract's, not a workspace setting.
+  /organization:
+    get:
+      operationId: getMyOrganization
+      x-permission: 'settings:manage'
+      summary: The organization owning the cabinet the caller acts in.
+      description: >
+        Requisites, plan, manual overrides, trial and status of the caller's
+        organization — derived from the cabinet of the request (the API key's,
+        or the session's selected cabinet), never from an id in the request.
+      tags:
+        - organization
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    patch:
+      operationId: updateMyOrganization
+      x-permission: 'billing:manage'
+      # R7-B (#36, ADR-0080): still served while the organization is suspended.
+      x-suspension: allowed
+      x-suspension-reason: >
+        Billing requisites (legal name, billing email, tax id) are what the customer may have to correct to be invoiced and resumed; plan, limits and status are not theirs to change, so nothing the suspension protects moves (ADR-0080 §3).
+      summary: Edit the caller's organization requisites.
+      description: >
+        Legal name, billing email and tax id; an omitted field is unchanged, an
+        empty string clears it. Plan, limits and trial are not the
+        organization's to change (updateOrganization, platform). A change is
+        written to the organization's trail (`organization.requisites.update`,
+        author and before/after) in the same transaction.
+      tags:
+        - organization
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationRequisitesRequest'
+      responses:
+        '200':
+          description: The organization after the edit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /organization/usage:
+    get:
+      operationId: getMyOrganizationUsage
+      x-permission: 'settings:manage'
+      summary: The caller's organization consumption against its effective limits.
+      description: >
+        One entry per metric (`cabinets`, `seats`, `channels.<kind>`,
+        `messages.month`, `ai.tokens.month`, `retention.days`): what the
+        organization uses across ALL its cabinets, and its effective limit —
+        the plan's, with the manual override applied. Counted by the same
+        functions quota reservation uses (ADR-0078), so what this shows is what
+        the next create is checked against.
+      tags:
+        - organization
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: Usage per metric.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUsage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  # ===========================================================================
+  # END R7-A organizations (paths)
+  # ===========================================================================
 
 components:
   # ===========================================================================
@@ -3986,6 +4643,18 @@ components:
         # does not lift by waiting, and a client that retries a 429 would retry
         # this one forever.
         - tenancy.quota_exceeded
+        # --- R7-B (issue #36, ADR-0080): organization suspension ----------------
+        # suspended (403): the organization is suspended, so every cabinet of it
+        # is read-only — the mutation (a send included) is refused; reads keep
+        # working. Not 402 (suspension is not only for non-payment, and 402 is
+        # reserved) and not 423 (WebDAV's lock of one resource, which clients
+        # handle as a transient conflict). Retrying does not help until a
+        # platform operator resumes the organization.
+        - tenancy.suspended
+        # --- R7-A (issue #34, ADR-0079): organizations ---------------------------
+        # An organization id (path, or createCabinet's organizationId) that
+        # names no organization: 404.
+        - tenancy.organization_not_found
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -4017,6 +4686,65 @@ components:
         - limit
         - used
     # --- end R6-C ---------------------------------------------------------------
+
+    # --- R7-B (#36, ADR-0080): organization suspension ---------------------------
+    SuspendOrganizationRequest:
+      type: object
+      description: Why the organization is suspended.
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: >
+            Why the organization is suspended (non-payment, an abuse
+            investigation, a customer request, ...). Required: a suspension
+            nobody can explain later is a support ticket waiting to happen. It
+            is kept on the organization and in the audit trail; it is not shown
+            in the refusal a cabinet caller gets.
+          example: Invoice 2026-09 unpaid
+      required:
+        - reason
+
+    OrganizationSuspension:
+      type: object
+      description: >
+        An organization's suspension state, as a suspend or resume left it.
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          # Not an `enum`: the pinned generator renames the constants of the
+          # other active/... enums (UpdateWebhookRequestStatus) when a third one
+          # shares a value. The values are `active` and `suspended`.
+          description: '`active` or `suspended`.'
+          example: suspended
+        suspendedReason:
+          type: string
+          description: Why it is suspended. Present only while suspended.
+        suspendedAt:
+          type: string
+          format: date-time
+          description: Since when it is suspended. Present only while suspended.
+        suspendedBy:
+          type: string
+          description: >
+            Who suspended it, as `<actor type>:<actor id>` — `account:<uuid>` for
+            a platform operator, `api_key:<kid>` for a platform key. Present
+            only while suspended.
+        changed:
+          type: boolean
+          description: >
+            Whether this call changed the state. false = the organization
+            already was in the requested state (an idempotent repeat); nothing
+            was written or audited.
+      required:
+        - organizationId
+        - status
+        - changed
+    # --- end R7-B ---------------------------------------------------------------
 
     ValidationError:
       type: object
@@ -4583,6 +5311,14 @@ components:
             for — an unknown capability set is not an empty one.
         settings:
           $ref: '#/components/schemas/ChannelSettings'
+        suspended:
+          type: boolean
+          description: >
+            R7-B (#36, ADR-0080): true while the channel is held because its
+            organization is suspended — its live provider link is closed and
+            nothing is sent through it; its credentials are kept. `state` is the
+            state it had, and is what resuming the organization restores.
+            Absent when the channel is not held.
       required:
         - id
         - kind
@@ -4709,6 +5445,17 @@ components:
           type: string
           description: Client-facing cabinet name; the slug derives from it.
           minLength: 1
+        # R7-A (issue #34, ADR-0079 §2): the organization the cabinet joins.
+        organizationId:
+          type: string
+          format: uuid
+          description: >
+            The organization (createOrganization) the cabinet is added to; it
+            reserves one `cabinets` of that organization's plan. DEPRECATED
+            when omitted: without it a new organization is created for the
+            cabinet on the default plan (the pre-#34 one-to-one pair), which
+            keeps existing callers working — new callers should create the
+            organization first and name it here.
       required:
         - name
 
@@ -6647,3 +7394,306 @@ components:
           minLength: 1
           maxLength: 4096
     # END R6-A schemas
+
+    # =========================================================================
+    # BEGIN R7-A organizations (schemas) — issue #34, ADR-0051 / ADR-0079
+    # =========================================================================
+    QuotaLimits:
+      type: object
+      description: >
+        Metric -> limit (ADR-0051 §2): `cabinets`, `seats`, `messages.month`,
+        `ai.tokens.month`, `retention.days`, `channels.<kind>`. A limit is a
+        non-negative integer, or -1 for unlimited. Validated by the platform's
+        quota rules: an unknown metric or a value below -1 is refused.
+      additionalProperties:
+        type: integer
+        format: int64
+        minimum: -1
+      example:
+        channels.wa_web: 5
+        seats: -1
+
+    Plan:
+      type: object
+      description: A tariff — a full declaration of limits (every metric stated).
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        limits:
+          $ref: '#/components/schemas/QuotaLimits'
+      required:
+        - id
+        - name
+        - limits
+
+    PlanList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plan'
+      required:
+        - items
+
+    Organization:
+      type: object
+      description: >
+        A customer (ADR-0051 §1): requisites, plan, manual limit overrides,
+        trial and status. `status` and `suspendedReason` are read-only here
+        (suspension is issue #36).
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        status:
+          type: string
+          readOnly: true
+          description: Lifecycle status, e.g. `active` or `suspended`.
+        suspendedReason:
+          type: string
+          readOnly: true
+          description: Why the organization is suspended; empty when it is not.
+        planId:
+          type: string
+        planName:
+          type: string
+        limitsOverride:
+          $ref: '#/components/schemas/QuotaLimits'
+        limitsOverrideError:
+          type: string
+          readOnly: true
+          description: >
+            Present only when the STORED override is not a valid limits document
+            (written around this API). `limitsOverride` then reads as empty, every
+            quota reservation of the organization fails closed, and
+            updateOrganization with a new `limitsOverride` repairs it.
+        legalName:
+          type: string
+        billingEmail:
+          type: string
+        taxId:
+          type: string
+        trialUntil:
+          type: string
+          format: date-time
+          description: End of the trial; absent when the organization has none.
+        cabinetCount:
+          type: integer
+          format: int64
+          description: How many cabinets the organization owns.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - slug
+        - status
+        - suspendedReason
+        - planId
+        - planName
+        - limitsOverride
+        - legalName
+        - billingEmail
+        - taxId
+        - cabinetCount
+        - createdAt
+        - updatedAt
+
+    OrganizationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Organization'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+
+    CreateOrganizationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The organization's display name; the slug derives from it.
+        planId:
+          type: string
+          description: The plan (default `base`).
+        limitsOverride:
+          $ref: '#/components/schemas/QuotaLimits'
+        legalName:
+          type: string
+          maxLength: 300
+        billingEmail:
+          type: string
+          maxLength: 254
+        taxId:
+          type: string
+          maxLength: 64
+        trialUntil:
+          type: string
+          format: date-time
+      required:
+        - name
+
+    UpdateOrganizationRequest:
+      type: object
+      additionalProperties: false
+      description: Merge patch; omitted fields are unchanged.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        planId:
+          type: string
+        limitsOverride:
+          $ref: '#/components/schemas/QuotaLimits'
+        legalName:
+          type: string
+          maxLength: 300
+        billingEmail:
+          type: string
+          maxLength: 254
+        taxId:
+          type: string
+          maxLength: 64
+        trialUntil:
+          type: string
+          format: date-time
+        clearTrialUntil:
+          type: boolean
+          description: Remove the trial end. Not together with trialUntil.
+
+    UpdateOrganizationRequisitesRequest:
+      type: object
+      additionalProperties: false
+      description: Omitted fields are unchanged; an empty string clears a field.
+      properties:
+        legalName:
+          type: string
+          maxLength: 300
+        billingEmail:
+          type: string
+          maxLength: 254
+        taxId:
+          type: string
+          maxLength: 64
+
+    UsageMetric:
+      type: object
+      description: >
+        One metric of an organization: what it uses and what it may. `limit` is
+        absent exactly when `unlimited` is true. `used` is absent for a
+        `setting` (retention.days is a term, not a consumption).
+      properties:
+        metric:
+          type: string
+          example: channels.wa_web
+        kind:
+          type: string
+          enum: [resource, monthly, setting]
+          description: >
+            `resource` is counted from the resources now; `monthly` is the
+            current calendar month (UTC); `setting` has no consumption.
+        used:
+          type: integer
+          format: int64
+        limit:
+          type: integer
+          format: int64
+        unlimited:
+          type: boolean
+        overridden:
+          type: boolean
+          description: The limit comes from the organization's manual override, not the plan.
+      required:
+        - metric
+        - kind
+        - unlimited
+        - overridden
+
+    OrganizationUsage:
+      type: object
+      properties:
+        organizationId:
+          type: string
+        planId:
+          type: string
+        period:
+          type: string
+          format: date
+          description: The first day (UTC) of the month the monthly metrics count.
+        asOf:
+          type: string
+          format: date-time
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageMetric'
+      required:
+        - organizationId
+        - planId
+        - period
+        - asOf
+        - metrics
+
+    OrganizationAuditEntry:
+      type: object
+      description: One entry of an organization's append-only trail.
+      properties:
+        id:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        actorType:
+          type: string
+          description: The author's kind, `api_key` or `account`.
+        actorId:
+          type: string
+          description: The key id or the account id of the author.
+        action:
+          type: string
+        detail:
+          type: object
+          additionalProperties: true
+          description: >
+            For a change, `changes.<field>.before` and `.after` for every field
+            that changed. For a creation, `after` (the initial terms).
+      required:
+        - id
+        - occurredAt
+        - actorType
+        - actorId
+        - action
+        - detail
+
+    OrganizationAuditList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationAuditEntry'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+    # END R7-A organizations (schemas)
