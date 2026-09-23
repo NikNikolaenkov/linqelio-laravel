@@ -106,6 +106,23 @@ final class Contract
         'getEmbedConversation' => 'widget-side, embed token',
         'sendEmbedMessage' => 'widget-side, embed token',
         'startEmbedBotConversation' => 'widget-side, embed token',
+
+        // Human identity (ADR-0049, ADR-0074): a person's own login, cookie
+        // session and second factor. These accept a session cookie, never an API
+        // key, so a package holding a client key cannot call them — wrapping them
+        // would suggest it can.
+        'login' => 'human identity — cookie session, not a client key',
+        'logout' => 'human session only',
+        'getMe' => 'human session only — x-permission self',
+        'listMySessions' => 'human session only — x-permission self',
+        'revokeMySession' => 'human session only — x-permission self',
+        'acceptInvite' => 'human identity — the invitee holds no key',
+        'requestPasswordReset' => 'human identity',
+        'confirmPasswordReset' => 'human identity',
+        'startTotpEnrollment' => 'human session only — x-permission self',
+        'enableTotp' => 'human session only — x-permission self',
+        'disableTotp' => 'human session only — x-permission self',
+        'regenerateRecoveryCodes' => 'human session only — x-permission self',
     ];
 
     /**
