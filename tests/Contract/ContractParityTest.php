@@ -123,6 +123,22 @@ final class Contract
         'enableTotp' => 'human session only — x-permission self',
         'disableTotp' => 'human session only — x-permission self',
         'regenerateRecoveryCodes' => 'human session only — x-permission self',
+
+        // Human platform operators (ADR-0075): platform:admin, which client
+        // keys are not given — same reasoning as the cabinet operations above.
+        'listPlatformOperators' => 'platform:admin only',
+        'grantPlatformOperator' => 'platform:admin only',
+        'revokePlatformOperator' => 'platform:admin only',
+
+        // Team management (issue #31): people, roles and channel assignments of
+        // a cabinet are administered in the console by a person. A key with
+        // team:manage can call them, but no integration need for it exists yet;
+        // wrapping them is a decision to take when one does, not by default.
+        'listMembers' => 'console team management — no integration use case yet',
+        'inviteMember' => 'console team management — the invite link is a secret meant for a person',
+        'revokeInvite' => 'console team management — no integration use case yet',
+        'updateMember' => 'console team management — no integration use case yet',
+        'removeMember' => 'console team management — no integration use case yet',
     ];
 
     /**

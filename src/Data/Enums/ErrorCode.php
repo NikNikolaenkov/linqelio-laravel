@@ -69,6 +69,15 @@ enum ErrorCode: string
     case TeamLastOrgOwner = 'team.last_org_owner';
     case TeamLastCabinetAdmin = 'team.last_cabinet_admin';
     case TeamSelfDemotionDenied = 'team.self_demotion_denied';
+    case TeamRoleCeilingExceeded = 'team.role_ceiling_exceeded';
+    case TeamVersionConflict = 'team.version_conflict';
+    case TeamAccountExists = 'team.account_exists';
+    case TeamMemberNotFound = 'team.member_not_found';
+    case TeamInviteNotFound = 'team.invite_not_found';
+
+    case PlatformLastOperator = 'platform.last_operator';
+    case PlatformAccountNotFound = 'platform.account_not_found';
+    case PlatformOperatorNotFound = 'platform.operator_not_found';
 
     /** A settings section was written from a stale version (412). */
     case SettingsVersionConflict = 'settings.version_conflict';
