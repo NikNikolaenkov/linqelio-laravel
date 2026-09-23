@@ -133,6 +133,22 @@ final class Contract
         'getSettingsSection' => 'console cabinet settings — no integration use case yet',
         'putSettingsSection' => 'console cabinet settings — no integration use case yet',
 
+        // Organizations (ADR-0079/0080): the platform surface is platform:admin,
+        // which client keys are not given; the own-organization reads and the
+        // requisites edit are console screens with no integration use case yet.
+        'listOrganizations' => 'platform:admin only',
+        'createOrganization' => 'platform:admin only',
+        'getOrganization' => 'platform:admin only',
+        'updateOrganization' => 'platform:admin only',
+        'getOrganizationUsage' => 'platform:admin only',
+        'listOrganizationAudit' => 'platform:admin only',
+        'listPlans' => 'platform:admin only',
+        'suspendOrganization' => 'platform:admin only',
+        'resumeOrganization' => 'platform:admin only',
+        'getMyOrganization' => 'console "My company" — no integration use case yet',
+        'getMyOrganizationUsage' => 'console "My company" — no integration use case yet',
+        'updateMyOrganization' => 'console "My company" requisites — needs billing:manage',
+
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
         'listPlatformOperators' => 'platform:admin only',

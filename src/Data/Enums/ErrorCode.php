@@ -35,6 +35,8 @@ enum ErrorCode: string
     case TenancyCabinetNotFound = 'tenancy.cabinet_not_found';
     case TenancyCrossCabinetDenied = 'tenancy.cross_cabinet_denied';
     case TenancyQuotaExceeded = 'tenancy.quota_exceeded';
+    case TenancyOrganizationNotFound = 'tenancy.organization_not_found';
+    case TenancySuspended = 'tenancy.suspended';
 
     case KeyringRotationOverlapRequired = 'keyring.rotation_overlap_required';
 
