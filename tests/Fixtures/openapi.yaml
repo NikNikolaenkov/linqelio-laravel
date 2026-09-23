@@ -104,6 +104,8 @@ tags:
     description: Human identity — login, sessions, invites, password reset, second factor (ADR-0049).
   - name: team
     description: People of a cabinet — members, roles, channel assignments, invites (issue #31).
+  - name: realtime
+    description: Live event streams (Server-Sent Events) scoped to the caller (ADR-0069).
 
 paths:
   # ===========================================================================
@@ -4763,6 +4765,1158 @@ paths:
   # END R8-F contact fields (paths)
   # ===========================================================================
 
+  # ===========================================================================
+  # BEGIN R9-B contact merge (paths) — issue #50, ADR-0090. One self-contained
+  # block so parallel contract work does not interleave with it; the schemas are
+  # in the matching "BEGIN R9-B schemas" block at the end of components.schemas,
+  # the error codes in the "R9-B" block at the end of ErrorCode.
+  #
+  # Reading proposals and merges is reading contacts (`channels:read`, channel
+  # scope applied: an agent sees a pair only when both people are on their
+  # channels); merging, undoing and dismissing change contacts
+  # (`contacts:write`). Every change is audited with its author.
+  # ===========================================================================
+  /contact-merge-proposals:
+    get:
+      operationId: listContactMergeProposals
+      x-permission: 'channels:read'
+      summary: List possible duplicate contacts (merge proposals).
+      description: >
+        The cabinet's "possible duplicates", oldest first, cursor-paginated.
+        Detection is deterministic, never fuzzy (ADR-0008 §2): two live
+        contacts are proposed when identities of both carry the same phone
+        (`shared_phone`), or when one is a WhatsApp LID contact and the other
+        its phone contact according to a LID pair the platform recorded
+        (`lid_pair`, ADR-0060 §5). Listing runs the detection first, so a new
+        duplicate appears here on the next read.
+
+
+        A proposal is a hint for a person or the host to confirm (mergeContacts)
+        or dismiss (dismissContactMergeProposal) — a dismissed pair is not
+        proposed again. An OPEN proposal whose contact has since been merged
+        away is not listed. A channel-scoped caller sees a proposal only when
+        both contacts talk on its channels.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          required: false
+          description: Which proposals to list (default `open`).
+          schema:
+            $ref: '#/components/schemas/ContactMergeProposalStatus'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: A cursor page of proposals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMergeProposalList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contact-merge-proposals/{proposalId}:
+    get:
+      operationId: getContactMergeProposal
+      x-permission: 'channels:read'
+      summary: Fetch one merge proposal.
+      tags:
+        - contacts
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          description: Merge proposal identifier (uuid).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.merge_proposal_not_found
+      responses:
+        '200':
+          description: The proposal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMergeProposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contact-merge-proposals/{proposalId}/dismiss:
+    post:
+      operationId: dismissContactMergeProposal
+      x-permission: 'contacts:write'
+      summary: Dismiss a merge proposal — the two are different people.
+      description: >
+        Mark the proposal dismissed: the pair is not proposed again. Audited
+        with its author (`contact.merge_proposal.dismiss`). Idempotent:
+        dismissing a dismissed proposal changes nothing (`changed: false`). A
+        proposal that was merged cannot be dismissed (409
+        contact.merge_conflict) — undo the merge instead.
+      tags:
+        - contacts
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          description: Merge proposal identifier (uuid).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.merge_proposal_not_found
+        - contact.merge_conflict
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The proposal as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMergeProposalChange'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /contact-merges:
+    get:
+      operationId: listContactMerges
+      x-permission: 'channels:read'
+      summary: List contact merges (newest first).
+      description: >
+        The cabinet's merge history, newest first, cursor-paginated — undone
+        merges included (`status: undone`). `contactId` narrows it to the
+        merges a contact took part in, on either side: the contact card's
+        history, where an undo starts. A channel-scoped caller sees a merge when
+        either contact talks on its channels.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: contactId
+          in: query
+          required: false
+          description: Only merges this contact took part in (as survivor or as the merged contact).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: A cursor page of merges.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMergeList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: mergeContacts
+      x-permission: 'contacts:write'
+      summary: Merge one contact into another.
+      description: >
+        Fold `mergedId` into `survivorId` (ADR-0008 §4, ADR-0090). Everything the
+        merged contact has moves to the survivor in one transaction: channel
+        identities, host refs, consents (the survivor's own consent for a
+        channel stays; the merged contact's for that channel stays with it —
+        except that an opt-out wins: if the merged contact revoked consent on
+        a channel where the survivor's is active, the survivor is revoked there,
+        by the caller, at the merge; a grant never lifts an opt-out),
+        and conversations. Typed field values (ADR-0061) are folded key by key:
+        a value only the merged contact holds moves WITH its provenance; for a
+        key where both hold different values, `fieldChoices` picks the side,
+        and without a choice the authority ladder decides (human > host >
+        platform > ai; a tie keeps the survivor's). Tags are united, host
+        `custom` keys the survivor lacks are added, an empty display name /
+        avatar / locale is filled. The merged contact stays as a `merged`
+        tombstone with a full snapshot.
+
+
+        A choice for a key where the two do NOT conflict is refused (422
+        contact.field_invalid, `reason: not_conflicting`) and nothing is
+        merged: it means the caller reviewed a state that has since changed.
+        `proposalId` (optional) names the open proposal this merge resolves;
+        it must name exactly this pair. The merge can be undone for 30 days
+        (undoContactMerge).
+
+
+        A channel-scoped caller (an agent) may merge only contacts it sees AND
+        whose every conversation is on its channels — a merge moves all of a
+        person's dialogs (403 auth.forbidden_scope otherwise). Audited with its
+        author (`contact.merge`): ids, counts and field KEYS, never values.
+      tags:
+        - contacts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactMergeRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        - contact.merge_proposal_not_found
+        - contact.merge_conflict
+        - contact.field_invalid
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The recorded merge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMerge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: A field choice was refused (contact.field_invalid); nothing was merged.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /contact-merges/{mergeId}:
+    get:
+      operationId: getContactMerge
+      x-permission: 'channels:read'
+      summary: Fetch one contact merge.
+      tags:
+        - contacts
+      parameters:
+        - name: mergeId
+          in: path
+          required: true
+          description: Contact merge identifier (uuid).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.merge_not_found
+      responses:
+        '200':
+          description: The merge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMerge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contact-merges/{mergeId}/undo:
+    post:
+      operationId: undoContactMerge
+      x-permission: 'contacts:write'
+      summary: Undo a contact merge.
+      description: >
+        Restore both contacts exactly as the merge snapshot recorded them: the
+        merged contact's identities, host refs, consents and conversations go
+        back to it (with any dialog its moved identities opened on the survivor
+        after the merge), the survivor's typed fields, tags, custom keys and
+        profile slots the merge changed are put back, and the merged contact is
+        live again. A proposal the merge resolved is open again. Audited with
+        its author (`contact.merge.undo`).
+
+
+        Refused, and nothing changes, when "exactly" is no longer possible —
+        409 contact.merge_undo_unsafe with one `errors[]` entry per reason:
+        `survivor_merged` (the survivor was itself merged away),
+        `later_merge` (another contact was merged into the survivor since —
+        undo that one first), `merged_contact_changed` / `merged_contact_missing`,
+        `identity_moved`, `host_ref_moved`, `consent_changed`,
+        `conversation_moved`, and `field_changed` / `custom_changed` naming the
+        key (`fields.<key>`, `custom.<key>`) a value the merge set was edited
+        after it. Past 30 days: 409 contact.merge_undo_expired.
+
+
+        Idempotent: undoing an undone merge changes nothing (`changed: false`).
+        A channel-scoped caller needs every conversation of both contacts on
+        its channels, as for the merge.
+      tags:
+        - contacts
+      parameters:
+        - name: mergeId
+          in: path
+          required: true
+          description: Contact merge identifier (uuid).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.merge_not_found
+        - contact.merge_undo_unsafe
+        - contact.merge_undo_expired
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The merge as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactMergeUndoResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ===========================================================================
+  # END R9-B contact merge (paths)
+  # ===========================================================================
+
+  # ===========================================================================
+  # BEGIN R9-F realtime event stream (paths) — issue #56, epic #13, ADR-0069
+  # ===========================================================================
+  /events/stream:
+    get:
+      operationId: streamEvents
+      x-permission: 'channels:read'
+      summary: Subscribe to the cabinet's live events (Server-Sent Events).
+      description: >
+        A `text/event-stream` (SSE) of the cabinet's events — new messages,
+        delivery statuses, channel status and pairing changes, settings changes —
+        filtered by the caller's Principal exactly as the rest of the API is:
+        an agent receives only the events of the channels assigned to them, and
+        `channel.qr` goes only to callers holding `channels:manage` on that
+        channel. The stream is fed from the same event log as the outbound
+        webhooks (ADR-0031), and each event carries the same identifiers-only
+        payload in `data` (see RealtimeEvent); read anything else through the API.
+
+
+        Frames: `id:` is an opaque cursor; `event:` is the event type; `data:`
+        is one line of JSON. The server's own events are `stream.open` (first
+        frame, carries the starting cursor), `stream.reset` (the cursor could
+        not be resumed — reload state through the API, then keep reading) and
+        `stream.closed` (last frame, `{"reason": ...}`: `shutdown` and `lagging`
+        mean reconnect; `unauthorized` means the session, the membership or the
+        permission is gone). Comment lines (`: hb`) are keep-alives every 15 s
+        and also advance the cursor.
+
+
+        Resume: a reconnecting EventSource sends `Last-Event-ID` by itself; the
+        stream replays what the caller missed (up to 1000 events, up to an hour
+        old; otherwise `stream.reset`), then continues live, with no event
+        repeated — also when the reconnect lands on another replica. Clients that
+        reopen the stream themselves pass the cursor as `lastEventId`.
+
+
+        Cabinet: an EventSource cannot set request headers, so a session may
+        name the cabinet with the `cabinet` query parameter instead of the
+        `X-Linqelio-Cabinet` header. It is validated and checked against the
+        person's memberships exactly like the header (a cabinet they are not a
+        member of is 403 tenancy.cross_cabinet_denied); naming two different
+        cabinets in the header and the parameter is refused the same way.
+        An API key streams its own cabinet and ignores both.
+
+
+        The credential is re-checked every 15 s while the stream is open (and at
+        once when this replica revokes the session or changes the membership):
+        a revoked session, a removed membership or a narrowed channel scope
+        takes effect on the open stream, not only on the next request. At most
+        10 concurrent streams per caller per replica (429
+        realtime.too_many_streams).
+      tags:
+        - realtime
+      parameters:
+        - name: cabinet
+          in: query
+          required: false
+          description: >
+            The cabinet to stream, for a session that cannot send the
+            X-Linqelio-Cabinet header (a browser EventSource). A cabinet id;
+            validated like the header.
+          schema:
+            type: string
+        - name: lastEventId
+          in: query
+          required: false
+          description: >
+            Resume after this cursor (the `id:` of the last frame received).
+            The Last-Event-ID header takes precedence.
+          schema:
+            type: string
+            maxLength: 64
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: The cursor a reconnecting EventSource sends by itself.
+          schema:
+            type: string
+            maxLength: 64
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - realtime.too_many_streams
+        - provider.unavailable
+      responses:
+        '200':
+          description: >
+            The event stream. `X-Accel-Buffering: no` asks a reverse proxy not
+            to buffer it (see the deploy runbook for the nginx settings).
+          headers:
+            X-Accel-Buffering:
+              description: Always `no`.
+              schema:
+                type: string
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  SSE frames. The `data:` line of a bus event is a
+                  RealtimeEvent.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /embed/events/stream:
+    get:
+      operationId: streamEmbedEvents
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the embed token (embedToken scheme) and its cap[], not by a cabinet principal: ADR-0009 Plane B, scoped to one contact and enforced in the handler.
+      summary: Live events of the widget's conversation (Server-Sent Events).
+      description: >
+        The widget's stream (ADR-0069 §3): new messages and delivery statuses of
+        the ONE contact the embed token was minted for — and of its one
+        conversation when the token pins one — on the channels the minter could
+        reach. Requires cap message:read. The token is sent as a Bearer header
+        (read the stream with fetch, not EventSource, so the token never
+        appears in a URL). Frames are those of streamEvents with a smaller
+        `data` (EmbedRealtimeEvent: the message id, the conversation id and,
+        for a status, the status). The stream ends with `stream.closed`
+        `expired` when the token does.
+      tags:
+        - embed
+        - realtime
+      security:
+        - embedToken: []
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Resume after this cursor (the `id:` of the last frame received).
+          schema:
+            type: string
+            maxLength: 64
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - embed.scope_violation
+        - realtime.too_many_streams
+        - provider.unavailable
+      responses:
+        '200':
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >
+                  SSE frames. The `data:` line of a bus event is an
+                  EmbedRealtimeEvent.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # ===========================================================================
+  # END R9-F realtime event stream (paths)
+  # ===========================================================================
+
+  # ===========================================================================
+  # BEGIN R9-A contact import / export as background jobs (issue #49, ADR-0089)
+  # ===========================================================================
+  # OWNED BY R9-A: the /contact-imports and /contact-exports families below. Not
+  # under /contacts/…: /contacts/{id}/… already owns the segment after
+  # /contacts/, and a literal sibling there would overlap it in the router.
+  /contact-imports:
+    post:
+      operationId: uploadContactImport
+      x-permission: 'contacts:write'
+      summary: Upload a CSV file of contacts to import.
+      description: >
+        Stores the file as an import job in the `uploaded` state and answers
+        its header, row count and first rows — nothing is imported yet. The
+        file must be CSV in UTF-8 (a BOM is fine; comma, semicolon or tab
+        delimited, sniffed from the header line), at most 10 MiB, 50 000 rows
+        and 100 columns, with column names in the first row. An XLSX/XLS, a
+        PDF, anything binary or not UTF-8 is refused with 422
+        contact.import_invalid and the reason in `errors[]` (`not_csv`,
+        `encoding`, `empty`, `no_header`, `too_many_rows`,
+        `too_many_columns`, `malformed`); a larger file is 413
+        contact.import_too_large.
+
+
+        Next: previewContactImport (a dry run of a mapping), then
+        startContactImport. An upload that is never started is deleted after
+        a day.
+      tags:
+        - contacts
+      parameters:
+        - name: filename
+          in: query
+          required: false
+          description: The original file name (shown in the job list).
+          schema:
+            type: string
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+              format: binary
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.import_invalid
+        - contact.import_too_large
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The uploaded file, ready to be mapped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listContactImports
+      x-permission: 'contacts:write'
+      summary: List the cabinet's recent contact imports.
+      description: The 50 most recent import jobs of the cabinet, newest first, with their progress.
+      tags:
+        - contacts
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The cabinet's recent imports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImportList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contact-imports/{jobId}:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Import job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getContactImport
+      x-permission: 'contacts:write'
+      summary: Read one import job and its progress.
+      description: >
+        The job's state (`uploaded` → `queued` → `running` → `completed`, or
+        `failed` / `cancelled`), how many rows were processed, and what they
+        did: created, updated, rejected (each with a report line), merge
+        proposals, consents recorded. Poll it while the job runs.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+      responses:
+        '200':
+          description: The import job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contact-imports/{jobId}/preview:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Import job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: previewContactImport
+      x-permission: 'contacts:write'
+      summary: Dry-run a column mapping over the first rows.
+      description: >
+        Checks the mapping and runs the first `rows` data rows (default 100,
+        at most 500) through exactly what the real run does — normalization,
+        typed-field validation, the consent column, dedupe against the
+        cabinet's existing contacts — WITHOUT writing anything, and answers the
+        counts and the per-row issues.
+
+
+        The mapping itself is refused with 422 contact.import_invalid, one
+        `errors[]` entry per offending column (`field` = `columns[i].member`),
+        when a column is out of range or mapped twice, a channel kind or
+        target is unknown, a typed field does not exist or is not the host's
+        to fill (platform- and AI-owned fields are not importable), a consent
+        channel is not one the caller works — and when the mapping has no
+        identity/hostRef column (`identity_required`) or NO CONSENT COLUMN
+        (`consent_column_required`): an import states consent explicitly, per
+        channel (ADR-0084), or it does not run.
+      tags:
+        - contacts
+      parameters:
+        - name: rows
+          in: query
+          required: false
+          description: How many data rows to check (1–500, default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactImportMapping'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+        - contact.job_conflict
+        - contact.import_invalid
+        - tenancy.suspended
+      responses:
+        '200':
+          description: What the first rows would do.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImportPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /contact-imports/{jobId}/start:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Import job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: startContactImport
+      x-permission: 'contacts:write'
+      summary: Run the import in the background.
+      description: >
+        Queues the uploaded file with the mapping (checked exactly as in
+        previewContactImport) and answers 202 at once — the run happens in the
+        background, chunk by chunk, and never holds the request. It survives
+        restarts: a run interrupted on one replica is resumed by another from
+        the last committed chunk, and no row is applied twice.
+
+
+        Per row: a row whose identities / host refs match no contact creates
+        one; a row matching exactly one contact updates it (typed fields at
+        the `host` rung of ADR-0061 §4 — a value a person entered is kept and
+        reported, tags added, the name only filled where there was none);
+        a row whose keys point at DIFFERENT contacts is not applied — it is a
+        merge proposal in the report, never a silent merge (ADR-0008 §4).
+        Consent is recorded only where the row's consent column says yes
+        (source `import`), and never lifts an opt-out (ADR-0084 §2).
+
+
+        One import runs at a time per cabinet: 409 contact.job_conflict while
+        another is queued or running, or when this job already started.
+        Audited as `contact.import.start` (mapping shape, never values).
+      tags:
+        - contacts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactImportMapping'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+        - contact.job_conflict
+        - contact.import_invalid
+        - tenancy.suspended
+      responses:
+        '202':
+          description: The job, queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /contact-imports/{jobId}/cancel:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Import job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: cancelContactImport
+      x-permission: 'contacts:write'
+      x-suspension: allowed
+      x-suspension-reason: >
+        Cancelling only stops an import (and drops its file); refusing it while the organization is suspended would leave the run to continue the moment the organization resumes.
+      summary: Stop an import that has not finished.
+      description: >
+        Stops the job between two chunks and drops the uploaded file. Rows
+        already applied stay applied — an import is not undone — and the
+        report keeps them. Idempotent (`changed: false` when it already was
+        cancelled); a completed or failed job is 409 contact.job_conflict.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+        - contact.job_conflict
+      responses:
+        '200':
+          description: The job as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactImportCancel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /contact-imports/{jobId}/report:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Import job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getContactImportReport
+      x-permission: 'contacts:write'
+      summary: Download the per-row report of an import.
+      description: >
+        A CSV (UTF-8 with BOM, formula-safe) with one line per issue:
+        `row` (as a spreadsheet numbers it — the header is row 1), `severity`
+        (`error`: the row was not imported; `warning`: it was, without this
+        part), `code`, `column`, `detail` and, for a merge proposal, the
+        `contact_ids` the row's keys point at. It never repeats a cell's
+        value. Available while the job runs (the lines so far) and after.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+      responses:
+        '200':
+          description: The report file.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contact-exports:
+    post:
+      operationId: createContactExport
+      x-permission: 'contacts:export'
+      x-suspension: allowed
+      x-suspension-reason: >
+        An export only reads the cabinet's own contacts; a suspended organization stays read-only, not locked out of its data.
+      summary: Export contacts to a CSV file in the background.
+      description: >
+        Queues an export of the contacts matching the filter (all of it:
+        carrying every tag, with a conversation on one of the channels, typed
+        fields equal to the given values, in the status) and answers 202. The
+        caller's CHANNEL SCOPE is frozen on the job: an agent assigned to some
+        channels exports only contacts with a conversation on them, and
+        `channelIds` can only narrow that. A bulk egress of personal data:
+        needs contacts:export and is audited as `contact.export.create` with
+        its author and filter.
+
+
+        The file is CSV (UTF-8 with BOM) with every cell that a spreadsheet
+        would execute (starting with `=`, `+`, `-`, `@`, tab or CR) prefixed
+        with `'`. It is kept for 24 hours, then deleted (the job becomes
+        `expired`). Only its author sees the job and downloads the file.
+      tags:
+        - contacts
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactExportRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+      responses:
+        '202':
+          description: The export, queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      operationId: listContactExports
+      x-permission: 'contacts:export'
+      summary: List the caller's recent exports.
+      description: The caller's own 50 most recent exports in the cabinet, newest first.
+      tags:
+        - contacts
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The caller's recent exports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactExportList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /contact-exports/{jobId}:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Export job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getContactExport
+      x-permission: 'contacts:export'
+      summary: Read one of the caller's exports.
+      description: >
+        The export's state (`queued` → `running` → `completed`, or `failed`;
+        `expired` once the file is deleted), its row count and, when
+        completed, `downloadPath` and `expiresAt`. Another member's export is
+        404 contact.job_not_found.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+      responses:
+        '200':
+          description: The export job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contact-exports/{jobId}/file:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        description: Export job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: downloadContactExport
+      x-permission: 'contacts:export'
+      summary: Download a completed export.
+      description: >
+        Streams the export file THROUGH the platform, authenticated like every
+        other call (ADR-0056 §1: our own surfaces never get a bearer link; the
+        object store is not published). Only the export's author may download
+        it, only while it is kept: 409 contact.job_conflict before it is
+        completed, 410 contact.export_expired after the retention deleted it.
+        Every download is audited (`contact.export.download`).
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.job_not_found
+        - contact.job_conflict
+        - contact.export_expired
+      responses:
+        '200':
+          description: The export file.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          description: The file passed its retention and was deleted (contact.export_expired).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  # ===========================================================================
+  # END R9-A contact import / export (paths)
+  # ===========================================================================
+
 components:
   # ===========================================================================
   # Security
@@ -5215,6 +6369,39 @@ components:
         - policy.dialog_frozen
         - policy.monthly_quota_near
         # END R8-C send-policy checkers
+        # --- BEGIN R9-B contact merge (issue #50, ADR-0090) ---------------------
+        # merge_proposal_not_found / merge_not_found (404): a proposal / merge id
+        # that names nothing in the cabinet (or out of the caller's scope — the
+        # same answer). merge_undo_unsafe (409): something since the merge makes
+        # an exact restore impossible — one errors[] entry per reason.
+        # merge_undo_expired (409): past the 30-day undo window.
+        - contact.merge_proposal_not_found
+        - contact.merge_not_found
+        - contact.merge_undo_unsafe
+        - contact.merge_undo_expired
+        # --- END R9-B -------------------------------------------------------------
+        # --- R9-F (issue #56, ADR-0069): realtime stream ------------------------
+        # too_many_streams (429): the caller already holds the maximum number of
+        # open event streams on this replica (10 per person / key / widget
+        # contact). Close a tab, or share one stream between tabs.
+        - realtime.too_many_streams
+        # --- end R9-F -------------------------------------------------------------
+        # --- BEGIN R9-A (issue #49, ADR-0089): contact import / export jobs ----
+        #   import_invalid (422): the uploaded file is not a CSV we can read, or
+        #     the column mapping is refused — reasons in errors[].
+        #   import_too_large (413): the file is larger than the upload limit.
+        #   job_not_found (404): no import / export job with that id in the
+        #     cabinet (for an export: none of the caller's).
+        #   job_conflict (409): the job is not in a state that allows the call
+        #     (started twice, another import already running, cancelling a
+        #     finished run, downloading an export that is not ready).
+        #   export_expired (410): the export file passed its retention.
+        - contact.import_invalid
+        - contact.import_too_large
+        - contact.job_not_found
+        - contact.job_conflict
+        - contact.export_expired
+        # --- END R9-A -------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -8891,3 +10078,778 @@ components:
         - cleared
         - kept
     # END R8-F schemas
+
+    # =========================================================================
+    # BEGIN R9-B schemas: contact merge (issue #50, ADR-0090). Mirrors
+    # internal/store/contactmerge.go and internal/contacts/merge.go; the paths
+    # are the "BEGIN R9-B contact merge (paths)" block. Every enum names its Go
+    # constants explicitly (x-enum-varnames): bare values like `open` or
+    # `merged` would collide with other enums and rename their constants.
+    # =========================================================================
+    ContactMergeActor:
+      type: object
+      description: Who merged, undid or dismissed — a person's account, an API key, or the platform.
+      properties:
+        type:
+          type: string
+          enum:
+            - account
+            - api_key
+            - system
+          x-enum-varnames:
+            - ContactMergeActorAccount
+            - ContactMergeActorApiKey
+            - ContactMergeActorSystem
+        id:
+          type: string
+          description: The account id or the key id (kid); absent for the platform.
+      required:
+        - type
+
+    ContactMergeProposalStatus:
+      type: string
+      description: >
+        `open` — waiting for a decision; `dismissed` — the two are different
+        people, not proposed again; `merged` — resolved by a merge.
+      enum:
+        - open
+        - dismissed
+        - merged
+      x-enum-varnames:
+        - ContactMergeProposalOpen
+        - ContactMergeProposalDismissed
+        - ContactMergeProposalMerged
+
+    ContactMergeProposalReason:
+      type: string
+      description: >
+        Why the pair was proposed (deterministic only, ADR-0008 §2):
+        `shared_phone` — identities of both carry the same phone;
+        `lid_pair` — a WhatsApp LID contact and its phone contact, per a LID
+        pair the platform recorded (ADR-0060 §5).
+      enum:
+        - shared_phone
+        - lid_pair
+      x-enum-varnames:
+        - ContactMergeReasonSharedPhone
+        - ContactMergeReasonLidPair
+
+    ContactMergeParty:
+      type: object
+      description: One side of a proposal, compact — enough to show the pair in a list.
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        status:
+          type: string
+          description: The contact's lifecycle status (`new`, `active`, `merged`).
+        channelTypes:
+          type: array
+          description: The channel kinds of the contact's identities.
+          items:
+            $ref: '#/components/schemas/ChannelKind'
+      required:
+        - id
+        - displayName
+        - status
+        - channelTypes
+
+    ContactMergeProposal:
+      type: object
+      description: A pair of contacts that may be the same person.
+      properties:
+        id:
+          type: string
+          format: uuid
+        contactA:
+          $ref: '#/components/schemas/ContactMergeParty'
+        contactB:
+          $ref: '#/components/schemas/ContactMergeParty'
+        reason:
+          $ref: '#/components/schemas/ContactMergeProposalReason'
+        sharedKey:
+          type: string
+          description: The exact value both share (the phone number, digits).
+        status:
+          $ref: '#/components/schemas/ContactMergeProposalStatus'
+        createdAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type: string
+          format: date-time
+        decidedBy:
+          $ref: '#/components/schemas/ContactMergeActor'
+        mergeId:
+          type: string
+          format: uuid
+          description: The merge that resolved it (status `merged`).
+      required:
+        - id
+        - contactA
+        - contactB
+        - reason
+        - sharedKey
+        - status
+        - createdAt
+
+    ContactMergeProposalList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactMergeProposal'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+
+    ContactMergeProposalChange:
+      type: object
+      description: The proposal after a dismissal; `changed` is false for an idempotent repeat.
+      properties:
+        changed:
+          type: boolean
+        proposal:
+          $ref: '#/components/schemas/ContactMergeProposal'
+      required:
+        - changed
+        - proposal
+
+    ContactMergePick:
+      type: string
+      description: The side of a merge a conflicting field value is taken from.
+      enum:
+        - survivor
+        - merged
+      x-enum-varnames:
+        - ContactMergePickSurvivor
+        - ContactMergePickMerged
+
+    ContactMergeRequest:
+      type: object
+      description: Merge `mergedId` into `survivorId`.
+      properties:
+        survivorId:
+          type: string
+          format: uuid
+          description: The contact that stays.
+        mergedId:
+          type: string
+          format: uuid
+          description: The contact folded into the survivor (kept as a `merged` tombstone).
+        proposalId:
+          type: string
+          format: uuid
+          description: The open proposal this merge resolves (must name exactly this pair).
+        fieldChoices:
+          type: object
+          description: >
+            Typed field key -> the side whose value the survivor keeps, for keys
+            where the two contacts hold DIFFERENT values. Keys not listed
+            follow the authority ladder (ADR-0061 §4).
+          additionalProperties:
+            $ref: '#/components/schemas/ContactMergePick'
+      required:
+        - survivorId
+        - mergedId
+
+    ContactMergeFieldResolution:
+      type: object
+      description: How one typed field the merged contact held was settled — the key and the side, never the value.
+      properties:
+        field:
+          type: string
+        from:
+          $ref: '#/components/schemas/ContactMergePick'
+        rule:
+          type: string
+          description: >
+            `only_merged` — only the merged contact had a value (moved with its
+            provenance); `equal` — both had the same; `choice` — a conflict the
+            caller settled; `authority` — a conflict the authority ladder settled.
+          enum:
+            - only_merged
+            - equal
+            - choice
+            - authority
+          x-enum-varnames:
+            - ContactMergeRuleOnlyMerged
+            - ContactMergeRuleEqual
+            - ContactMergeRuleChoice
+            - ContactMergeRuleAuthority
+      required:
+        - field
+        - from
+        - rule
+
+    ContactMergeSummary:
+      type: object
+      description: What a merge moved and changed, by count and by key.
+      properties:
+        identities:
+          type: integer
+        hostRefs:
+          type: integer
+        consents:
+          type: integer
+        conversations:
+          type: integer
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactMergeFieldResolution'
+        customKeys:
+          type: array
+          description: Host `custom` keys added to the survivor.
+          items:
+            type: string
+        tags:
+          type: integer
+          description: How many tags the survivor gained.
+        profile:
+          type: array
+          description: Empty profile slots of the survivor that were filled (displayName, avatarUrl, locale).
+          items:
+            type: string
+        legacy:
+          type: boolean
+          description: Recorded before merges were exposed; only identities, host refs and consents are known.
+      required:
+        - identities
+        - hostRefs
+        - consents
+        - conversations
+        - fields
+        - customKeys
+        - tags
+        - profile
+        - legacy
+
+    ContactMergeStatus:
+      type: string
+      description: '`active` — in force; `undone` — reversed.'
+      enum:
+        - active
+        - undone
+      x-enum-varnames:
+        - ContactMergeStatusActive
+        - ContactMergeStatusUndone
+
+    ContactMerge:
+      type: object
+      description: One recorded merge.
+      properties:
+        id:
+          type: string
+          format: uuid
+        survivorId:
+          type: string
+          format: uuid
+        mergedId:
+          type: string
+          format: uuid
+        proposalId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          description: The proposal's reason (`shared_phone`, `lid_pair`), `manual`, or what the store recorded.
+        status:
+          $ref: '#/components/schemas/ContactMergeStatus'
+        mergedAt:
+          type: string
+          format: date-time
+        mergedBy:
+          $ref: '#/components/schemas/ContactMergeActor'
+        undoUntil:
+          type: string
+          format: date-time
+          description: The end of the undo window (30 days after the merge).
+        undoneAt:
+          type: string
+          format: date-time
+        undoneBy:
+          $ref: '#/components/schemas/ContactMergeActor'
+        summary:
+          $ref: '#/components/schemas/ContactMergeSummary'
+      required:
+        - id
+        - survivorId
+        - mergedId
+        - reason
+        - status
+        - mergedAt
+        - mergedBy
+        - undoUntil
+        - summary
+
+    ContactMergeList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactMerge'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+
+    ContactMergeUndoResult:
+      type: object
+      description: The merge after an undo; `changed` is false when it was already undone.
+      properties:
+        changed:
+          type: boolean
+        merge:
+          $ref: '#/components/schemas/ContactMerge'
+      required:
+        - changed
+        - merge
+    # END R9-B schemas
+
+    # BEGIN R9-F schemas: realtime event stream (issue #56, ADR-0069).
+    RealtimeEvent:
+      type: object
+      description: >
+        The `data:` line of a bus event on streamEvents. `data` is the event's
+        payload exactly as the outbound webhooks receive it — identifiers only
+        (ADR-0031 §4), never message content or a pairing QR. Types:
+        `message.inbound`, `message.status` (channels:read on the channel);
+        `channel.status` (channels:read on the channel); `channel.qr`
+        (channels:manage on the channel — `data.stage` says what changed; the
+        QR itself is read with getChannelStatus); `settings.updated`
+        (settings:manage). Reserved, not emitted yet: `campaign.progress`,
+        `sync.progress`, `compliance.scan_progress`, `alert.raised`. A type the
+        server does not know is delivered to nobody.
+      properties:
+        eventId:
+          type: string
+          description: The event's id — the same event a webhook delivery carries.
+        type:
+          type: string
+          description: The event type (also the SSE `event:` name).
+        cabinetId:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        data:
+          type: object
+          additionalProperties: true
+          description: The event payload (identifiers only).
+      required:
+        - eventId
+        - type
+        - cabinetId
+        - occurredAt
+        - data
+    EmbedRealtimeEvent:
+      type: object
+      description: >
+        The `data:` line of a bus event on streamEmbedEvents: which message of
+        the widget's conversation changed. Read the message itself through
+        getEmbedConversation.
+      properties:
+        type:
+          type: string
+          description: message.inbound or message.status.
+        messageId:
+          type: string
+        conversationId:
+          type: string
+        status:
+          type: string
+          description: The new delivery status (message.status only).
+      required:
+        - type
+        - messageId
+    # END R9-F schemas
+
+    # =========================================================================
+    # BEGIN R9-A schemas: contact import / export (issue #49, ADR-0089)
+    # =========================================================================
+    JobActor:
+      type: object
+      description: Who created a job — a person (`account`) or an API key (`api_key`).
+      properties:
+        type:
+          type: string
+          description: '`account` or `api_key`.'
+        id:
+          type: string
+      required:
+        - type
+        - id
+
+    ContactImportStatus:
+      type: string
+      description: >
+        uploaded (stored, not started) → queued → running → completed; or
+        failed (the run could not go on; `error` says why) / cancelled.
+        Rows applied before a failure or a cancel stay applied.
+      enum:
+        - uploaded
+        - queued
+        - running
+        - completed
+        - failed
+        - cancelled
+      # Explicit Go names: bare constants (Queued, Running, Completed…) would
+      # collide with other enums and make the generator rename theirs.
+      x-enum-varnames:
+        - ImportUploaded
+        - ImportQueued
+        - ImportRunning
+        - ImportCompleted
+        - ImportFailed
+        - ImportCancelled
+
+    ContactImport:
+      type: object
+      description: One import job — the uploaded file and its run.
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ContactImportStatus'
+        filename:
+          type: string
+        sizeBytes:
+          type: integer
+        headers:
+          type: array
+          description: The file's column names, in order (a mapping refers to them by index).
+          items:
+            type: string
+        totalRows:
+          type: integer
+          description: Data rows in the file (the header and blank lines not counted).
+        sampleRows:
+          type: array
+          description: The first data rows, as uploaded — only in the upload's answer.
+          items:
+            type: array
+            items:
+              type: string
+        mapping:
+          $ref: '#/components/schemas/ContactImportMapping'
+        processedRows:
+          type: integer
+        created:
+          type: integer
+        updated:
+          type: integer
+        rejected:
+          type: integer
+          description: Rows not applied — each has at least one `error` line in the report.
+        warnings:
+          type: integer
+          description: Rows applied with at least one `warning` line (a kept value, an opt-out).
+        mergeProposals:
+          type: integer
+          description: Rows whose keys point at different existing contacts (identity_conflict).
+        consentsRecorded:
+          type: integer
+          description: Consents newly recorded from consent columns (source `import`).
+        createdBy:
+          $ref: '#/components/schemas/JobActor'
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - status
+        - filename
+        - sizeBytes
+        - headers
+        - totalRows
+        - processedRows
+        - created
+        - updated
+        - rejected
+        - warnings
+        - mergeProposals
+        - consentsRecorded
+        - createdBy
+        - createdAt
+
+    ContactImportList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactImport'
+      required:
+        - items
+
+    ContactImportCancel:
+      type: object
+      properties:
+        job:
+          $ref: '#/components/schemas/ContactImport'
+        changed:
+          type: boolean
+          description: false when the job already was cancelled.
+      required:
+        - job
+        - changed
+
+    ContactImportTarget:
+      type: string
+      description: >
+        What a column becomes: `identity` (an address on `channelKind` — a
+        phone for WhatsApp; a @handle, user id or +phone for Telegram; the
+        provider id for Viber), `hostRef` (the host's record id in `system`),
+        `name`, `field` (a typed contact field, `field` = its key), `tags`
+        (several per cell, separated by `;`, `,` or `|`), `consent` (the
+        explicit consent column for `channelId`: yes/true/1/так/да records
+        consent, no/false/0/ні/нет or empty records none, anything else is a
+        row error), or `ignore`.
+      enum:
+        - identity
+        - hostRef
+        - name
+        - field
+        - tags
+        - consent
+        - ignore
+      x-enum-varnames:
+        - ImportTargetIdentity
+        - ImportTargetHostRef
+        - ImportTargetName
+        - ImportTargetField
+        - ImportTargetTags
+        - ImportTargetConsent
+        - ImportTargetIgnore
+
+    ContactImportColumn:
+      type: object
+      properties:
+        column:
+          type: integer
+          minimum: 0
+          description: The column's 0-based index in `headers`.
+        target:
+          $ref: '#/components/schemas/ContactImportTarget'
+        channelKind:
+          $ref: '#/components/schemas/ChannelKind'
+        field:
+          type: string
+          description: The typed field's key (target `field`).
+        channelId:
+          type: string
+          format: uuid
+          description: The channel the consent is for (target `consent`).
+        system:
+          type: string
+          description: The host system the record id belongs to (target `hostRef`), e.g. `crm`.
+      required:
+        - column
+        - target
+
+    ContactImportMapping:
+      type: object
+      description: >
+        Which column goes where. Needs at least one `identity` or `hostRef`
+        column and at least one `consent` column.
+      properties:
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactImportColumn'
+      required:
+        - columns
+
+    ContactImportIssueSeverity:
+      type: string
+      enum:
+        - error
+        - warning
+      x-enum-varnames:
+        - ImportIssueError
+        - ImportIssueWarning
+
+    ContactImportIssue:
+      type: object
+      description: >
+        One line of the per-row report. `code`: errors — no_identity,
+        identity_invalid, host_ref_invalid, name_invalid, field_invalid
+        (`detail` = the ADR-0061 reason, e.g. type_mismatch), tag_invalid,
+        consent_invalid, cell_too_long, identity_conflict (a merge proposal,
+        with `contactIds`), apply_failed; warnings — field_kept (a value of a
+        more authoritative writer stays; `detail` = its source),
+        consent_revoked (the person opted out; `detail` = the channel),
+        extra_cells.
+      properties:
+        row:
+          type: integer
+          description: The row as a spreadsheet numbers it (the header is row 1).
+        severity:
+          $ref: '#/components/schemas/ContactImportIssueSeverity'
+        code:
+          type: string
+        column:
+          type: string
+          description: The column's name in the file (or the field key).
+        detail:
+          type: string
+        contactIds:
+          type: array
+          items:
+            type: string
+      required:
+        - row
+        - severity
+        - code
+
+    ContactImportPreview:
+      type: object
+      description: What the checked rows would do. Nothing was written.
+      properties:
+        rowsChecked:
+          type: integer
+        totalRows:
+          type: integer
+        valid:
+          type: integer
+          description: Rows that would be applied (created + updated).
+        wouldCreate:
+          type: integer
+        wouldUpdate:
+          type: integer
+        rejected:
+          type: integer
+        mergeProposals:
+          type: integer
+        withConsent:
+          type: integer
+          description: Valid rows whose consent columns record at least one consent.
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactImportIssue'
+      required:
+        - rowsChecked
+        - totalRows
+        - valid
+        - wouldCreate
+        - wouldUpdate
+        - rejected
+        - mergeProposals
+        - withConsent
+        - issues
+
+    ContactExportRequest:
+      type: object
+      description: >
+        Which contacts to export; every member narrows, and an empty request
+        exports every contact the caller can see.
+      properties:
+        tags:
+          type: array
+          description: The contact carries every one of these tags.
+          items:
+            type: string
+        channelIds:
+          type: array
+          description: The contact has a conversation on one of these channels (narrows the caller's scope).
+          items:
+            type: string
+            format: uuid
+        fields:
+          type: object
+          description: Typed field key -> value; the contact's value, as text, equals it.
+          additionalProperties:
+            type: string
+        status:
+          $ref: '#/components/schemas/ContactStatus'
+
+    ContactExportStatus:
+      type: string
+      enum:
+        - queued
+        - running
+        - completed
+        - failed
+        - expired
+      x-enum-varnames:
+        - ExportQueued
+        - ExportRunning
+        - ExportCompleted
+        - ExportFailed
+        - ExportExpired
+
+    ContactExport:
+      type: object
+      description: One export job.
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ContactExportStatus'
+        filter:
+          $ref: '#/components/schemas/ContactExportRequest'
+        scoped:
+          type: boolean
+          description: The export is limited to the channels its author works (an assigned agent).
+        rowCount:
+          type: integer
+        sizeBytes:
+          type: integer
+          format: int64
+        createdBy:
+          $ref: '#/components/schemas/JobActor'
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the file is deleted.
+        downloadPath:
+          type: string
+          description: The API path the completed file is downloaded from (downloadContactExport), relative to the server URL.
+      required:
+        - id
+        - status
+        - filter
+        - scoped
+        - rowCount
+        - sizeBytes
+        - createdBy
+        - createdAt
+
+    ContactExportList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactExport'
+      required:
+        - items
+    # END R9-A schemas

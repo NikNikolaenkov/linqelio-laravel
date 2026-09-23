@@ -163,6 +163,28 @@ final class Contract
         'putContactField' => 'console field schema editor — settings:manage',
         'deleteContactField' => 'console field schema editor — settings:manage',
 
+        // Round 9 (ADR-0069, ADR-0089, ADR-0090).
+        'streamEvents' => 'realtime SSE for the console/session (ADR-0069); a server-side host has no use for it yet',
+        'streamEmbedEvents' => 'widget-side realtime stream, embed token',
+        'listContactMergeProposals' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'getContactMergeProposal' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'dismissContactMergeProposal' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'mergeContacts' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'listContactMerges' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'getContactMerge' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'undoContactMerge' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
+        'uploadContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'previewContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'startContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'cancelContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'getContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'listContactImports' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'getContactImportReport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'createContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'listContactExports' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'getContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        'downloadContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
         'listPlatformOperators' => 'platform:admin only',
