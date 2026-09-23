@@ -52,6 +52,8 @@ enum ErrorCode: string
     case MessageTooLarge = 'message.too_large';
     case MessageNotFound = 'message.not_found';
 
+    case ConversationNotFound = 'conversation.not_found';
+
     case IdempotencyKeyReused = 'idempotency.key_reused';
 
     case ContactNotFound = 'contact.not_found';
@@ -74,6 +76,8 @@ enum ErrorCode: string
     case TeamAccountExists = 'team.account_exists';
     case TeamMemberNotFound = 'team.member_not_found';
     case TeamInviteNotFound = 'team.invite_not_found';
+    case TeamInviteWrongAccount = 'team.invite_wrong_account';
+    case TeamAlreadyMember = 'team.already_member';
 
     case PlatformLastOperator = 'platform.last_operator';
     case PlatformAccountNotFound = 'platform.account_not_found';

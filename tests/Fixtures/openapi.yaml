@@ -1751,6 +1751,8 @@ paths:
         - auth.session_invalid
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
+        # issue #115: 404 for an unknown, foreign or out-of-scope conversation.
+        - conversation.not_found
       responses:
         '200':
           description: A page of the conversation's messages.
@@ -2081,6 +2083,9 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - contact.not_found
+        # issue #115: channelId names no channel of this cabinet (it was
+        # answered contact.not_found).
+        - channel.not_found
         - channel.not_connected
         - channel.capability_unsupported
         - channel.pairing_required
@@ -2283,6 +2288,8 @@ paths:
         - embed.token_expired
         - embed.scope_violation
         - contact.not_found
+        # issue #115: the requested channelId is not a channel of the cabinet.
+        - channel.not_found
         - channel.not_connected
         - idempotency.key_reused
       responses:
@@ -2337,7 +2344,9 @@ paths:
         - auth.invalid_key
         - embed.token_expired
         - embed.scope_violation
-        - contact.not_found
+        # issue #115: a missing conversation answers its own code (it was
+        # contact.not_found).
+        - conversation.not_found
       responses:
         '200':
           description: The scoped conversation feed.
@@ -2382,6 +2391,10 @@ paths:
         - auth.invalid_key
         - embed.token_expired
         - embed.scope_violation
+        # issue #115: the conversation is gone (or never was), or its channel
+        # was deleted while the send was in flight.
+        - conversation.not_found
+        - channel.not_found
         - channel.not_connected
         - message.too_large
         - policy.rate_limited
@@ -2638,7 +2651,9 @@ paths:
         it offered — the role (at its level) and the channel assignments that
         are still channels of the cabinet — so the person can act in that
         cabinet as soon as they log in. A revoked invite's link is refused like
-        any spent one.
+        any spent one. The link of a membership-only (`existing_account`)
+        invite is refused here too (400 auth.token_invalid, the link stays
+        unspent): it never sets a password — see acceptMembershipInvite.
       tags:
         - auth
       security: []
@@ -2659,6 +2674,124 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  # ---------------------------------------------------------------------------
+  # BEGIN R5-C: membership-only invites for EXISTING accounts (issue #118,
+  # ADR-0076 amending ADR-0075 §5). Local block — keep edits inside it.
+  #
+  # inviteMember for an email whose account already has a password issues an
+  # invite of kind `existing_account`: its link sets NOTHING on the account and
+  # is accepted here, by a live session of exactly that account. Both
+  # operations are `self` (session required, API key refused, no cabinet): the
+  # person may not be a member of any cabinet yet, and the credential is the
+  # session PLUS the link — neither alone is enough. The token travels in the
+  # body, never in a URL.
+  # ---------------------------------------------------------------------------
+  /auth/invites/membership/preview:
+    post:
+      operationId: previewMembershipInvite
+      x-permission: self
+      x-permission-reason: >
+        The invitee reads an invite addressed to their OWN account before accepting it. Only the session of the invited account may read it (another account gets 403 team.invite_wrong_account and learns nothing about the cabinet); no cabinet role can be consulted, because the person is not a member of the cabinet yet.
+      summary: Show a membership-only invite to the person it is for.
+      description: >
+        Resolves the link token of an `existing_account` invite and describes
+        it — which cabinet, which role, how many channels — so the console can
+        ask "Join cabinet X as role Y?". Nothing is written and the link is not
+        spent.
+
+
+        Refused: a token that is unknown, spent, revoked, expired, or that
+        belongs to a password-setting (`new_account`) invite — 400
+        auth.token_invalid; a session of any account other than the invited
+        one (matched by account, i.e. by case-insensitive email) — 403
+        team.invite_wrong_account.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipInviteTokenRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.token_invalid
+        - auth.origin_rejected
+        - team.invite_wrong_account
+      responses:
+        '200':
+          description: The invite, as its invitee may see it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipInvite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/invites/membership/accept:
+    post:
+      operationId: acceptMembershipInvite
+      x-permission: self
+      x-permission-reason: >
+        Joining a cabinet one was invited into is an act of the invited PERSON on their own account: it requires that account's live session (an API key has no person) and the single-use link token together. No cabinet role can authorize it — the person is not a member of the cabinet until it succeeds.
+      summary: Accept a membership-only invite with the invited account's session.
+      description: >
+        Adds exactly the membership the invite offered — the role at its level
+        (org_owner and org_admin become members of the organization that owns
+        the cabinet) and the channels that are still channels of the cabinet —
+        to the account of the CURRENT SESSION, and spends the link. Nothing
+        else about the account changes: no password, no status, no session.
+        The answer names the cabinet, so the console can go straight there.
+
+
+        Refused, with nothing written: a dead token (unknown, spent, revoked,
+        expired, or a password-setting invite's) — 400 auth.token_invalid; a
+        session of another account — 403 team.invite_wrong_account (the link
+        stays valid for the right person, and the attempt is audited); an
+        account that is already a member of the cabinet (a cabinet- or
+        organization-level membership reaching it) — 409 team.already_member:
+        a role change is updateMember's job.
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipInviteTokenRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.token_invalid
+        - auth.origin_rejected
+        - team.invite_wrong_account
+        - team.already_member
+      responses:
+        '200':
+          description: The membership was added; the invite is accepted and its link spent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipInvite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # END R5-C (membership-only invites)
 
   /auth/password-reset:
     post:
@@ -3096,15 +3229,25 @@ paths:
         cabinet) and the channels that are still channels of the cabinet.
 
 
+        An email whose account ALREADY HAS A PASSWORD (ADR-0076) gets an invite
+        of kind `existing_account` instead: its link sets nothing on the
+        account — it is accepted with acceptMembershipInvite by a live session
+        of exactly that account, and adds only the membership. `invite.kind`
+        says which of the two was issued; the link of an `existing_account`
+        invite carries `kind=existing_account` in its fragment so the console
+        knows to ask the person to log in rather than to choose a password.
+
+
         Refused: a role above the caller's own (403 team.role_ceiling_exceeded —
         a cabinet_admin cannot invite an org_owner; a platform operator may
         invite any role); a channel that is not a channel of this cabinet (404
-        channel.not_found); an email that already belongs to an active or
-        blocked account, or to a person another cabinet has invited or made a
-        member (409 team.account_exists — the link sets the account's
-        password, so it is never minted for somebody another cabinet has a
-        claim on; adding an existing account to a cabinet is not supported
-        yet).
+        channel.not_found); an account that is already a member of this cabinet
+        or of its organization (409 team.already_member — use updateMember); a
+        blocked account, or a password-less account another cabinet has invited
+        or made a member (409 team.account_exists — a password-setting link is
+        never minted for somebody another cabinet has a claim on; once that
+        person has set their password, inviting them again yields an
+        `existing_account` invite).
 
 
         Accepting a link whose account has meanwhile got a password some other
@@ -3128,6 +3271,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - team.role_ceiling_exceeded
         - team.account_exists
+        # R5-C (ADR-0076): the account is already a member here.
+        - team.already_member
         - channel.not_found
         # The link's base (CONSOLE_PUBLIC_URL) is not configured: no link can be
         # built, so no invite is created.
@@ -3533,6 +3678,17 @@ components:
         - team.account_exists
         - team.member_not_found
         - team.invite_not_found
+        # --- issue #115: per-resource not-found ---------------------------------
+        # A conversation id that names nothing in the cabinet (or one outside the
+        # caller's channel scope — the same answer, never an oracle). Previously
+        # answered as channel.not_found / contact.not_found.
+        - conversation.not_found
+        # R5-C (issue #118, ADR-0076): membership-only invites for existing
+        # accounts. invite_wrong_account (403): the link was presented by a
+        # session of another account; already_member (409): the account already
+        # holds a membership reaching the cabinet.
+        - team.invite_wrong_account
+        - team.already_member
 
     ValidationError:
       type: object
@@ -5620,6 +5776,9 @@ components:
           type: string
         email:
           type: string
+        # R5-C (ADR-0076): which of the two invite kinds this is.
+        kind:
+          $ref: '#/components/schemas/TeamInviteKind'
         role:
           $ref: '#/components/schemas/Role'
         channelIds:
@@ -5639,6 +5798,7 @@ components:
       required:
         - id
         - email
+        - kind
         - role
         - channelIds
         - invitedBy
@@ -5731,3 +5891,66 @@ components:
       required:
         - version
     # END R4-T schemas
+
+    # -------------------------------------------------------------------------
+    # BEGIN R5-C schemas: membership-only invites (issue #118, ADR-0076)
+    # -------------------------------------------------------------------------
+    TeamInviteKind:
+      type: string
+      description: >
+        `new_account` — the link sets the password of an account that has none
+        yet, and binds the membership (acceptInvite). `existing_account` — a
+        membership-only invite for an account that already has a password: the
+        link sets nothing on the account and is accepted by that account's own
+        session (acceptMembershipInvite).
+      enum:
+        - new_account
+        - existing_account
+    MembershipInviteTokenRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: The token from the invite link's fragment.
+      required:
+        - token
+    MembershipInvite:
+      type: object
+      description: >
+        A membership-only invite as the invited person sees it. Never carries
+        the link or its token.
+      properties:
+        inviteId:
+          type: string
+        cabinetId:
+          type: string
+        cabinetName:
+          type: string
+        email:
+          type: string
+          description: The invited account's email (the caller's own).
+        role:
+          $ref: '#/components/schemas/Role'
+        level:
+          $ref: '#/components/schemas/MembershipLevel'
+        channelCount:
+          type: integer
+          description: How many channels the invite assigns (their ids are the cabinet's business until the person joins).
+        invitedBy:
+          $ref: '#/components/schemas/TeamActor'
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - inviteId
+        - cabinetId
+        - cabinetName
+        - email
+        - role
+        - level
+        - channelCount
+        - invitedBy
+        - expiresAt
+    # END R5-C schemas
