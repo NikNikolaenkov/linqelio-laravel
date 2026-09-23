@@ -123,6 +123,9 @@ final class Contract
         'enableTotp' => 'human session only — x-permission self',
         'disableTotp' => 'human session only — x-permission self',
         'regenerateRecoveryCodes' => 'human session only — x-permission self',
+        // ADR-0076: an existing account joins a cabinet from its own session.
+        'previewMembershipInvite' => 'human session only — x-permission self',
+        'acceptMembershipInvite' => 'human session only — x-permission self',
 
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
