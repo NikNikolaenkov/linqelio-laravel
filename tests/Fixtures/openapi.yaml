@@ -91,6 +91,8 @@ tags:
     description: Embeddable conversation widget sessions (ADR-0007/0009).
   - name: auth
     description: Human identity — login, sessions, invites, password reset, second factor (ADR-0049).
+  - name: team
+    description: People of a cabinet — members, roles, channel assignments, invites (issue #31).
 
 paths:
   # ===========================================================================
@@ -1263,6 +1265,148 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # ===========================================================================
+  # platform operators — human platform administrators (ADR-0075, issue #107)
+  # ===========================================================================
+  # The people who hold platform power. The FIRST one is created by the
+  # `controlplane bootstrap-operator` command on the server; every later grant
+  # and revocation goes through these operations and is written to the
+  # security log. A person's grant is checked on every request, so a revocation
+  # takes effect on the next one. A human operator must have passed the second
+  # factor in the session (ADR-0049 §4).
+  /platform/operators:
+    get:
+      operationId: listPlatformOperators
+      x-permission: 'platform:admin'
+      summary: List platform operators (platform admin).
+      description: >
+        The active operators, and — with `includeRevoked=true` — the revoked
+        grants too, which are kept as history rather than deleted.
+      tags:
+        - platform
+      parameters:
+        - name: includeRevoked
+          in: query
+          required: false
+          description: Also return revoked grants.
+          schema:
+            type: boolean
+            default: false
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The operators, active first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformOperatorList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: grantPlatformOperator
+      x-permission: 'platform:admin'
+      summary: Make an existing account a platform operator (platform admin).
+      description: >
+        Names the account by `accountId` or by `email` — exactly one of them.
+        The account must already exist (invite the person first); this
+        operation never creates one. Granting to an account that is already an
+        active operator changes nothing and answers 200 with the existing grant;
+        a new grant (or the re-activation of a revoked one) answers 201.
+        Recorded in the security log.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - platform.account_not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantPlatformOperatorRequest'
+      responses:
+        '200':
+          description: The account already was an active operator; nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformOperator'
+        '201':
+          description: The account is now an active operator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformOperator'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /platform/operators/{accountId}:
+    delete:
+      operationId: revokePlatformOperator
+      x-permission: 'platform:admin'
+      summary: Revoke a platform operator (platform admin).
+      description: >
+        Ends the account's grant. The grant is kept as history (revokedAt), not
+        deleted. The last active operator cannot be revoked (409
+        platform.last_operator): the platform would be left with no human
+        administrator, recoverable only from the server with
+        `bootstrap-operator --additional`. An operator may revoke themselves as
+        long as another one remains. Recorded in the security log.
+      tags:
+        - platform
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: The operator's account id.
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - platform.operator_not_found
+        - platform.last_operator
+      responses:
+        '204':
+          description: The grant was revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ===========================================================================
+  # end of platform operators (ADR-0075)
+  # ===========================================================================
+
   /audit:
     get:
       operationId: listAudit
@@ -2387,7 +2531,14 @@ paths:
         channel scope in that cabinet, computed exactly as the authorization
         middleware computes them. A selected cabinet the person is not a member
         of is refused (403 tenancy.cross_cabinet_denied) rather than silently
-        ignored.
+        ignored — unless the person is an active platform operator (ADR-0075),
+        who may select any existing cabinet and is reported there as
+        platform_admin (the access is written to the security log; without the
+        second factor in the session it is refused with 403
+        auth.second_factor_required). `platformOperator` says whether the
+        account holds an active operator grant; `cabinets` lists the cabinets
+        the caller reaches through memberships (cabinet- or org-level), which
+        is what a cabinet switcher shows.
       tags:
         - auth
       security:
@@ -2395,6 +2546,7 @@ paths:
       x-error-codes:
         - auth.session_invalid
         - tenancy.cross_cabinet_denied
+        - auth.second_factor_required
       responses:
         '200':
           description: The caller.
@@ -2480,6 +2632,13 @@ paths:
         (ADR-0049 §3). Does not log in: the person logs in next, which is also
         where a mandatory second factor is enrolled. A weak password is refused
         BEFORE the token is spent.
+
+
+        An invite made through inviteMember also creates exactly the membership
+        it offered — the role (at its level) and the channel assignments that
+        are still channels of the cabinet — so the person can act in that
+        cabinet as soon as they log in. A revoked invite's link is refused like
+        any spent one.
       tags:
         - auth
       security: []
@@ -2733,6 +2892,303 @@ paths:
         '423':
           $ref: '#/components/responses/Locked'
 
+  # ===========================================================================
+  # team.yaml — people, roles and channels of a cabinet (issue #31, ADR-0075 §5)
+  # ===========================================================================
+  # BEGIN team management (R4-T). Kept as one block so parallel contract work
+  # (the platform-operator operations) does not interleave with it.
+  #
+  # Every operation is cabinet-scoped (the key's cabinet, or X-Linqelio-Cabinet
+  # for a session) and requires `team:manage` — held by org_owner, org_admin,
+  # cabinet_admin, platform_admin and keys that carry it ("*" included). Beyond
+  # the permission, two server-side rules apply to every change:
+  #   - the ROLE CEILING: nobody grants, changes or removes a role above the
+  #     most privileged one they hold (403 team.role_ceiling_exceeded). An API
+  #     key's ceiling is cabinet_admin; a platform operator's is unlimited;
+  #   - the ADR-0050 §6 INVARIANTS: never zero active org owners, never zero
+  #     active cabinet admins, never a change to your own membership (409
+  #     team.last_org_owner / team.last_cabinet_admin / team.self_demotion_denied).
+  # Every mutation is written to the audit trail (team.* actions).
+  /team/members:
+    get:
+      operationId: listMembers
+      x-permission: 'team:manage'
+      summary: List the people of the cabinet and its pending invites.
+      description: >
+        Every person with a membership reaching the cabinet — a cabinet-level
+        row, a row in the organization that owns it, or both — with their
+        role, assigned channels, default channel and status, plus the invites
+        that can still be accepted.
+
+
+        Visibility is decided by permission, not by channel scope: the list
+        needs `team:manage`, which no channel-scoped role holds (an agent is the
+        only channel-scoped role, and any role that grants team:manage lifts the
+        channel scope). Agents, supervisors and viewers are refused with 403 —
+        a team roster is administrative data, and filtering it down to "people
+        who share a channel with me" would still disclose colleagues' emails.
+
+
+        Members are cursor-paginated (`since` / `limit`, ordered by when the
+        person joined). `invites` carries EVERY pending invite and is present on
+        the first page only (no `since`): pending invites are few and short-lived.
+      tags:
+        - team
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: A page of members (and, on the first page, the pending invites).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMemberList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /team/members/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamAccountId'
+    patch:
+      operationId: updateMember
+      x-permission: 'team:manage'
+      summary: Change a member's role and/or channel assignments.
+      description: >
+        `role`, when given, becomes the person's ONLY role in this cabinet: the
+        membership row at that role's level is written and a row at the other
+        level is removed (making an org_admin a cabinet_admin removes their
+        organization-level role, which reaches every cabinet of the
+        organization). `channelIds`, when given, replaces the assignments in
+        this cabinet; `defaultChannelId` must be one of the assignments after
+        the change — omitted, the current default is kept while it stays
+        assigned.
+
+
+        Optimistic concurrency: `version` is the member's `version` as last
+        read; a change made in between is 409 team.version_conflict, and the
+        caller refetches and retries.
+
+
+        Refused: a role above the caller's own, or a member who already holds
+        one (403 team.role_ceiling_exceeded); a change that breaks an ADR-0050
+        §6 invariant, including any change to your own role (409); a channel
+        that is not a channel of this cabinet (404 channel.not_found).
+      tags:
+        - team
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemberRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - team.member_not_found
+        - team.role_ceiling_exceeded
+        - team.version_conflict
+        - team.last_org_owner
+        - team.last_cabinet_admin
+        - team.self_demotion_denied
+        - channel.not_found
+      responses:
+        '200':
+          description: The member after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: removeMember
+      x-permission: 'team:manage'
+      summary: Remove a person from the cabinet.
+      description: >
+        Deletes the person's cabinet-level membership AND their membership in
+        the organization that owns the cabinet (an organization-level role
+        reaches every cabinet of the organization, so it cannot be removed from
+        one cabinet alone), their channel assignments here, and their pending
+        invites here.
+
+
+        The person's sessions lose this cabinet on their next request: a
+        session's authority in a cabinet is re-read from the memberships on
+        every request, so nothing else needs revoking. Their account, their
+        other cabinets and their sessions there are untouched.
+
+
+        Refused under the same ceiling and invariants as updateMember —
+        including removing yourself.
+      tags:
+        - team
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - team.member_not_found
+        - team.role_ceiling_exceeded
+        - team.last_org_owner
+        - team.last_cabinet_admin
+        - team.self_demotion_denied
+      responses:
+        '204':
+          description: The person is no longer a member of the cabinet.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /team/invites:
+    post:
+      operationId: inviteMember
+      x-permission: 'team:manage'
+      summary: Invite a person into the cabinet and get the invite link.
+      description: >
+        Creates (or re-uses) an account in status `invited` for the email and an
+        invite into THIS cabinet with the given role and channels. The response
+        carries the invite link — `inviteUrl` — exactly ONCE (ADR-0075 §5: there
+        is no mail yet; the console shows the link with a Copy button). Only the
+        sha256 of the link's token is stored; the link cannot be shown again, so
+        a lost link is replaced by inviting the same email again, which revokes
+        the previous invite into this cabinet.
+
+
+        Accepting the link (acceptInvite) sets the person's password and creates
+        exactly the membership offered here: the role at its level (org_owner
+        and org_admin become members of the organization that owns this
+        cabinet) and the channels that are still channels of the cabinet.
+
+
+        Refused: a role above the caller's own (403 team.role_ceiling_exceeded —
+        a cabinet_admin cannot invite an org_owner; a platform operator may
+        invite any role); a channel that is not a channel of this cabinet (404
+        channel.not_found); an email that already belongs to an active or
+        blocked account, or to a person another cabinet has invited or made a
+        member (409 team.account_exists — the link sets the account's
+        password, so it is never minted for somebody another cabinet has a
+        claim on; adding an existing account to a cabinet is not supported
+        yet).
+
+
+        Accepting a link whose account has meanwhile got a password some other
+        way is refused like a spent link, without touching that password.
+      tags:
+        - team
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteMemberRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - team.role_ceiling_exceeded
+        - team.account_exists
+        - channel.not_found
+        # The link's base (CONSOLE_PUBLIC_URL) is not configured: no link can be
+        # built, so no invite is created.
+        - provider.unavailable
+      responses:
+        '201':
+          description: >
+            The invite was created. `inviteUrl` is present in this response and
+            nowhere else, ever.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteMemberResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /team/invites/{inviteId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamInviteId'
+    delete:
+      operationId: revokeInvite
+      x-permission: 'team:manage'
+      summary: Revoke a pending invite.
+      description: >
+        The invite can no longer be accepted and its link is spent. Unknown,
+        already accepted, already revoked and expired invites are one answer:
+        404 team.invite_not_found. Revoking an invite for a role above your own
+        is 403 team.role_ceiling_exceeded.
+      tags:
+        - team
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - team.invite_not_found
+        - team.role_ceiling_exceeded
+      responses:
+        '204':
+          description: The invite is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # END team management (R4-T)
+
 components:
   # ===========================================================================
   # Security
@@ -2779,6 +3235,14 @@ components:
         only when the person belongs to exactly one cabinet. The person's rights
         there are their role(s) — and, for an agent, only their assigned
         channels.
+
+
+        Platform operators (ADR-0075): a `platform:admin` operation needs no
+        cabinet header for a person who holds an active platform-operator grant
+        and passed the second factor in this session. Such a person may also
+        name ANY existing cabinet in the header without being a member of it and
+        acts there as platform_admin; every such access is written to the
+        security log. The grant is re-checked on every request.
 
 
         Cross-site requests: an unsafe request (anything but GET/HEAD/OPTIONS)
@@ -2872,6 +3336,21 @@ components:
         type: string
         minLength: 1
         maxLength: 255
+
+    TeamAccountId:
+      name: accountId
+      in: path
+      required: true
+      description: The member's account id (uuid).
+      schema:
+        type: string
+    TeamInviteId:
+      name: inviteId
+      in: path
+      required: true
+      description: The invite id (uuid).
+      schema:
+        type: string
 
     Cursor:
       name: since
@@ -3020,7 +3499,7 @@ components:
         - provider.unavailable
         # --- additive (ADR-0013 §4): appended, never reordered -----------------
         # team.*: membership integrity (ADR-0050 §6, 409). Emitted by
-        # internal/authz.CheckMembershipChange; no team endpoint exists yet.
+        # internal/authz.CheckMembershipChange through the team API (/team/*).
         - team.last_org_owner
         - team.last_cabinet_admin
         - team.self_demotion_denied
@@ -3040,6 +3519,20 @@ components:
         - auth.token_invalid
         - auth.origin_rejected
         - auth.second_factor_required
+        # platform.*: human platform operators (ADR-0075). last_operator (409)
+        # refuses revoking the only active operator; the two not_found codes
+        # (404) name which half of a grant/revoke was missing.
+        - platform.last_operator
+        - platform.account_not_found
+        - platform.operator_not_found
+        # team.* (issue #31, the team API): the role-grant ceiling (403), a stale
+        # member version (409), an email that already has an account (409), and
+        # the two not-found answers of the team surface (404).
+        - team.role_ceiling_exceeded
+        - team.version_conflict
+        - team.account_exists
+        - team.member_not_found
+        - team.invite_not_found
 
     ValidationError:
       type: object
@@ -4500,6 +4993,74 @@ components:
       required:
         - items
 
+    # =========================================================================
+    # platform operators (ADR-0075)
+    # =========================================================================
+    PlatformOperator:
+      type: object
+      description: One grant of platform power to a person (platform_operators).
+      properties:
+        accountId:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        grantedBy:
+          type: string
+          nullable: true
+          description: >
+            The account id of the operator who granted it; null when no person
+            granted it — the bootstrap command on the server, or a
+            platform:admin API key (the security log names which).
+        grantedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null while the grant is active.
+        active:
+          type: boolean
+        reason:
+          type: string
+      required:
+        - accountId
+        - email
+        - displayName
+        - grantedBy
+        - grantedAt
+        - revokedAt
+        - active
+        - reason
+
+    PlatformOperatorList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlatformOperator'
+      required:
+        - items
+
+    GrantPlatformOperatorRequest:
+      type: object
+      description: Exactly one of accountId and email.
+      properties:
+        accountId:
+          type: string
+        email:
+          type: string
+        reason:
+          type: string
+          maxLength: 500
+          description: Why the grant is made; kept with the grant and in the security log.
+    # =========================================================================
+    # end of platform operators (ADR-0075)
+    # =========================================================================
+
     AccessPoolEntry:
       type: object
       description: One auth-out credential in the pool (ADR-0029). credentialsRef is a pointer, never the secret.
@@ -4787,10 +5348,54 @@ components:
             $ref: '#/components/schemas/AccountMembership'
         currentCabinet:
           $ref: '#/components/schemas/CabinetAccess'
+        platformOperator:
+          type: boolean
+          description: >
+            True when the account holds an active platform-operator grant
+            (ADR-0075). Platform power additionally requires the second factor
+            in the session (session.secondFactorPassed); without it platform
+            operations answer 403 auth.second_factor_required.
+        cabinets:
+          type: array
+          description: >
+            Every cabinet the caller can select with X-Linqelio-Cabinet through
+            their memberships: cabinet-level memberships plus every cabinet of
+            an organization where they hold an org-level role — exactly the
+            cabinets in which the authorization middleware finds a role. A
+            platform operator's reach to ALL cabinets is not listed here (use
+            listCabinets).
+          items:
+            $ref: '#/components/schemas/ReachableCabinet'
       required:
         - account
         - session
         - memberships
+        - platformOperator
+        - cabinets
+    ReachableCabinet:
+      type: object
+      description: A cabinet the caller reaches through a membership.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        organizationId:
+          type: string
+        via:
+          type: string
+          enum:
+            - cabinet
+            - organization
+          description: >
+            `cabinet` when the caller holds a cabinet-level membership there
+            (whether or not an org-level role also reaches it), otherwise
+            `organization`.
+      required:
+        - id
+        - name
+        - organizationId
+        - via
     AuthSessionSummary:
       type: object
       properties:
@@ -4907,3 +5512,222 @@ components:
             type: string
       required:
         - recoveryCodes
+
+    # =========================================================================
+    # team.yaml — team management (issue #31, ADR-0075 §5). BEGIN R4-T schemas.
+    # =========================================================================
+    MemberStatus:
+      type: string
+      description: >
+        A person's standing in the cabinet: `active`; `invited` while they have
+        not yet set a password; `blocked` when the account or every membership
+        is blocked.
+      enum:
+        - active
+        - invited
+        - blocked
+      # Explicit constant names: without them the generator resolves the clash
+      # with other enums holding "active" by renaming THEIR constants too.
+      x-enum-varnames:
+        - MemberStatusActive
+        - MemberStatusInvited
+        - MemberStatusBlocked
+    TeamMembership:
+      type: object
+      description: One membership row that reaches the cabinet.
+      properties:
+        level:
+          $ref: '#/components/schemas/MembershipLevel'
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/MemberStatus'
+      required:
+        - level
+        - role
+        - status
+    TeamMember:
+      type: object
+      description: A person with a membership reaching the cabinet.
+      properties:
+        accountId:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        level:
+          $ref: '#/components/schemas/MembershipLevel'
+        memberships:
+          type: array
+          description: >
+            Every row behind `role` — a person may hold an organization-level
+            and a cabinet-level role at once; `role` is the most privileged.
+          items:
+            $ref: '#/components/schemas/TeamMembership'
+        status:
+          $ref: '#/components/schemas/MemberStatus'
+        channelIds:
+          type: array
+          description: >
+            The channels assigned in THIS cabinet. They bound an agent; for a
+            cabinet-wide role they are informational.
+          items:
+            type: string
+        defaultChannelId:
+          type: string
+          description: The channel a reply leaves through when none is named; absent when none.
+        joinedAt:
+          type: string
+          format: date-time
+        version:
+          type: string
+          description: Opaque optimistic-concurrency token; send it back with updateMember.
+      required:
+        - accountId
+        - email
+        - displayName
+        - role
+        - level
+        - memberships
+        - status
+        - channelIds
+        - joinedAt
+        - version
+    TeamActor:
+      type: object
+      description: Who performed an action — a person, an API key, or the platform itself.
+      properties:
+        type:
+          type: string
+          description: "`account`, `api_key` or `system` (the audit actor types, ADR-0028)."
+        id:
+          type: string
+          description: The account id or the key id; empty for `system`.
+        email:
+          type: string
+          description: Present for an account that still exists.
+      required:
+        - type
+        - id
+    TeamInvite:
+      type: object
+      description: A pending invite into the cabinet. The link itself is never part of it.
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        channelIds:
+          type: array
+          items:
+            type: string
+        defaultChannelId:
+          type: string
+        invitedBy:
+          $ref: '#/components/schemas/TeamActor'
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - role
+        - channelIds
+        - invitedBy
+        - createdAt
+        - expiresAt
+    TeamMemberList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+        invites:
+          type: array
+          description: Every pending invite; present on the first page only.
+          items:
+            $ref: '#/components/schemas/TeamInvite'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+        - items
+        - pageInfo
+    InviteMemberRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 320
+        role:
+          $ref: '#/components/schemas/Role'
+        displayName:
+          type: string
+          maxLength: 200
+        locale:
+          type: string
+          description: The invitee's interface language; the account default when omitted.
+          enum:
+            - uk
+            - en
+            - ru
+        channelIds:
+          type: array
+          description: Channels of this cabinet to assign on acceptance.
+          maxItems: 200
+          items:
+            type: string
+        defaultChannelId:
+          type: string
+          description: Must be one of `channelIds`.
+      required:
+        - email
+        - role
+    InviteMemberResult:
+      type: object
+      properties:
+        invite:
+          $ref: '#/components/schemas/TeamInvite'
+        inviteUrl:
+          type: string
+          description: >
+            The invite link — a secret for as long as it lives (single use,
+            72 h). Returned here once and never again; the token travels in the
+            URL fragment so it reaches no access log or Referer header.
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - invite
+        - inviteUrl
+        - expiresAt
+    UpdateMemberRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          description: The member's `version` as last read.
+        role:
+          $ref: '#/components/schemas/Role'
+        channelIds:
+          type: array
+          description: Replaces the assignments in this cabinet; an empty list removes them all.
+          maxItems: 200
+          items:
+            type: string
+        defaultChannelId:
+          type: string
+          description: Must be among the assignments after the change.
+      required:
+        - version
+    # END R4-T schemas
