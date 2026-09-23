@@ -69,6 +69,35 @@ enum ErrorCode: string
     case ContactExportExpired = 'contact.export_expired';
     case RealtimeTooManyStreams = 'realtime.too_many_streams';
 
+    case BitrixPairingInvalid = 'bitrix.pairing_invalid';
+    case BitrixAuthInvalid = 'bitrix.auth_invalid';
+    case BitrixPortalLinkedElsewhere = 'bitrix.portal_linked_elsewhere';
+    case BitrixCabinetHasPortal = 'bitrix.cabinet_has_portal';
+    case BitrixPortalNotLinked = 'bitrix.portal_not_linked';
+    case BitrixUserNotLinked = 'bitrix.user_not_linked';
+    case BitrixPortalNotFound = 'bitrix.portal_not_found';
+    case BitrixLinkCodeInvalid = 'bitrix.link_code_invalid';
+    case PolicyServiceWindowClosed = 'policy.service_window_closed';
+    case TemplateNotFound = 'template.not_found';
+    case TemplateNotApproved = 'template.not_approved';
+    case TemplateUnsupported = 'template.unsupported';
+    case TemplateParamsInvalid = 'template.params_invalid';
+    case TemplateSyncNotConfigured = 'template.sync_not_configured';
+    case PolicyGroupsDisabled = 'policy.groups_disabled';
+    case AiNotConfigured = 'ai.not_configured';
+    case AiProviderUnsupported = 'ai.provider_unsupported';
+    case CampaignNotFound = 'campaign.not_found';
+    case CampaignStateConflict = 'campaign.state_conflict';
+    case CampaignInvalid = 'campaign.invalid';
+    case ScheduledSendNotFound = 'scheduled_send.not_found';
+    case ScheduledSendStateConflict = 'scheduled_send.state_conflict';
+    case AlertNotFound = 'alert.not_found';
+    case AlertSubscriptionNotFound = 'alert.subscription_not_found';
+    case AlertSubscriptionConflict = 'alert.subscription_conflict';
+    case AlertSubscriptionInvalid = 'alert.subscription_invalid';
+    case AlertRuleNotFound = 'alert.rule_not_found';
+    case AlertRuleInvalid = 'alert.rule_invalid';
+
     case AccessPoolNoNext = 'accesspool.no_next';
 
     case MessageTypeUnsupported = 'message.type_unsupported';
