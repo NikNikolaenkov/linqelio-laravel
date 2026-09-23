@@ -58,6 +58,17 @@ enum ErrorCode: string
     case PolicyDialogFrozen = 'policy.dialog_frozen';
     case PolicyMonthlyQuotaNear = 'policy.monthly_quota_near';
 
+    case ContactMergeProposalNotFound = 'contact.merge_proposal_not_found';
+    case ContactMergeNotFound = 'contact.merge_not_found';
+    case ContactMergeUndoUnsafe = 'contact.merge_undo_unsafe';
+    case ContactMergeUndoExpired = 'contact.merge_undo_expired';
+    case ContactImportInvalid = 'contact.import_invalid';
+    case ContactImportTooLarge = 'contact.import_too_large';
+    case ContactJobNotFound = 'contact.job_not_found';
+    case ContactJobConflict = 'contact.job_conflict';
+    case ContactExportExpired = 'contact.export_expired';
+    case RealtimeTooManyStreams = 'realtime.too_many_streams';
+
     case AccessPoolNoNext = 'accesspool.no_next';
 
     case MessageTypeUnsupported = 'message.type_unsupported';
