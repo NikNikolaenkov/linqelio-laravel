@@ -8,6 +8,8 @@ use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Channel;
 use Linqelio\Laravel\Data\ChannelDeletion;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
+use Linqelio\Laravel\Data\Templates\ChannelTemplates;
+use Linqelio\Laravel\Data\Templates\TemplateSyncResult;
 use Linqelio\Laravel\Exceptions\IdempotencyException;
 
 final readonly class ChannelsResource
@@ -186,5 +188,24 @@ final readonly class ChannelsResource
     public function delete(string $id): ChannelDeletion
     {
         return ChannelDeletion::fromArray($this->client->delete("/channels/{$id}")->data);
+    }
+
+    /**
+     * A WhatsApp Business channel's message templates, as of its last sync with
+     * Meta — what `messages()->sendTemplate()` can send. Any other kind answers
+     * `channel.capability_unsupported`.
+     */
+    public function templates(string $id): ChannelTemplates
+    {
+        return ChannelTemplates::fromArray($this->client->get("/channels/{$id}/templates")->data);
+    }
+
+    /**
+     * Re-read the channel's templates from Meta now, rather than waiting for the
+     * periodic sync — after a template was approved, say.
+     */
+    public function syncTemplates(string $id): TemplateSyncResult
+    {
+        return TemplateSyncResult::fromArray($this->client->post("/channels/{$id}/templates/sync")->data);
     }
 }

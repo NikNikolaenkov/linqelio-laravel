@@ -8,6 +8,9 @@ use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Enums\MessageType;
 use Linqelio\Laravel\Data\MediaContent;
 use Linqelio\Laravel\Data\Message;
+use Linqelio\Laravel\Data\Policy\SendPolicyCheck;
+use Linqelio\Laravel\Data\Policy\SendTemplate;
+use Linqelio\Laravel\Exceptions\PolicyException;
 
 final readonly class MessagesResource
 {
@@ -26,7 +29,18 @@ final readonly class MessagesResource
      * there or the send fails with `channel.capability_unsupported` rather than
      * quietly going out somewhere else.
      *
+     * Pass `$acknowledgedWarnings` to make it a CONFIRMED send: the
+     * `warningKeys` of a {@see self::check()} somebody has seen and agreed to.
+     * It then goes through only if every warning send policy raises NOW is
+     * among them; a warning that appeared since is refused with
+     * `policy.confirmation_required` ({@see PolicyException::needsConfirmation()})
+     * and nothing is sent. An empty array confirms "no warnings". Leave it null
+     * for an unconfirmed send, where warnings never block and only come back on
+     * the result's `policyWarnings`.
+     *
      * @param  array<string, mixed>  $content  keyed by type: ['text' => '…'] or ['media' => [...]]
+     * @param  array<int, string>|null  $acknowledgedWarnings  the check's `warningKeys`, once confirmed
+     * @param  SendTemplate|null  $template  for a `template` send (WhatsApp Business only)
      */
     public function send(
         string $contactId,
@@ -35,17 +49,67 @@ final readonly class MessagesResource
         ?string $channelId = null,
         ?string $replyTo = null,
         ?string $idempotencyKey = null,
+        ?array $acknowledgedWarnings = null,
+        ?SendTemplate $template = null,
     ): Message {
-        $body = array_filter([
-            'type' => $type->value,
-            'content' => $content,
-            'channelId' => $channelId,
-            'replyTo' => $replyTo,
-        ], static fn ($v): bool => $v !== null);
+        $body = SendBody::build($type, $content, $channelId, $replyTo, $acknowledgedWarnings, $template);
 
         $response = $this->client->post("/contacts/{$contactId}/messages", $body, idempotencyKey: $idempotencyKey);
 
         return Message::fromArray($response->data);
+    }
+
+    /**
+     * Ask send policy about a message WITHOUT sending it.
+     *
+     * A dry run that consumes nothing — no rate budget, no counters — so call it
+     * while somebody is composing. Same arguments as {@see self::send()}, so the
+     * check is about exactly the message the send will carry:
+     *
+     *     $check = Linqelio::messages()->check($id, MessageType::Text, $content);
+     *     // show $check->findings; if $check->needsConfirmation(), ask
+     *     Linqelio::messages()->send($id, MessageType::Text, $content,
+     *         acknowledgedWarnings: $check->warningKeys);
+     *
+     * @param  array<string, mixed>  $content
+     */
+    public function check(
+        string $contactId,
+        MessageType $type,
+        array $content,
+        ?string $channelId = null,
+        ?string $replyTo = null,
+        ?SendTemplate $template = null,
+    ): SendPolicyCheck {
+        $body = SendBody::build($type, $content, $channelId, $replyTo, template: $template);
+
+        return SendPolicyCheck::fromArray(
+            $this->client->post("/contacts/{$contactId}/messages/policy-check", $body)->data,
+        );
+    }
+
+    /**
+     * Send an approved WhatsApp Business template — the one kind of message a
+     * wa_cloud channel may send outside the 24-hour service window.
+     *
+     * @param  array<int, string>|null  $acknowledgedWarnings
+     */
+    public function sendTemplate(
+        string $contactId,
+        SendTemplate $template,
+        ?string $channelId = null,
+        ?string $idempotencyKey = null,
+        ?array $acknowledgedWarnings = null,
+    ): Message {
+        return $this->send(
+            $contactId,
+            MessageType::Template,
+            [],
+            $channelId,
+            idempotencyKey: $idempotencyKey,
+            acknowledgedWarnings: $acknowledgedWarnings,
+            template: $template,
+        );
     }
 
     /** Convenience for the common case. */

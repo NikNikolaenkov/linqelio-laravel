@@ -5,9 +5,19 @@ declare(strict_types=1);
 namespace Linqelio\Laravel\Resources;
 
 use Linqelio\Laravel\Client\HttpClient;
+use Linqelio\Laravel\Data\Ai\AiProfileFill;
+use Linqelio\Laravel\Data\Ai\ContactAiProfile;
+use Linqelio\Laravel\Data\Consent\ConsentChange;
+use Linqelio\Laravel\Data\Consent\ContactConsent;
 use Linqelio\Laravel\Data\Contact;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
 use Linqelio\Laravel\Data\ErasureResult;
+use Linqelio\Laravel\Data\Fields\ContactFieldDefinition;
+use Linqelio\Laravel\Data\Fields\ContactFieldsUpdate;
+use Linqelio\Laravel\Data\Fields\ContactFieldValues;
+use Linqelio\Laravel\Data\Read;
+use Linqelio\Laravel\Exceptions\AiException;
+use Linqelio\Laravel\Exceptions\ContactException;
 
 final readonly class ContactsResource
 {
@@ -166,5 +176,110 @@ final readonly class ContactsResource
     public function erase(string $id): ErasureResult
     {
         return ErasureResult::fromArray($this->client->post("/contacts/{$id}/erase")->data);
+    }
+
+    /**
+     * The contact's consent on every channel of the cabinet.
+     *
+     * @return array<int, ContactConsent>
+     */
+    public function consents(string $id): array
+    {
+        return array_map(ContactConsent::fromArray(...), $this->client->get("/contacts/{$id}/consents")->items());
+    }
+
+    /**
+     * Record that the contact agreed to be messaged on one channel.
+     *
+     * The source is not yours to choose — it is who calls: through an API key it
+     * is recorded as `host_api`, with the key as its author. `$evidence` is a
+     * short reference to where the consent came from (a form id, your CRM
+     * record), never personal data: it is kept with the consent and in the
+     * audit log.
+     *
+     * Idempotent. An active consent is left as it is (`changed: false` — the
+     * first grant's provenance is the earliest evidence). A REVOKED one is
+     * re-granted: an explicit grant lifts an earlier opt-out, so only call this
+     * when the person actually said yes again.
+     */
+    public function grantConsent(string $id, string $channelId, ?string $evidence = null): ConsentChange
+    {
+        $response = $this->client->put(
+            "/contacts/{$id}/consents/{$channelId}",
+            Read::compact(['evidence' => $evidence]),
+        );
+
+        return ConsentChange::fromArray($response->data);
+    }
+
+    /**
+     * Record that the contact withdrew consent on one channel. From then on a
+     * send there is refused with `policy.consent_missing` while the cabinet
+     * enforces consent.
+     *
+     * Holds even when nothing had been granted — "do not message me" also stops
+     * a later automatic grant from an inbound message. Idempotent: revoking a
+     * revoked consent answers `changed: false` and keeps the first moment.
+     */
+    public function revokeConsent(string $id, string $channelId): ConsentChange
+    {
+        return ConsentChange::fromArray(
+            $this->client->post("/contacts/{$id}/consents/{$channelId}/revoke")->data,
+        );
+    }
+
+    /** The contact's typed field values, each with who wrote it. */
+    public function fields(string $id): ContactFieldValues
+    {
+        return ContactFieldValues::fromArray($this->client->get("/contacts/{$id}/fields")->data);
+    }
+
+    /**
+     * Set typed field values; `null` clears one.
+     *
+     * Written as `host`. All-or-nothing on VALIDITY: if any value does not fit
+     * the schema nothing is written and the call fails with
+     * `contact.field_invalid` ({@see ContactException::errors()} names each
+     * field). But a value a person wrote is not overwritten and that is NOT an
+     * error — check {@see ContactFieldsUpdate::$kept}.
+     *
+     * @param  array<string, mixed>  $fields  field key => value (or null to clear)
+     */
+    public function setFields(string $id, array $fields): ContactFieldsUpdate
+    {
+        // An empty map still has to be an OBJECT on the wire.
+        $body = ['fields' => $fields === [] ? new \stdClass : $fields];
+
+        return ContactFieldsUpdate::fromArray($this->client->patch("/contacts/{$id}/fields", $body)->data);
+    }
+
+    /**
+     * The cabinet's typed field schema — what {@see self::setFields()} accepts.
+     * Edited in the console, not here.
+     *
+     * @return array<int, ContactFieldDefinition>
+     */
+    public function fieldDefinitions(): array
+    {
+        return array_map(ContactFieldDefinition::fromArray(...), $this->client->get('/contact-fields')->items());
+    }
+
+    /** The contact's AI questionnaire, AI summary and last run. */
+    public function aiProfile(string $id): ContactAiProfile
+    {
+        return ContactAiProfile::fromArray($this->client->get("/contacts/{$id}/ai-profile")->data);
+    }
+
+    /**
+     * Run the AI questionnaire now over the contact's latest conversation.
+     *
+     * Queued, not immediate: read the result later with {@see self::aiProfile()}.
+     * Idempotent per conversation and newest message — asking again before
+     * anything new was said returns the same run. Fails with `ai.disabled`
+     * ({@see AiException}) when the cabinet has not consented to AI processing.
+     */
+    public function fillAiProfile(string $id): AiProfileFill
+    {
+        return AiProfileFill::fromArray($this->client->post("/contacts/{$id}/ai-profile/fill")->data);
     }
 }

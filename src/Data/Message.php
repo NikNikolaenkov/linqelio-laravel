@@ -7,6 +7,7 @@ namespace Linqelio\Laravel\Data;
 use DateTimeImmutable;
 use Linqelio\Laravel\Data\Enums\MessageStatus;
 use Linqelio\Laravel\Data\Enums\MessageType;
+use Linqelio\Laravel\Data\Policy\PolicyFinding;
 
 /**
  * One message, inbound or outbound.
@@ -23,6 +24,10 @@ final readonly class Message
      * @param  array<string, mixed>  $meta  provider-specific metadata; never
      *                                      routing-significant, and the only
      *                                      place a failure reason is recorded
+     * @param  array<int, PolicyFinding>  $policyWarnings  the `warn` findings send
+     *                                                     policy raised for this
+     *                                                     send; set only on the
+     *                                                     answer to a send
      */
     public function __construct(
         public string $id,
@@ -34,6 +39,7 @@ final readonly class Message
         public ?string $providerMessageId = null,
         public ?string $author = null,
         public array $meta = [],
+        public array $policyWarnings = [],
     ) {}
 
     /**
@@ -51,6 +57,7 @@ final readonly class Message
             providerMessageId: isset($data['providerMsgId']) ? (string) $data['providerMsgId'] : null,
             author: isset($data['author']) ? (string) $data['author'] : null,
             meta: is_array($data['meta'] ?? null) ? $data['meta'] : [],
+            policyWarnings: PolicyFinding::listFrom($data, 'policyWarnings'),
         );
     }
 
