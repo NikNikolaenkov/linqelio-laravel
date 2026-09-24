@@ -4067,14 +4067,18 @@ paths:
         Creates a group owned by the channel's own account (issue #66) and
         opens its group conversation, so it appears in Dialogs at once. The
         initial members are contacts of the cabinet: each is added by its
-        WhatsApp phone address (a contact with no phone the channel can address
-        is reported in `failed` with reason `no_address`). Needs a channel
-        whose kind manages groups (`capabilities.groups` — wa_web today; others
-        answer channel.capability_unsupported), whose group chats are on
+        WhatsApp phone address on wa_web, by its Telegram account (numeric id,
+        else @username, else phone) on tg_client — a tg_client group is created
+        as a supergroup (ADR-0102); a contact the channel cannot address is
+        reported in `failed` with reason `no_address`. Needs a channel
+        whose kind manages groups (`capabilities.groups` — wa_web and
+        tg_client; others answer channel.capability_unsupported), whose group chats are on
         (policy.groups_disabled otherwise) and which is connected. The
         platform may still refuse some members (their privacy settings, a
         number not on WhatsApp): they are in `failed` with reason `refused`.
-        Audited as `group.create`.
+        A platform rate limit (Telegram FLOOD_WAIT) is provider.unavailable
+        (503) with Retry-After; the call is not retried. Audited as
+        `group.create`.
       tags:
         - channels
       parameters:
@@ -6900,6 +6904,113 @@ paths:
           $ref: '#/components/responses/Forbidden'
   # ===========================================================================
   # END R12-E Bitrix24 B4/B5 (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R13-D Bitrix24 CRM card: create the contact that is not there (issue
+  # #137, FR-21; ADR-0099 "Доповнено 2026-09-24")
+  # ===========================================================================
+  # One more operation of the OPERATOR surface (ADR-0055 `sub: agent`, the R12-D
+  # block above): the card that resolves to nobody offers to create our contact
+  # from what the CRM holds. Schemas: the "BEGIN R13-D schemas" block at the end
+  # of components.schemas; error codes: the "R13-D" block at the end of
+  # ErrorCode.
+  /embed/agent/crm-card/contact:
+    post:
+      operationId: createEmbedAgentCrmContact
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — contact:write:custom, i.e. contacts:write intersected with what the token carries — re-checked against the person's current membership and channel assignments; the channel must be one the person may write contacts on AND send on now.
+      summary: Create the card's customer as a Linqelio contact and link it to the CRM entity.
+      description: >
+        Called by the widget when resolveEmbedAgentCrmCard answered
+        `resolvedBy: none`. The server reads the card's entity again WITH THE
+        OPERATOR'S OWN Bitrix24 token (the same batch and the same checks as
+        resolveEmbedAgentCrmCard: the token's user must be the operator of the
+        Linqelio token, the portal applies the operator's CRM rights) — for a
+        deal, also its contact and company — and never takes the customer's
+        data from the request.
+
+
+        It creates the contact with the entity's name, one identity on the
+        chosen channel — the phone for the phone-addressed kinds (wa_web,
+        wa_cloud, tg_client), a Telegram username (the entity's IM of type
+        TELEGRAM) for tg_bot and, without a usable phone, for tg_client — the
+        first e-mail in the cabinet's first e-mail-typed contact field (as a
+        host-written value, ADR-0061), and an empty conversation on the channel
+        (which is what puts the contact in a channel-scoped operator's view).
+        A phone written nationally ("050 123 45 67") is usable only in the
+        cabinet's default country (messaging_defaults.default_country);
+        without it nothing is guessed. `phone` picks one of the entity's
+        numbers; without it the first usable one is taken.
+
+
+        The contact is linked to the entity at once — the card's own contact,
+        lead or company, or a deal's contact (else its company) — through the
+        same write as the connector's CRM links (ADR-0097): a
+        `bitrix_crm_links` row (source `card`) and the host reference
+        `bitrix24:<member_id>` / `CONTACT_42`, so the next resolve finds it by
+        link. Idempotent per entity: a repeated call (a double click, a second
+        tab) answers 200 with the contact the entity is already linked to
+        (`created: false`) instead of creating another. An entity already
+        linked to a contact outside the operator's channels is 409
+        bitrix.crm_linked_elsewhere; an identity another contact already holds
+        is 409 contact.identity_conflict (nothing is taken over — merging is
+        the merge flow's decision). Audited as the person
+        (`bitrix.card.contact_create`). Refused while the organization is
+        suspended.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbedAgentCrmContactRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - bitrix.auth_invalid
+        - bitrix.crm_entity_unavailable
+        - bitrix.crm_contact_unaddressable
+        - bitrix.crm_linked_elsewhere
+        - channel.not_found
+        - contact.identity_conflict
+        - provider.unavailable
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The entity was already linked — the contact it is linked to (`created` false).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbedAgentCrmContactCreated'
+        '201':
+          description: The contact was created and linked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbedAgentCrmContactCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # ===========================================================================
+  # END R13-D Bitrix24 CRM card: create the contact (paths)
   # ===========================================================================
   /contacts:
     get:
@@ -11788,6 +11899,20 @@ components:
         #     group conversation — it has no contact to scope a widget token to.
         - embed.conversation_unsupported
         # --- END R12-E ------------------------------------------------------------
+        # --- BEGIN R13-D (issue #137, ADR-0099): create the contact from a card ----
+        #   crm_contact_unaddressable (422): createEmbedAgentCrmContact on a card
+        #     whose customer cannot be reached on the chosen channel — no phone
+        #     usable on a phone-addressed channel (none, or only national
+        #     numbers and no default country for the cabinet), no Telegram
+        #     username for tg_bot, a channel kind addressed by provider ids only
+        #     (viber_bot), or a deal that names no customer the operator may
+        #     read.
+        - bitrix.crm_contact_unaddressable
+        #   crm_linked_elsewhere (409): createEmbedAgentCrmContact on a CRM entity
+        #     already linked to a contact outside the operator's channels: the
+        #     link stands, nothing is created.
+        - bitrix.crm_linked_elsewhere
+        # --- END R13-D ------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -12213,7 +12338,8 @@ components:
     ChannelGroupSettings:
       type: object
       description: >
-        Group chats on this channel (ADR-0062 §4) — wa_web only. Off unless set:
+        Group chats on this channel (ADR-0062 §4) — wa_web and tg_client
+        (ADR-0102). Off unless set:
         with `enabled: false` the channel neither takes group messages in nor
         sends into groups (policy.groups_disabled). Turning it on is the
         explicit, audited decision that stands in for a person's consent in a
@@ -12844,7 +12970,7 @@ components:
             GET /<wabaId>/message_templates; without it the channel sends text
             and media but has no templates.
           minLength: 1
-        # R10-A (#65, ADR-0062 §4): the channel's group switch (wa_web only).
+        # R10-A (#65, ADR-0062 §4): the channel's group switch (wa_web; tg_client since R13-B).
         groups:
           $ref: '#/components/schemas/ChannelGroupSettings'
       additionalProperties: false
@@ -15145,6 +15271,21 @@ components:
             disables it; unset means 24. Texts are compared after normalization
             (case, whitespace, punctuation, URLs and numbers masked).
         # --- END R8-C send-policy limits ----------------------------------------
+        # --- BEGIN R13-D (issue #137, ADR-0099) ----------------------------------
+        default_country:
+          type: string
+          enum: [UA, KZ, PL, DE, US, CA, GB]
+          x-enum-varnames: [DefaultCountryUA, DefaultCountryKZ, DefaultCountryPL, DefaultCountryDE, DefaultCountryUS, DefaultCountryCA, DefaultCountryGB]
+          description: >
+            The cabinet's default country (ISO 3166-1 alpha-2): a phone number
+            a host stores in the national format ("050 123 45 67", "8 050…",
+            "(050)1234567") is read in it — the trunk prefix dropped, the
+            country code added — when a CRM card is matched to a contact, when
+            a contact is created from a card, and in the Bitrix24 CRM duplicate
+            search and enrichment. Unset: nothing is guessed, only numbers
+            written internationally ("+…", "00…") match. The listed countries
+            are the ones with rules (calling code, trunk prefix, number length).
+        # --- END R13-D --------------------------------------------------------------
 
     DeskSettings:
       type: object
@@ -20741,6 +20882,9 @@ components:
             The operator's own channel: their default channel assignment, else
             the channel of their most recent own send — only when it is in their
             scope.
+        # R13-D (issue #137): what a new contact would be made of.
+        entity:
+          $ref: '#/components/schemas/EmbedAgentCrmEntity'
     EmbedAgentFeedMessage:
       description: A message of the operator widget's feed — a FeedMessage with the channel and conversation it belongs to.
       allOf:
@@ -21106,3 +21250,105 @@ components:
         - items
         - generatedAt
     # END R12-E schemas
+
+    # =========================================================================
+    # BEGIN R13-D schemas: create the contact from a CRM card (issue #137,
+    # FR-21, ADR-0099 "Доповнено 2026-09-24"). Used by the "BEGIN R13-D" paths
+    # block and by EmbedAgentCrmCard.entity.
+    # =========================================================================
+    EmbedAgentCrmPhone:
+      type: object
+      description: One of the card's numbers.
+      required: [raw]
+      properties:
+        raw:
+          type: string
+          description: The number as the CRM stores it.
+        e164:
+          type: string
+          description: >
+            The international number (`+` and digits) — absent when the number
+            is written nationally and the cabinet has no default country to
+            read it in: such a number cannot be used for a new contact.
+          example: '+380501234567'
+    EmbedAgentCrmEntity:
+      type: object
+      description: >
+        What the CRM holds about the card's customer — the entity itself and,
+        for a deal, its contact and company as far as the operator may read
+        them. Present when the card resolves to no contact (`resolvedBy:
+        none`): the widget offers to create the contact from it
+        (createEmbedAgentCrmContact).
+      required: [phones, emails, telegram, linkable]
+      properties:
+        name:
+          type: string
+        phones:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbedAgentCrmPhone'
+        emails:
+          type: array
+          items:
+            type: string
+        telegram:
+          type: array
+          description: Telegram usernames (without `@`) from the entity's IM of type TELEGRAM.
+          items:
+            type: string
+        linkable:
+          type: boolean
+          description: >
+            A new contact can be linked to this card: false for a deal that
+            names no contact or company the operator may read.
+    EmbedAgentCrmContactRequest:
+      type: object
+      description: The card, the operator's Bitrix24 token, and the channel to create the contact on.
+      required: [placement, entityId, accessToken, channelId]
+      properties:
+        placement:
+          type: string
+          pattern: '^CRM_(CONTACT|LEAD|DEAL|COMPANY)_DETAIL_TAB$'
+          example: CRM_DEAL_DETAIL_TAB
+        entityId:
+          type: string
+          pattern: '^[0-9]{1,18}$'
+          example: '42'
+        accessToken:
+          type: string
+          maxLength: 512
+          description: >
+            The operator's current Bitrix24 access token (`BX24.getAuth().access_token`),
+            for this call only; never stored or logged.
+        channelId:
+          type: string
+          format: uuid
+          description: A channel the operator may send on; the contact's identity is made for its kind.
+        phone:
+          type: string
+          maxLength: 64
+          description: >
+            One of the entity's numbers (`raw` or `e164` of entity.phones) to
+            use; unset = the first usable one. A number the entity does not
+            hold is refused.
+    EmbedAgentCrmContactCreated:
+      type: object
+      required: [created, contact, linkedEntityType, linkedEntityId]
+      properties:
+        created:
+          type: boolean
+          description: False when the entity was already linked (a repeated call) — `contact` is that contact.
+        contact:
+          $ref: '#/components/schemas/EmbedAgentContact'
+        conversationId:
+          type: string
+          format: uuid
+          description: The (empty) conversation opened on the channel for the new contact.
+        linkedEntityType:
+          type: string
+          description: The CRM entity the contact is linked to (CONTACT, COMPANY or LEAD).
+          example: CONTACT
+        linkedEntityId:
+          type: string
+          example: '7'
+    # END R13-D schemas

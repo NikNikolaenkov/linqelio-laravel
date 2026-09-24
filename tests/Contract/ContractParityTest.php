@@ -313,6 +313,7 @@ final class Contract
         'listBitrixLineRequests' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
         'createBitrixOpenLine' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
         'resolveEmbedAgentCrmCard' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'createEmbedAgentCrmContact' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'listEmbedAgentContactMessages' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'sendEmbedAgentMessage' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'checkEmbedAgentSendPolicy' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
