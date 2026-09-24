@@ -5893,6 +5893,1014 @@ paths:
   # ===========================================================================
   # END R11-F Bitrix24 open-lines connector (paths)
   # ===========================================================================
+  # ===========================================================================
+  # BEGIN R12-B Bitrix24 CRM — deduplication, fields, open lines (paths) —
+  # issue #76, epic #20, ADR-0097
+  # ===========================================================================
+  # OWNED BY R12-B: the CRM settings of a linked portal (the duplicate search
+  # before the open line makes an entity, the entity types and their order,
+  # the enrichment and its field map), the portal's CRM fields for the mapping
+  # editor (read live), and open-line creation — queued for the portal's
+  # dispatcher like every other call (ADR-0094 §4), so it is a request that is
+  # answered later. The deduplication and enrichment themselves never pass
+  # through the contract: they are dispatcher jobs. Schemas: the "BEGIN R12-B
+  # schemas" block at the end of components.schemas; error codes: the "R12-B"
+  # block at the end of ErrorCode.
+  /bitrix/portals/{portalId}/crm:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    get:
+      operationId: getBitrixCrmSettings
+      x-permission: 'settings:manage'
+      summary: The portal's CRM settings — deduplication, enrichment, field map.
+      description: >
+        How the connector treats the portal's CRM (ADR-0097): whether a chat new
+        on the portal is first matched against the CRM with Bitrix24's standard
+        duplicate search (by the client's normalized phone and e-mail, in the
+        listed entity types and order) before the open line can make a new
+        entity; whether the linked entity is enriched, and with which of our
+        contact values into which CRM fields. A portal nobody configured
+        answers the defaults (`configured: false`). With the counts of linked
+        contacts — found by the search, bound by the line, and those where the
+        line bound another entity than the linked one — and the last CRM
+        refusal (a missing `crm` scope, a field the portal does not have). It
+        calls nothing on the portal.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The portal's CRM settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixCrmSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    put:
+      operationId: updateBitrixCrmSettings
+      x-permission: 'settings:manage'
+      summary: Replace the portal's CRM settings.
+      description: >
+        The whole settings object. The field map sends our values — `name`
+        (normalized to what Bitrix24 accepts; the original stays ours), `phone`,
+        or a typed contact field `field:<key>` of this cabinet — into CRM fields
+        by code (`NAME`, `PHONE`, `UF_CRM_…`). Never accepted as a target: `IM`
+        (the messenger service field — its format is undocumented, the open
+        line owns it) and the entity's identity, ownership and audit fields.
+        Enrichment never overwrites a value a CRM user changed: a field is
+        written only while it is empty and never written by us, or still holds
+        the value we wrote last; PHONE / EMAIL / WEB only ever get values added.
+        422 `bitrix.crm_mapping_invalid` names every problem. Recorded in the
+        audit trail.
+      tags:
+        - bitrix
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCrmSettingsUpdate'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - bitrix.crm_mapping_invalid
+      responses:
+        '200':
+          description: The settings after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixCrmSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /bitrix/portals/{portalId}/crm/fields:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    get:
+      operationId: listBitrixCrmFields
+      x-permission: 'settings:manage'
+      summary: The CRM fields of an entity type, as the portal lists them.
+      description: >
+        Asks the portal (crm.<entity>.fields) for the fields of CONTACT,
+        COMPANY or LEAD — for the field-map editor. Read live, never cached,
+        like the open lines. `writable` is false for the fields a mapping may
+        not target (read-only on the portal, `IM`, identity and audit fields).
+        503 provider.unavailable when the portal cannot be reached, is over its
+        request limit, or refuses (no `crm` scope).
+      tags:
+        - bitrix
+      parameters:
+        - name: entityType
+          in: query
+          required: true
+          description: The CRM entity type.
+          schema:
+            $ref: '#/components/schemas/BitrixCrmEntityType'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - provider.unavailable
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The entity type's fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixCrmFieldList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /bitrix/portals/{portalId}/line-requests:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    get:
+      operationId: listBitrixLineRequests
+      x-permission: 'settings:manage'
+      summary: The portal's recent "create an open line" requests.
+      description: >
+        Newest first (up to 20): pending while the dispatcher has not reached
+        the portal, `done` with the new line's id (its channels are then bound
+        to it), or `failed` with the reason — `line_limit` when the portal's
+        tariff allows no more open lines (put the channel on an existing line
+        instead: several channels may share one), `refused`, or
+        `invalid_answer`.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLineRequestList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    post:
+      operationId: createBitrixOpenLine
+      x-permission: 'settings:manage'
+      summary: Create a new open line on the portal, optionally for some channels.
+      description: >
+        Queues imopenlines.config.add for the portal's dispatcher (ADR-0094 §4:
+        no call to the portal from the request) and answers 202 with the
+        request. When the portal has made the line, the listed channels are
+        put on it exactly as bindBitrixChannelLine would (pending, then active)
+        and leave their previous line. Poll listBitrixLineRequests for the
+        outcome. Channels outside the caller's scope read as channel.not_found.
+        Recorded in the audit trail.
+      tags:
+        - bitrix
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLineRequestCreate'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - channel.not_found
+      responses:
+        '202':
+          description: The request, queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLineRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ===========================================================================
+  # END R12-B Bitrix24 CRM (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R12-D Bitrix24 B3/B4 — the conversation widget in CRM cards and the
+  # rule-aware composer (issues #78/#79, epic #20; ADR-0055, ADR-0093, ADR-0099)
+  # ===========================================================================
+  # The OPERATOR surface of the embed token (ADR-0055 `sub: agent`, minted by
+  # createBitrixAppSession): the widget framed into a CRM card tab reads the
+  # card's client, their messages across the operator's channels, the send
+  # policy of a prospective message (dry run, nothing consumed) and a channel's
+  # WhatsApp templates, and sends. Every operation re-resolves the token's
+  # person against the database on EVERY call — the installation must still be
+  # live, the account a member, and the channel scope is the CURRENT assignment
+  # list narrowed by the token's own — so revoking a channel or unlinking the
+  # portal takes effect at once, not at token expiry. A contact token
+  # (`sub: embed`) is refused here, and an operator token everywhere else.
+  # Schemas: the "BEGIN R12-D schemas" block at the end of components.schemas;
+  # the error code: the "R12-D" block at the end of ErrorCode.
+  /embed/agent/crm-card:
+    post:
+      operationId: resolveEmbedAgentCrmCard
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — contact:read — re-checked against the person's current membership and channel assignments; not by a cabinet principal from a key or a session.
+      x-suspension: allowed
+      x-suspension-reason: >
+        A read expressed as POST (the body carries the operator's Bitrix24 access token, which must not appear in a URL): a suspended organization's CRM card still shows its history, like every other read.
+      summary: Resolve a CRM card to the Linqelio contact, its conversations and the operator's channels.
+      description: >
+        Called by the widget in a CRM card tab (CRM_CONTACT_DETAIL_TAB,
+        CRM_LEAD_DETAIL_TAB, CRM_DEAL_DETAIL_TAB, CRM_COMPANY_DETAIL_TAB) with
+        the placement and the entity id from `BX24.placement.info()` and the
+        operator's CURRENT Bitrix24 access token (`BX24.getAuth()`). The server
+        reads the entity from the portal WITH THAT TOKEN — at the
+        installation's stored endpoint, in one batch together with
+        `user.current` — so Bitrix24 itself enforces the operator's CRM rights,
+        and the Bitrix user the token belongs to must be the one linked to the
+        token's account (otherwise 401 bitrix.auth_invalid). The access token
+        is used for this call only and never stored.
+
+
+        The contact is resolved (ADR-0099 §3) by an existing link first — the
+        entity's (or, for a deal, its contact's / company's) host reference
+        `bitrix24:<member_id>` / `CONTACT_42` — and otherwise by the entity's
+        phone numbers (digits, E.164 without `+`) and e-mails against the
+        contacts visible in the operator's channel scope; several matches pick
+        the most recently active one (`candidates` says how many). Nothing is
+        written: a match by phone does not create a link. `resolvedBy: none`
+        with an empty contact means no Linqelio contact matches.
+
+
+        The answer also lists the contact's conversations on the operator's
+        channels, the operator's channels (with whether each can send now) and
+        the operator's own channel — their default channel assignment, else the
+        channel of their most recent own send (`operatorChannelId`); the widget
+        picks its default channel from them.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbedAgentCrmCardRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - bitrix.auth_invalid
+        - bitrix.crm_entity_unavailable
+        - provider.unavailable
+      responses:
+        '200':
+          description: The card's contact (if any), its conversations and the operator's channels.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbedAgentCrmCard'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /embed/agent/contacts/{id}/messages:
+    get:
+      operationId: listEmbedAgentContactMessages
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:read — re-checked against the person's current membership and channel assignments.
+      summary: The contact's messages across the operator's channels (operator widget).
+      description: >
+        listContactMessages for the operator widget: every message exchanged
+        with the contact on the channels the operator may read now, each with
+        the channel and conversation it belongs to. Newest-first pagination,
+        presented oldest→newest; `before` walks further back. A contact outside
+        the operator's scope is contact.not_found, like one that does not
+        exist. Media urls point at getEmbedAgentMessageMedia.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - name: before
+          in: query
+          required: false
+          description: Backward cursor — a message id from a previous page's `pageInfo.nextCursor`.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - contact.not_found
+      responses:
+        '200':
+          description: A page of the contact's messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbedAgentMessageHistory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: sendEmbedAgentMessage
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:send — re-checked against the person's current membership and channel assignments; the send itself is sendContactMessage's, under that narrowed Principal.
+      summary: Send to the contact from the operator widget.
+      description: >
+        sendContactMessage for the operator widget, with the same body, the
+        same send policy, the same confirmed-send flow (`acknowledgedWarnings`,
+        ADR-0082), the same template sends (ADR-0092) and the same answers. The
+        channel must be one the operator may send on now (`channelId`, or the
+        contact's latest conversation). The message is recorded as the
+        operator's own (`origin: widget`, the account as its author) and
+        audited as the person. `Idempotency-Key` is REQUIRED.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - contact.not_found
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - channel.pairing_required
+        - message.type_unsupported
+        - message.too_large
+        - template.not_found
+        - template.not_approved
+        - template.unsupported
+        - template.params_invalid
+        - policy.rate_limited
+        - policy.quota_exceeded
+        - policy.rule_blocked
+        - policy.confirmation_required
+        - policy.consent_missing
+        - policy.daily_limit
+        - policy.hourly_limit
+        - policy.dialog_frozen
+        - policy.service_window_closed
+        - idempotency.key_reused
+        - provider.upstream_error
+        - provider.unavailable
+        - tenancy.suspended
+        - tenancy.quota_exceeded
+      responses:
+        '200':
+          description: A replay of the same Idempotency-Key — the original message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        '202':
+          description: >
+            The message was accepted and queued. `policyWarnings` lists the
+            send-policy warnings it went out with, if any.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentMessage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /embed/agent/contacts/{id}/messages/policy-check:
+    post:
+      operationId: checkEmbedAgentSendPolicy
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:send — re-checked against the person's current membership and channel assignments; the dry run itself is checkSendPolicy's.
+      x-suspension: allowed
+      x-suspension-reason: >
+        A dry run that changes nothing (ADR-0082): for a suspended organization the answer is a deny finding with code tenancy.suspended, which is exactly what the composer must show.
+      summary: Dry-run send policy for the operator widget's composer (nothing consumed).
+      description: >
+        checkSendPolicy for sendEmbedAgentMessage — the rule-aware composer's
+        source (ADR-0099 §5): what send policy would say about this message
+        NOW, with no rate budget, counter or journal row consumed (ADR-0082).
+        The answer carries what the composer draws: the 24-hour window of a
+        wa_cloud conversation (`service_window` finding: `params.closesAt`
+        while open, deny policy.service_window_closed with
+        `params.hint = template` once closed), the consent state (`consent`
+        finding), the channel's limits (`meters`: window.day, window.hour,
+        rate.burst with warm-up applied, ...) and whether the send would be
+        refused and why. Same body, cap and scope as the send; no
+        Idempotency-Key.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - contact.not_found
+        - channel.not_found
+        - channel.capability_unsupported
+        - message.type_unsupported
+        - template.not_found
+        - template.not_approved
+        - template.unsupported
+        - template.params_invalid
+        - provider.unavailable
+      responses:
+        '200':
+          description: The send-policy answer for this prospective send.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendPolicyCheck'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /embed/agent/channels/{id}/templates:
+    get:
+      operationId: listEmbedAgentChannelTemplates
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:read — re-checked against the person's current channel assignments; the list itself is listChannelTemplates'.
+      summary: A wa_cloud channel's message templates, for the composer's template mode.
+      description: >
+        listChannelTemplates for the operator widget (ADR-0092): the channel's
+        WhatsApp templates as of the last sync; the composer offers the
+        `sendable` ones when the 24-hour window is closed. A channel outside
+        the operator's scope is channel.not_found.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - channel.not_found
+        - channel.capability_unsupported
+      responses:
+        '200':
+          description: The channel's templates and their sync state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageTemplateList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /embed/agent/media:
+    post:
+      operationId: uploadEmbedAgentMedia
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:send; the upload itself is uploadMedia's.
+      summary: Upload an attachment from the operator widget.
+      description: >
+        uploadMedia for the operator widget: stores the file and returns the
+        url to put in the send's `content.media.url`.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      parameters:
+        - name: filename
+          in: query
+          required: false
+          description: Original file name (kept for documents).
+          schema:
+            type: string
+        - name: mime
+          in: query
+          required: false
+          description: Content type; sniffed from the bytes when omitted.
+          schema:
+            type: string
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - message.too_large
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The stored attachment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadedMedia'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /embed/agent/messages/{id}/media:
+    get:
+      operationId: getEmbedAgentMessageMedia
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:read — re-checked against the person's current channel assignments; the read itself is getMessageMedia's.
+      summary: Download a message's attachment in the operator widget.
+      description: >
+        getMessageMedia for the operator widget (the widget fetches it with the
+        token in the Authorization header and shows it from a blob url). A
+        message on a channel outside the operator's scope is message.not_found.
+      tags:
+        - embed
+      security:
+        - embedToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Message id (our ULID).
+          schema:
+            type: string
+      x-error-codes:
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - message.not_found
+      responses:
+        '200':
+          description: The attachment bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /embed/agent/events/stream:
+    get:
+      operationId: streamEmbedAgentEvents
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and its cap[] — message:read — re-checked against the person's current membership and assignments at every recheck of the open stream.
+      summary: Live events of the operator's channels (Server-Sent Events).
+      description: >
+        streamEvents for the operator widget (ADR-0069): the events of the
+        operator's channels, filtered by the same narrowed Principal as the
+        other operator operations and re-authorized every 15 s — an unlinked
+        portal, a removed membership or a revoked channel ends or narrows the
+        open stream. Frames and `data` are those of streamEvents
+        (RealtimeEvent). Read it with fetch and the token in the Authorization
+        header, never in a URL. The stream ends with `stream.closed` `expired`
+        when the token does.
+      tags:
+        - embed
+        - realtime
+      security:
+        - embedToken: []
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Resume after this cursor (the `id:` of the last frame received).
+          schema:
+            type: string
+            maxLength: 64
+      x-error-codes:
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - embed.token_expired
+        - realtime.too_many_streams
+        - provider.unavailable
+      responses:
+        '200':
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames. The `data:` line of a bus event is a RealtimeEvent.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # ===========================================================================
+  # END R12-D Bitrix24 CRM widget and rule-aware composer (paths)
+  # ===========================================================================
+
+  # ===========================================================================
+  # BEGIN R12-E Bitrix24 B4/B5: number health inside the CRM and the contact
+  # centre (paths) — issues #80/#81, epic #20, ADR-0100
+  # ===========================================================================
+  # OWNED BY R12-E: what the operator sees on OUR pages inside Bitrix24 — the
+  # contact centre (every conversation of the person's channels, read markers,
+  # a conversation opened inline) and the number-health dashboard. Authorized
+  # by the OPERATOR token (ADR-0055, `sub: agent`, minted by
+  # createBitrixAppSession): the embedToken bearer scheme, x-permission none,
+  # and in the handler the person's CURRENT principal (roles and channel
+  # assignments re-read on every request, ADR-0055 §5) on the portal's live
+  # installation. Schemas: the "BEGIN R12-E schemas" block at the end of
+  # components.schemas; error codes: the "R12-E" block at the end of
+  # ErrorCode.
+  /embed/agent/conversations:
+    get:
+      operationId: listAgentConversations
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and the person's current Principal re-read in the handler — never by a cabinet key or session: the Bitrix24 contact centre inside the portal (ADR-0100).
+      summary: The operator's contact centre — every conversation of their channels.
+      description: >
+        Every conversation on the channels the person may read (channels:read
+        with their channel scope, re-read on every request), most recently
+        active first, with the two states an operator works by (ADR-0100 §3).
+        `awaitingReply` is shared: the newest inbound message is newer than the
+        newest reply — an outbound message a person or the business sent (the
+        console, the desk, the widget, the API, the business's own phone), not
+        a campaign or a system message. `unreadCount` is the caller's own: the
+        inbound messages after the reply and after the caller's read marker
+        (markAgentConversationRead). Another operator reading a dialogue does
+        not clear it; anybody replying does. `counters` are the caller's totals
+        over the whole scope (the badge), independent of the filters.
+
+
+        `crm` names the CRM entity of the conversation's contact when the
+        contact carries a link to this portal (contact hostRefs,
+        `bitrix24:<member_id>`); without it the page resolves the contact by
+        phone in the portal itself.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      parameters:
+        - name: channelId
+          in: query
+          required: false
+          description: Only this channel (narrows the scope; a channel outside it gives an empty page).
+          schema:
+            type: string
+            format: uuid
+        - name: filter
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AgentConversationFilter'
+        - name: q
+          in: query
+          required: false
+          description: >
+            Search: the contact's name, a group's subject, the chat address, the
+            contact's phone numbers and user names (case-insensitive, contains).
+          schema:
+            type: string
+            maxLength: 100
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+            maxLength: 200
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - auth.forbidden_scope
+        - validation.invalid_request
+      responses:
+        '200':
+          description: A page of the contact centre and the caller's counters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /embed/agent/conversations/{id}/read:
+    post:
+      operationId: markAgentConversationRead
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and the person's current Principal re-read in the handler: moves the caller's OWN read marker (ADR-0100 §3).
+      x-suspension: allowed
+      x-suspension-reason: >
+        A read marker is the person's own bookmark: it sends nothing and changes nothing anybody else sees; reading stays possible in a suspended organization.
+      summary: Mark a conversation read up to a message (the caller's own marker).
+      description: >
+        Moves the caller's read marker in the conversation to `messageId` (a
+        message of that conversation) or, without it, to the newest message.
+        The marker never moves backwards: two tabs racing cannot rewind it.
+        Answers the conversation's new unread count and the caller's counters.
+        A conversation outside the caller's channels is 404, like one that does
+        not exist.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentReadRequest'
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - auth.forbidden_scope
+        - validation.invalid_request
+        - conversation.not_found
+        - message.not_found
+      responses:
+        '200':
+          description: The marker and what is left unread.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentReadMarker'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /embed/agent/conversations/{id}/session:
+    post:
+      operationId: createAgentConversationSession
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and the person's current Principal re-read in the handler: narrows the operator token to ONE conversation for the embed widget (ADR-0009), never widens it (ADR-0100 §3).
+      x-suspension: allowed
+      x-suspension-reason: >
+        Issuing a narrower token changes nothing; what the token can do is refused by the widget operations themselves while the organization is suspended (a send is a mutation there).
+      summary: Open a conversation inline — a contact-scoped embed token for it.
+      description: >
+        Exchanges the operator token for the ADR-0009 contact token the embed
+        widget's conversation view works with: pinned to this conversation and
+        its contact, bounded by the person's channel scope, with the
+        capabilities the person holds now (never more than the operator
+        token's). A group conversation has no contact and cannot be opened
+        this way (422 embed.conversation_unsupported). A conversation outside
+        the caller's channels is 404.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - auth.forbidden_scope
+        - validation.invalid_request
+        - conversation.not_found
+        - embed.conversation_unsupported
+      responses:
+        '201':
+          description: The conversation's embed token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /embed/agent/channel-health:
+    get:
+      operationId: listAgentChannelHealth
+      x-permission: none
+      x-permission-reason: >
+        Authorized by the operator token (embedToken scheme, `sub: agent`, ADR-0055) and the person's current Principal re-read in the handler: channels:read with the channel scope — the number-health dashboard inside Bitrix24 (ADR-0100 §2).
+      summary: The number-health dashboard — every number the operator may read.
+      description: >
+        Per channel the person may read (channels:read with their channel
+        scope): the health of ADR-0065 with its reasons, its trend (the
+        snapshots of the last 7 days), the send windows' limits and what is
+        used of them (in the cabinet's time zone), the warm-up stage of the
+        channel kind's access pool, the provider's own report (wa_cloud: Meta's
+        messaging-limit tier and quality event), the recent errors (failed
+        sends, policy refusals) and the open alerts. Read-only; nothing is
+        computed here that the aggregation did not already compute.
+      tags:
+        - embed
+        - bitrix
+      security:
+        - embedToken: []
+      x-error-codes:
+        - auth.invalid_key
+        - embed.token_expired
+        - auth.forbidden_scope
+      responses:
+        '200':
+          description: The dashboard.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentChannelHealthList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  # ===========================================================================
+  # END R12-E Bitrix24 B4/B5 (paths)
+  # ===========================================================================
   /contacts:
     get:
       operationId: listContacts
@@ -9451,7 +10459,11 @@ paths:
         appears in a URL). Frames are those of streamEvents with a smaller
         `data` (EmbedRealtimeEvent: the message id, the conversation id and,
         for a status, the status). The stream ends with `stream.closed`
-        `expired` when the token does.
+        `expired` when the token does. R12-E (ADR-0100 §3): an OPERATOR token
+        (`sub: agent`, ADR-0055) is accepted too — the contact centre's live
+        updates: the new messages and statuses of every conversation on the
+        person's channels, re-authorized against the person's current roles
+        and assignments while the stream lives.
       tags:
         - embed
         - realtime
@@ -10102,7 +11114,9 @@ components:
         POST /embed/session; carries the cabinet, the scoped contact/conversation
         and a capability set (cap[]). The widget is its ONLY holder — the host page
         never sees it. Distinct from clientApiKey: it authorizes ONLY the /embed/*
-        Plane-B surface, scoped to a single contact.
+        Plane-B surface, scoped to a single contact. Its operator kind
+        (`sub: agent`, ADR-0055, minted by createBitrixAppSession) authorizes
+        only /embed/agent/*, scoped to the person's channels (R12-D).
     sessionCookie:
       type: apiKey
       in: cookie
@@ -10755,6 +11769,25 @@ components:
         #     the connector works only on a live portal (pair it again).
         - bitrix.portal_not_live
         # --- END R11-F ------------------------------------------------------------
+        # --- BEGIN R12-B (issue #76, ADR-0097): Bitrix24 CRM ----------------------
+        #   crm_mapping_invalid (422): updateBitrixCrmSettings with an invalid
+        #     entity-type list or field map — an unknown source or field key, a
+        #     target that is not a CRM field code, a target we never write (IM,
+        #     identity / ownership / audit fields), a target mapped twice. The
+        #     problem's detail names every offender.
+        - bitrix.crm_mapping_invalid
+        # --- END R12-B ------------------------------------------------------------
+        # --- BEGIN R12-D (issues #78/#79, ADR-0099): Bitrix24 CRM widget ----------
+        #   crm_entity_unavailable (404): the CRM card's entity does not exist on
+        #     the portal, or the operator's Bitrix24 rights do not let them read
+        #     it (the portal refused the operator's own token for it).
+        - bitrix.crm_entity_unavailable
+        # --- END R12-D ------------------------------------------------------------
+        # --- BEGIN R12-E (issues #80/#81, ADR-0100): the contact centre --------
+        #   conversation_unsupported (422): createAgentConversationSession on a
+        #     group conversation — it has no contact to scope a widget token to.
+        - embed.conversation_unsupported
+        # --- END R12-E ------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -16956,7 +17989,9 @@ components:
         threshold rule (no /alert-rules entry), but subscriptions can filter
         on it. R11-F (ADR-0094): `bitrix.dispatch_failed` (calls to the
         Bitrix24 portal or its events dead-lettered in the window;
-        cabinet-wide).
+        cabinet-wide). R12-E (ADR-0100 §4): `channel.rating_drop` (the rating is
+        `threshold` steps — good → warning → critical — worse than the best it
+        had in the window; critical when the rating is).
       enum:
         - channel.health_low
         - channel.disconnected
@@ -16965,6 +18000,7 @@ components:
         - quota.monthly_near
         - compliance.violation
         - bitrix.dispatch_failed
+        - channel.rating_drop
       x-enum-varnames:
         - AlertTypeHealthLow
         - AlertTypeDisconnected
@@ -16973,6 +18009,7 @@ components:
         - AlertTypeMonthlyQuota
         - AlertTypeComplianceViolation
         - AlertTypeBitrixDispatchFailed
+        - AlertTypeRatingDrop
 
     AlertSeverity:
       type: string
@@ -17098,15 +18135,19 @@ components:
       description: >
         `console` — a notice in the console (the realtime alert.raised event);
         `email` — a mail to the person's address; `webhook` — a delivery to one
-        of the cabinet's outbound webhooks (ADR-0031).
+        of the cabinet's outbound webhooks (ADR-0031). R12-E (ADR-0100 §5):
+        `bitrix24` — a Bitrix24 system notification to the person's linked user
+        of the cabinet's live portal (people without one get nothing).
       enum:
         - console
         - email
         - webhook
+        - bitrix24
       x-enum-varnames:
         - AlertDeliveryConsole
         - AlertDeliveryEmail
         - AlertDeliveryWebhook
+        - AlertDeliveryBitrix24
 
     AlertSubscription:
       type: object
@@ -19389,3 +20430,679 @@ components:
         requeued:
           type: integer
     # END R11-F schemas
+
+    # BEGIN R12-B schemas: Bitrix24 CRM — deduplication, fields, open lines
+    # (issue #76, ADR-0097). Mirrors the "BEGIN R12-B ... (paths)" block.
+    BitrixCrmEntityType:
+      type: string
+      description: A CRM entity type the connector searches and links.
+      enum: [CONTACT, COMPANY, LEAD]
+      x-enum-varnames: [BitrixCrmEntityContact, BitrixCrmEntityCompany, BitrixCrmEntityLead]
+    BitrixCrmFieldMapping:
+      type: object
+      additionalProperties: false
+      description: >
+        One of our contact values into one CRM field. `source`: `name` (the
+        contact's name, normalized to what Bitrix24 accepts), `phone` (its
+        phone numbers), or `field:<key>` (a typed contact field of the
+        cabinet). `target`: a CRM field code; for a COMPANY, NAME is its TITLE.
+      required: [source, target]
+      properties:
+        source:
+          type: string
+          pattern: '^(name|phone|field:[a-z][a-z0-9_]{0,62})$'
+        target:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{0,62}$'
+    BitrixCrmLinkStats:
+      type: object
+      description: >
+        Our contacts linked to a CRM entity of the portal: found by the
+        duplicate search, bound by the open line, and those where the line
+        bound another entity than the linked one (the search's stays linked).
+      required: [total, fromDedup, fromLine, conflicts]
+      properties:
+        total:
+          type: integer
+        fromDedup:
+          type: integer
+        fromLine:
+          type: integer
+        conflicts:
+          type: integer
+    BitrixCrmSettings:
+      type: object
+      description: The portal's CRM settings (ADR-0097).
+      required: [portalId, configured, dedupEnabled, entityTypes, enrichEnabled, fieldMap, links]
+      properties:
+        portalId:
+          type: string
+          format: uuid
+        configured:
+          type: boolean
+          description: False while the portal runs on the defaults (nobody saved settings).
+        dedupEnabled:
+          type: boolean
+          description: Search the CRM before the open line can make a new entity.
+        entityTypes:
+          type: array
+          description: The search order (and the preference among the entities a line bound).
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/BitrixCrmEntityType'
+        enrichEnabled:
+          type: boolean
+          description: Write the mapped values into the linked entity (never over a CRM user's edit).
+        fieldMap:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixCrmFieldMapping'
+        links:
+          $ref: '#/components/schemas/BitrixCrmLinkStats'
+        lastError:
+          type: string
+          description: The portal's last CRM refusal (a missing scope, an unknown field).
+        lastErrorAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BitrixCrmSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [dedupEnabled, entityTypes, enrichEnabled, fieldMap]
+      properties:
+        dedupEnabled:
+          type: boolean
+        entityTypes:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/BitrixCrmEntityType'
+        enrichEnabled:
+          type: boolean
+        fieldMap:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/BitrixCrmFieldMapping'
+    BitrixCrmField:
+      type: object
+      description: One CRM field as the portal describes it.
+      required: [code, title, type, multiple, writable]
+      properties:
+        code:
+          type: string
+        title:
+          type: string
+        type:
+          type: string
+          description: The portal's field type (string, crm_multifield, double, …).
+        multiple:
+          type: boolean
+        writable:
+          type: boolean
+          description: A mapping may target it (not read-only, not a field we never write).
+    BitrixCrmFieldList:
+      type: object
+      required: [entityType, items]
+      properties:
+        entityType:
+          $ref: '#/components/schemas/BitrixCrmEntityType'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixCrmField'
+    BitrixLineRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The new open line's name.
+        channelIds:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: Channels to put on the new line once it exists.
+          items:
+            type: string
+            format: uuid
+    BitrixLineRequestStatus:
+      type: string
+      enum: [pending, done, failed]
+      x-enum-varnames: [BitrixLineRequestPending, BitrixLineRequestDone, BitrixLineRequestFailed]
+    BitrixLineRequest:
+      type: object
+      description: One "create an open line" request (ADR-0097 §5).
+      required: [id, name, channelIds, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        channelIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        status:
+          $ref: '#/components/schemas/BitrixLineRequestStatus'
+        lineId:
+          type: string
+          description: The new line's id (done).
+        errorCode:
+          type: string
+          description: >
+            Why it failed: `line_limit` (the portal's tariff allows no more
+            open lines — share an existing one), `refused`, `invalid_answer`.
+        errorText:
+          type: string
+          description: The portal's words; with `done`, the channels that could not be bound.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BitrixLineRequestList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixLineRequest'
+    # END R12-B schemas
+
+    # BEGIN R12-D schemas: Bitrix24 CRM widget and rule-aware composer (issues
+    # #78/#79, epic #20, ADR-0099). Used by the "BEGIN R12-D" paths block.
+    EmbedAgentCrmCardRequest:
+      type: object
+      description: What the widget knows about the card it is framed into.
+      required: [placement, entityId, accessToken]
+      properties:
+        placement:
+          type: string
+          description: >
+            The placement code from `BX24.placement.info()`: CRM_CONTACT_DETAIL_TAB,
+            CRM_LEAD_DETAIL_TAB, CRM_DEAL_DETAIL_TAB or CRM_COMPANY_DETAIL_TAB.
+          pattern: '^CRM_(CONTACT|LEAD|DEAL|COMPANY)_DETAIL_TAB$'
+          example: CRM_DEAL_DETAIL_TAB
+        entityId:
+          type: string
+          description: The entity id from the placement options (`options.ID`).
+          pattern: '^[0-9]{1,18}$'
+          example: '42'
+        accessToken:
+          type: string
+          maxLength: 512
+          description: >
+            The operator's current Bitrix24 access token (`BX24.getAuth().access_token`).
+            Used for this call only — to read the entity as the operator and to
+            confirm the operator — and never stored or logged.
+    EmbedAgentContact:
+      type: object
+      required: [id, phones]
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        phones:
+          type: array
+          description: The phone numbers of the contact's identities, as stored.
+          items:
+            type: string
+    EmbedAgentConversation:
+      type: object
+      description: One of the contact's conversations on a channel the operator may read.
+      required: [id, channelId, channelKind]
+      properties:
+        id:
+          type: string
+          format: uuid
+        channelId:
+          type: string
+          format: uuid
+        channelKind:
+          $ref: '#/components/schemas/ChannelKind'
+        status:
+          type: string
+        lastMessageAt:
+          type: string
+          format: date-time
+    EmbedAgentChannel:
+      type: object
+      description: A channel of the operator's scope, as the channel picker shows it.
+      required: [id, kind, name, status, live, canSend, templates]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        name:
+          type: string
+        status:
+          type: string
+          description: The channel's connection status (active, connected, disconnected, ...).
+        live:
+          type: boolean
+          description: The channel can carry traffic now (active or connected).
+        canSend:
+          type: boolean
+          description: The operator may send on it (their role, their assignments and the token's cap).
+        templates:
+          type: boolean
+          description: The channel sends WhatsApp templates (wa_cloud).
+    EmbedAgentCrmCard:
+      type: object
+      required: [entityType, entityId, resolvedBy, candidates, conversations, channels]
+      properties:
+        entityType:
+          type: string
+          description: CONTACT, LEAD, DEAL or COMPANY.
+          example: DEAL
+        entityId:
+          type: string
+        resolvedBy:
+          type: string
+          description: >
+            How the contact was found: `link` (an existing CRM link), `phone`,
+            `email`, or `none` (no Linqelio contact matches the card).
+          example: phone
+        candidates:
+          type: integer
+          description: How many contacts matched (more than one = the most recently active was chosen).
+        contact:
+          $ref: '#/components/schemas/EmbedAgentContact'
+        conversations:
+          type: array
+          description: The contact's conversations on the operator's channels, most recently active first.
+          items:
+            $ref: '#/components/schemas/EmbedAgentConversation'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbedAgentChannel'
+        operatorChannelId:
+          type: string
+          format: uuid
+          description: >
+            The operator's own channel: their default channel assignment, else
+            the channel of their most recent own send — only when it is in their
+            scope.
+    EmbedAgentFeedMessage:
+      description: A message of the operator widget's feed — a FeedMessage with the channel and conversation it belongs to.
+      allOf:
+        - $ref: '#/components/schemas/FeedMessage'
+        - type: object
+          properties:
+            channelId:
+              type: string
+              format: uuid
+            conversationId:
+              type: string
+              format: uuid
+    EmbedAgentMessageHistory:
+      type: object
+      required: [contactId, messages]
+      properties:
+        contactId:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmbedAgentFeedMessage'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
+    # END R12-D schemas
+
+    # =========================================================================
+    # BEGIN R12-E schemas: Bitrix24 B4/B5 — number health inside the CRM and
+    # the contact centre (issues #80/#81, ADR-0100). Mirrors
+    # internal/store/{agentinbox,crmhealth}.go and cmd/controlplane/
+    # bitrix_crm_api.go; the paths are the "BEGIN R12-E (paths)" block. Enums
+    # name their Go constants (x-enum-varnames): `all`, `unread`, `good`
+    # exist elsewhere.
+    # =========================================================================
+    AgentConversationFilter:
+      type: string
+      description: >
+        `all` — every conversation; `unread` — those with unread messages for
+        the caller; `unanswered` — those awaiting a reply (the newest inbound
+        message is newer than the newest reply).
+      enum:
+        - all
+        - unread
+        - unanswered
+      x-enum-varnames:
+        - AgentConversationFilterAll
+        - AgentConversationFilterUnread
+        - AgentConversationFilterUnanswered
+
+    AgentCrmLink:
+      type: object
+      description: >
+        The CRM entity of the conversation's contact on THIS portal, from the
+        contact's link (hostRefs `bitrix24:<member_id>`, externalId
+        `<TYPE>_<id>`). `path` is the portal-relative path BX24.openPath opens.
+      properties:
+        entityType:
+          type: string
+          description: contact, lead, company or deal.
+        entityId:
+          type: string
+          pattern: '^[0-9]{1,18}$'
+        path:
+          type: string
+          example: /crm/contact/details/42/
+      required:
+        - entityType
+        - entityId
+        - path
+
+    AgentConversation:
+      type: object
+      description: One conversation of the contact centre.
+      properties:
+        id:
+          type: string
+          format: uuid
+        channelId:
+          type: string
+          format: uuid
+        channelName:
+          type: string
+        channelKind:
+          $ref: '#/components/schemas/ChannelKind'
+        conversationKind:
+          $ref: '#/components/schemas/ConversationKind'
+        contactId:
+          type: string
+          format: uuid
+          description: Absent for a group.
+        contactName:
+          type: string
+        phone:
+          type: string
+          description: The contact's phone number, when one is known (for the CRM lookup by phone).
+        subject:
+          type: string
+          description: A group's name.
+        lastMessageAt:
+          type: string
+          format: date-time
+        lastMessagePreview:
+          type: string
+          description: The newest message's text (or a media caption), cut to 200 characters.
+        lastMessageDirection:
+          $ref: '#/components/schemas/Direction'
+        unreadCount:
+          type: integer
+          description: The caller's unread inbound messages (counting stops at 100).
+        awaitingReply:
+          type: boolean
+        crm:
+          $ref: '#/components/schemas/AgentCrmLink'
+      required:
+        - id
+        - channelId
+        - channelName
+        - channelKind
+        - conversationKind
+        - unreadCount
+        - awaitingReply
+
+    AgentInboxCounters:
+      type: object
+      description: The caller's totals over their whole scope — the badge.
+      properties:
+        unreadConversations:
+          type: integer
+        unreadMessages:
+          type: integer
+        awaitingReply:
+          type: integer
+      required:
+        - unreadConversations
+        - unreadMessages
+        - awaitingReply
+
+    AgentConversationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConversation'
+        counters:
+          $ref: '#/components/schemas/AgentInboxCounters'
+        nextCursor:
+          type: string
+          description: Pass as `cursor` for the next page; absent on the last one.
+      required:
+        - items
+        - counters
+
+    AgentReadRequest:
+      type: object
+      properties:
+        messageId:
+          type: string
+          maxLength: 64
+          description: The newest message seen (omitted — the conversation's newest).
+
+    AgentReadMarker:
+      type: object
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+        readThroughAt:
+          type: string
+          format: date-time
+          description: The creation time of the newest message read (absent — nothing read yet).
+        readThroughMessageId:
+          type: string
+        unreadCount:
+          type: integer
+        counters:
+          $ref: '#/components/schemas/AgentInboxCounters'
+      required:
+        - conversationId
+        - unreadCount
+        - counters
+
+    AgentConversationSession:
+      type: object
+      description: >
+        An ADR-0009 contact token for the embed widget, pinned to one
+        conversation. Held in the widget's memory only.
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        conversationId:
+          type: string
+          format: uuid
+        contactId:
+          type: string
+          format: uuid
+        cap:
+          type: array
+          items:
+            type: string
+      required:
+        - token
+        - expiresAt
+        - conversationId
+        - contactId
+        - cap
+
+    AgentChannelLimits:
+      type: object
+      description: >
+        The channel's send windows (ADR-0085) in the cabinet's time zone: the
+        limit (absent — no window), what is used (direct outbound sends since
+        the window's start, read from the messages) and what remains.
+      properties:
+        timezone:
+          type: string
+        dailyLimit:
+          type: integer
+        dailyUsed:
+          type: integer
+        dailyRemaining:
+          type: integer
+        dailyResetsAt:
+          type: string
+          format: date-time
+        hourlyLimit:
+          type: integer
+        hourlyUsed:
+          type: integer
+        hourlyRemaining:
+          type: integer
+        hourlyResetsAt:
+          type: string
+          format: date-time
+      required:
+        - timezone
+        - dailyUsed
+        - hourlyUsed
+
+    AgentChannelWarmup:
+      type: object
+      description: >
+        The warm-up of the channel kind's access pool (ADR-0030/0033), from the
+        health's `warmup` component. `state`: warming_up, warmed, pool_degraded,
+        pool_banned, no_pool (the kind has no pool: nothing to warm).
+      properties:
+        state:
+          type: string
+        stage:
+          type: integer
+          description: 0-based stage (absent without a pool).
+        stages:
+          type: integer
+      required:
+        - state
+
+    AgentProviderQuality:
+      type: object
+      description: >
+        What the provider last reported about the number (wa_cloud: Meta's
+        phone_number_quality_update — the messaging-limit tier and the event
+        that moved it: FLAGGED, UNFLAGGED, DOWNGRADE, UPGRADE…). Absent until
+        the provider has said anything.
+      properties:
+        messagingTier:
+          type: string
+          example: TIER_1K
+        qualityEvent:
+          type: string
+          example: FLAGGED
+        reportedAt:
+          type: string
+          format: date-time
+      required:
+        - reportedAt
+
+    AgentChannelError:
+      type: object
+      properties:
+        at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          description: delivery (an outbound message failed) or policy (the send policy refused or deferred).
+        code:
+          type: string
+          description: The policy finding code, or message.failed.
+        detail:
+          type: string
+          description: The failure reason recorded by the send path (delivery only).
+      required:
+        - at
+        - source
+        - code
+
+    AgentChannelHealth:
+      type: object
+      description: One number of the dashboard.
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        status:
+          type: string
+          description: The channel's connection status.
+        health:
+          $ref: '#/components/schemas/ChannelHealth'
+        trend:
+          type: array
+          description: The health snapshots of the last 7 days, oldest first.
+          items:
+            $ref: '#/components/schemas/ChannelHealthPoint'
+        trendDirection:
+          type: string
+          description: up, down or flat — the score now against the oldest point of the trend.
+        limits:
+          $ref: '#/components/schemas/AgentChannelLimits'
+        warmup:
+          $ref: '#/components/schemas/AgentChannelWarmup'
+        provider:
+          $ref: '#/components/schemas/AgentProviderQuality'
+        recentErrors:
+          type: array
+          description: The newest errors of the last 24 hours (at most 5).
+          items:
+            $ref: '#/components/schemas/AgentChannelError'
+        openAlerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+      required:
+        - channelId
+        - name
+        - kind
+        - status
+        - health
+        - trend
+        - trendDirection
+        - limits
+        - warmup
+        - recentErrors
+        - openAlerts
+
+    AgentChannelHealthList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentChannelHealth'
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - items
+        - generatedAt
+    # END R12-E schemas
