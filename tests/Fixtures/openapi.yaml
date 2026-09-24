@@ -4537,7 +4537,9 @@ paths:
   # ErrorCode. The rules a scan checks are the `compliance` settings section
   # (/settings/compliance, ComplianceSettings) — not repeated here.
   # Permissions (ADR-0050/0072): reading is compliance:read (supervisors and
-  # admins), acting is compliance:manage (admins). A channel-scoped person sees
+  # admins); acting on findings is compliance:review (supervisors and admins,
+  # ADR-0072 amended 2026-09-24); starting and cancelling scans is
+  # compliance:manage (admins). A channel-scoped person sees — and acts on —
   # the findings of their channels only.
   # ===========================================================================
   /compliance/scans:
@@ -4890,9 +4892,12 @@ paths:
           format: uuid
     post:
       operationId: actOnComplianceFinding
-      x-permission: 'compliance:manage'
+      x-permission: 'compliance:review'
       summary: Act on a finding.
       description: >
+        Needs `compliance:review` (supervisors and administrators; NOT
+        `compliance:manage`, which also authorizes erasure). A finding outside
+        a channel-scoped caller's channels is 404, as on the reads.
         `review` (checked, a real violation) / `false_positive` / `reopen`
         change the review state; `assign` (to `assigneeId`: an active member
         whose role reads compliance) / `unassign`; `raise_alert` raises a
@@ -5096,7 +5101,10 @@ paths:
       description: >
         One row per channel (every channel in the caller's scope, zeros
         included), per person whose own sends are counted (`agent`: replies,
-        responses to a waiting contact and their average time), per origin
+        responses to a waiting contact and their average time — a caller
+        without oversight of the team, i.e. a person without `audit:read`
+        such as an agent, gets its own row only, never colleagues'; the same
+        holds in an export), per origin
         of the messages (contact, api, console, desk, campaign, widget, phone,
         unknown) or per send-policy reason (`policy`: `<verdict>:<code>`),
         busiest first.
@@ -12067,7 +12075,8 @@ components:
             `channels:read`, `channels:manage`, `messages:send`,
             `contacts:write`, `contacts:export`, `campaigns:manage`,
             `policy:manage`, `team:manage`, `ai:manage`, `compliance:read`,
-            `compliance:manage`, `analytics:read`, `audit:read`,
+            `compliance:manage`, `compliance:review`, `analytics:read`,
+            `audit:read`,
             `settings:manage`, `billing:manage`.
 
             ANYTHING ELSE IS REFUSED with `validation.invalid_request`. An
