@@ -110,6 +110,11 @@ tags:
     description: The AI subsystem — run journal and provider connectivity (ADR-0064).
   - name: campaigns
     description: Campaigns — bulk sends through the send policy's campaign mode (ADR-0063).
+  - name: analytics
+    description: Reports on the hourly aggregates, and their CSV / XLSX exports (ADR-0066).
+  # R11-D (issue #58, ADR-0067).
+  - name: compliance
+    description: Compliance — AI dialogue scans against the cabinet's rules, findings and the actions on them (ADR-0067).
 
 paths:
   # ===========================================================================
@@ -2517,9 +2522,11 @@ paths:
       summary: Resolve the audience and schedule (or start) the campaign.
       description: >
         Checks the draft (422 campaign.invalid, one `errors[]` entry per
-        reason: no channels, a message that is not sendable, a template — not
-        wired yet —, an empty audience, a start in the past, a bad time zone or
-        window), then — in one transaction — resolves the audience into the
+        reason: no channels, a message that is not sendable, a template that
+        is not an approved, fillable template of every channel (or a template
+        on a channel that is not wa_cloud), an empty audience, a start in the
+        past, a bad time zone or window), then — in one transaction — resolves
+        the audience into the
         recipient list (the snapshot: explicit contacts of the cabinet within
         the author's scope, plus filter matches reachable on the campaign's
         channels, each person once) and moves the campaign to `scheduled`
@@ -2527,7 +2534,9 @@ paths:
         recipient exactly once, through the send policy in its CAMPAIGN mode:
         a limit reschedules a recipient instead of failing it, and a
         recipient without consent on the channel is skipped even where the
-        cabinet only observes consent (ADR-0063 §6).
+        cabinet only observes consent (ADR-0063 §6). A draft without a dry
+        run (dryRunCampaign) newer than its last change is refused with 409
+        campaign.dry_run_required (R11-B, issue #68).
       tags:
         - campaigns
       x-error-codes:
@@ -2542,6 +2551,7 @@ paths:
         - campaign.not_found
         - campaign.state_conflict
         - campaign.invalid
+        - campaign.dry_run_required
         - tenancy.suspended
       responses:
         '200':
@@ -3996,6 +4006,1884 @@ paths:
           $ref: '#/components/responses/NotFound'
   # ===========================================================================
   # END R10-A group conversations
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R11-A groups: visibility while disabled (#129) and group management
+  # (#66); ADR-0062 §4 (amended 2026-09-24) and §9, ADR-0096. The schemas are
+  # the "BEGIN R11-A schemas" block at the end of components.schemas, the error
+  # codes the "R11-A" block at the end of ErrorCode.
+  # ===========================================================================
+  /channels/{id}/ignored-groups:
+    get:
+      operationId: listChannelIgnoredGroups
+      x-permission: 'channels:manage'
+      summary: The groups this number is in while its group chats are off.
+      description: >
+        While a channel's group chats are off (settings `groups.enabled`,
+        ADR-0062 §4) its group messages are not taken in — no text, no author,
+        no participant is stored. Only each group's own metadata is kept, so an
+        administrator can see what switching groups on would bring in: the
+        group's address and subject, when it was last active and how many
+        messages it saw in the last 24 hours (hourly granularity). Groups with
+        no activity for 30 days are forgotten; switching groups on clears the
+        list. For a channel whose groups are on the list is empty and
+        `groupsEnabled` is true. A channel outside the caller's scope is
+        channel.not_found.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      responses:
+        '200':
+          description: The groups seen on the channel while its groups were off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IgnoredGroupList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /channels/{id}/groups:
+    post:
+      operationId: createGroup
+      x-permission: 'channels:manage'
+      summary: Create a group on the channel with contacts of the cabinet as its members.
+      description: >
+        Creates a group owned by the channel's own account (issue #66) and
+        opens its group conversation, so it appears in Dialogs at once. The
+        initial members are contacts of the cabinet: each is added by its
+        WhatsApp phone address (a contact with no phone the channel can address
+        is reported in `failed` with reason `no_address`). Needs a channel
+        whose kind manages groups (`capabilities.groups` — wa_web today; others
+        answer channel.capability_unsupported), whose group chats are on
+        (policy.groups_disabled otherwise) and which is connected. The
+        platform may still refuse some members (their privacy settings, a
+        number not on WhatsApp): they are in `failed` with reason `refused`.
+        Audited as `group.create`.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - policy.groups_disabled
+        - group.members_unresolvable
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '201':
+          description: The group was created; its conversation is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /conversations/{id}/participants/add:
+    post:
+      operationId: addGroupParticipants
+      x-permission: 'channels:manage'
+      summary: Add contacts of the cabinet to a group.
+      description: >
+        Adds the contacts to the group of this conversation, as the channel's
+        own account (which WhatsApp may require to be an admin of the group).
+        The same rules as createGroup: a group conversation (a direct one is
+        conversation.not_group), a channel that manages groups, group chats on,
+        connected. The member list is re-read from the channel afterwards, so
+        listConversationParticipants shows what the platform actually did.
+        Audited as `group.participants_add`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupMembersRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - conversation.not_found
+        - conversation.not_group
+        - channel.not_connected
+        - channel.capability_unsupported
+        - policy.groups_disabled
+        - group.members_unresolvable
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The participants were added (see `failed` for those who were not).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /conversations/{id}/participants/remove:
+    post:
+      operationId: removeGroupParticipants
+      x-permission: 'channels:manage'
+      summary: Remove participants from a group.
+      description: >
+        Removes participants — by their `providerId` as
+        listConversationParticipants shows it, so a member who is no contact
+        can be removed too — from the group of this conversation, as the
+        channel's own account (WhatsApp requires it to be an admin of the
+        group; its refusal is provider.upstream_error). The same rules as
+        addGroupParticipants. Audited as `group.participants_remove`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupRemoveRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - conversation.not_found
+        - conversation.not_group
+        - channel.not_connected
+        - channel.capability_unsupported
+        - policy.groups_disabled
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The participants were removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /conversations/{id}/group:
+    patch:
+      operationId: updateGroup
+      x-permission: 'channels:manage'
+      summary: Rename a group.
+      description: >
+        Changes the group's subject on the channel (as its own account — a
+        group whose info only admins may edit needs it to be an admin) and on
+        the conversation. The same rules as addGroupParticipants. Audited as
+        `group.update`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGroupRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - conversation.not_found
+        - conversation.not_group
+        - channel.not_connected
+        - channel.capability_unsupported
+        - policy.groups_disabled
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The group was renamed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /conversations/{id}/group/leave:
+    post:
+      operationId: leaveGroup
+      x-permission: 'channels:manage'
+      summary: Make the channel's account leave a group.
+      description: >
+        The channel's account leaves the group: no further messages from it
+        arrive, and nothing more can be sent into it. The conversation and its
+        history stay. The same rules as addGroupParticipants, except that
+        leaving is allowed while group chats are off (leaving is how a number
+        gets out of a group it does not want). Audited as `group.leave`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - conversation.not_found
+        - conversation.not_group
+        - channel.not_connected
+        - channel.capability_unsupported
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '204':
+          description: The account left the group.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # ===========================================================================
+  # END R11-A groups
+  # ===========================================================================
+
+  # ===========================================================================
+  # BEGIN R11-C AI guard + contact questionnaire (issue #59, epic #14, ADR-0068)
+  # ===========================================================================
+  # OWNED BY R11-C. The guard itself has no path of its own: it is the last
+  # checker of the send policy (ADR-0058), so its findings (`ai.guard_risk`,
+  # `ai.guard_unavailable`) arrive through the existing send answers and the
+  # dry run (checkSendPolicy). Its configuration is the `ai_guard` settings
+  # section, the questionnaire's the `ai_profile` section (/settings/*). The
+  # schemas are in the "BEGIN R11-C schemas" block at the end of
+  # components.schemas, the error codes in the "R11-C" block of ErrorCode.
+  /ai/guard-test:
+    post:
+      operationId: testAiGuard
+      x-permission: 'settings:manage'
+      summary: Try the AI guard on a sample text.
+      description: >
+        Runs the guard (task `guard.check`, ADR-0068) on a text an admin types,
+        through the cabinet's configured provider, and answers the model's
+        assessment together with the verdict the CURRENT `ai_guard` settings
+        would give it — interactive and campaign. Journaled like any guard run
+        (ai_runs) and counted in ai.tokens.month; nothing is cached and nothing
+        is sent. Needs `ai.enabled` (the guard sends customer text in real
+        use); `ai_guard.enabled` is NOT required, so the guard can be tried
+        before it is switched on. A provider failure is the ANSWER: 200 with
+        `ok: false` and the journal's `errorCode` (the send path would have
+        failed open).
+      tags:
+        - ai
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiGuardTestRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.quota_exceeded
+        - tenancy.suspended
+        - ai.not_configured
+        - ai.provider_unsupported
+        - ai.disabled
+      responses:
+        '200':
+          description: The assessment (or, with ok false, why there is none).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiGuardTestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /contacts/{id}/ai-profile:
+    parameters:
+      - $ref: '#/components/parameters/ContactId'
+    get:
+      operationId: getContactAiProfile
+      x-permission: 'channels:read'
+      summary: The contact's AI questionnaire and AI summary.
+      description: >
+        What the AI questionnaire (ADR-0068 §5) knows about a contact: whether
+        it is switched on for the cabinet, the configured questionnaire fields
+        with whether each is filled and by whom (`human`, `host`, `platform`,
+        `ai`), the short AI summary (a typed field with provenance `ai` — a
+        person may overwrite it, and the AI then never replaces it), and the
+        latest questionnaire run. Values themselves are read with
+        getContactFields.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+      responses:
+        '200':
+          description: The contact's questionnaire state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactAiProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /contacts/{id}/ai-profile/fill:
+    parameters:
+      - $ref: '#/components/parameters/ContactId'
+    post:
+      operationId: fillContactAiProfile
+      x-permission: 'contacts:write'
+      summary: Fill the contact's AI questionnaire now.
+      description: >
+        Queues a questionnaire run (task `profile.extract`) over the contact's
+        most recent conversation with text, without waiting for the quiet
+        period or the message counter. Idempotent per conversation and its
+        newest message: asking again before anything new was said answers the
+        same run (`created: false`) and spends nothing. Values a person, the
+        host or the platform wrote are never overwritten (ADR-0061). 409
+        `ai.disabled` when the cabinet has not consented to AI processing
+        (`ai.enabled`), 409 `ai.profile_no_conversation` when the contact has
+        no conversation with text to read.
+      tags:
+        - contacts
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - contact.not_found
+        - ai.disabled
+        - ai.profile_no_conversation
+      responses:
+        '202':
+          description: The run is queued (or was already).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiProfileFillResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ===========================================================================
+  # END R11-C AI guard + contact questionnaire (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R11-D compliance: dialogue scans, findings, actions (issue #58,
+  # epic #14, ADR-0067). One self-contained block placed BEFORE /contacts; its
+  # schemas are the "BEGIN R11-D schemas" block at the end of
+  # components.schemas and its error codes the R11-D block at the end of
+  # ErrorCode. The rules a scan checks are the `compliance` settings section
+  # (/settings/compliance, ComplianceSettings) — not repeated here.
+  # Permissions (ADR-0050/0072): reading is compliance:read (supervisors and
+  # admins), acting is compliance:manage (admins). A channel-scoped person sees
+  # the findings of their channels only.
+  # ===========================================================================
+  /compliance/scans:
+    get:
+      operationId: listComplianceScans
+      x-permission: 'compliance:read'
+      summary: List the cabinet's compliance scans, newest first.
+      description: >
+        Every scan with its scope, period, state and progress (conversations
+        and messages read, findings). A failed scan says why (`errorCode`) and
+        is NEVER reported as clean: what it did not read it did not judge. A
+        channel-scoped caller sees the scans of its channels and the
+        cabinet-wide ones (counts only — their findings stay channel-scoped).
+      tags:
+        - compliance
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Only scans in this state.
+          schema:
+            $ref: '#/components/schemas/ComplianceScanStatus'
+        - name: before
+          in: query
+          required: false
+          description: >
+            Only scans created strictly before this instant — pass the
+            `createdAt` of the last item to read the next page.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 50 and is capped at 200.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: A page of scans.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceScanList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: startComplianceScan
+      x-permission: 'compliance:manage'
+      summary: Start a compliance scan of a conversation, a channel or the cabinet over a period.
+      description: >
+        Queues a scan (202). The scan worker reads the text messages of the
+        scope created in [from, to) in windows of at most 40, sends each window
+        — minimized: phone numbers and e-mails replaced unless the `ai`
+        settings allow them, cards and IBANs always — to the cabinet's AI
+        provider as the task `compliance.scan` (journaled in /ai/runs, counted
+        in ai.tokens.month), and records the findings. Messages a previous scan
+        already read are skipped (each conversation's "analyzed up to" cursor)
+        unless `rescan` is set. The rules are those of the `compliance`
+        settings at this moment (a snapshot is kept with the scan). Needs the
+        cabinet's AI consent (`ai.enabled`, 409 compliance.ai_disabled) and at
+        least one enabled rule (409 compliance.no_rules). One live scan per
+        target (409 compliance.scan_active); scans of one cabinet run one at a
+        time. Progress is streamed as `compliance.scan_progress`.
+      tags:
+        - compliance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartComplianceScanRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - conversation.not_found
+        - compliance.scan_active
+        - compliance.ai_disabled
+        - compliance.no_rules
+      responses:
+        '202':
+          description: The queued scan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceScan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /compliance/scans/{scanId}:
+    parameters:
+      - name: scanId
+        in: path
+        required: true
+        description: Scan id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getComplianceScan
+      x-permission: 'compliance:read'
+      summary: Read one compliance scan and its progress.
+      tags:
+        - compliance
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - compliance.scan_not_found
+      responses:
+        '200':
+          description: The scan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceScan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /compliance/scans/{scanId}/cancel:
+    parameters:
+      - name: scanId
+        in: path
+        required: true
+        description: Scan id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: cancelComplianceScan
+      x-permission: 'compliance:manage'
+      x-suspension: allowed
+      x-suspension-reason: >
+        Cancelling only stops work (and AI spending); a suspended organization
+        must be able to stop a scan.
+      summary: Cancel a queued or running compliance scan.
+      description: >
+        A queued scan is cancelled at once; a running one at its next window
+        boundary (the window in flight is committed first, so nothing it found
+        is lost). Findings already recorded stay. A finished scan is final
+        (409 compliance.scan_finished).
+      tags:
+        - compliance
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - compliance.scan_not_found
+        - compliance.scan_finished
+      responses:
+        '200':
+          description: The scan, cancelled or marked to be cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceScan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /compliance/findings:
+    get:
+      operationId: listComplianceFindings
+      x-permission: 'compliance:read'
+      summary: List compliance findings, newest first.
+      description: >
+        The violations scans found: rule, severity, the model's short
+        explanation, the conversation and channel, review state, assignee and
+        what was done. A finding is NOT a copy of the conversation — its
+        evidence is message references with short redacted excerpts, read with
+        getComplianceFinding. A channel-scoped caller sees the findings of its
+        channels only.
+      tags:
+        - compliance
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ComplianceFindingStatus'
+        - name: severity
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ComplianceSeverity'
+        - name: rule
+          in: query
+          required: false
+          description: Only findings of this rule key (e.g. `builtin.rudeness`, `custom.refunds`).
+          schema:
+            type: string
+            maxLength: 60
+        - name: channelId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: conversationId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: scanId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: before
+          in: query
+          required: false
+          description: >
+            Only findings created strictly before this instant — pass the
+            `createdAt` of the last item to read the next page.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size; defaults to 50 and is capped at 200.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: A page of findings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceFindingList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /compliance/findings/{findingId}:
+    parameters:
+      - name: findingId
+        in: path
+        required: true
+        description: Finding id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getComplianceFinding
+      x-permission: 'compliance:read'
+      summary: Read one finding with its evidence and history.
+      tags:
+        - compliance
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - compliance.finding_not_found
+      responses:
+        '200':
+          description: The finding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceFinding'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /compliance/findings/{findingId}/actions:
+    parameters:
+      - name: findingId
+        in: path
+        required: true
+        description: Finding id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: actOnComplianceFinding
+      x-permission: 'compliance:manage'
+      summary: Act on a finding.
+      description: >
+        `review` (checked, a real violation) / `false_positive` / `reopen`
+        change the review state; `assign` (to `assigneeId`: an active member
+        whose role reads compliance) / `unassign`; `raise_alert` raises a
+        `compliance.violation` alert (ADR-0065: its subscribers are notified
+        by console, e-mail or webhook; one alert per finding); `notify` tells
+        the people working on the conversation's channel (the
+        `compliance.notice` realtime event); `freeze_dialog` stops every send
+        into the conversation (the send policy's frozen-dialog rule, 403
+        policy.dialog_frozen) until `unfreeze_dialog`. Every action is
+        recorded in the finding's history with who did it and the optional
+        `note`.
+      tags:
+        - compliance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceFindingActionRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - compliance.finding_not_found
+        - compliance.assignee_invalid
+      responses:
+        '200':
+          description: The finding after the action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceFinding'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  # ===========================================================================
+  # END R11-D compliance (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R11-E analytics — reports and exports (paths) — issues #62/#63, epic
+  # #16, ADR-0066. The schemas are the "BEGIN R11-E schemas" block at the end
+  # of components.schemas, the error codes the "R11-E" block at the end of
+  # ErrorCode. Every report reads the hourly aggregates (never the raw
+  # messages), needs analytics:read, and is restricted to the caller's channel
+  # scope: a channel-scoped caller gets the numbers of their channels only and
+  # never the cabinet-wide ones (AI runs).
+  # ===========================================================================
+  /analytics/overview:
+    get:
+      operationId: getAnalyticsOverview
+      x-permission: 'analytics:read'
+      summary: The key numbers of a period, against the period before it.
+      description: >
+        Every metric of the catalogue (ADR-0066 §1) for the period `from`–`to`
+        (local dates in the cabinet's time zone, both inclusive; default the
+        last 7 days) and for the period of the same length right before it,
+        with the change. A rate or an average with nothing to measure has no
+        `value` (never a zero that looks measured). `freshness` says how
+        current the numbers are and how far the backfill of the history has
+        got. `channelId` narrows to one channel — within the caller's scope; a
+        channel outside it contributes nothing.
+      tags:
+        - analytics
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: The period's first day, a local date in the cabinet's time zone (default 6 days before `to`).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: The period's last day, inclusive (default today in the cabinet's time zone).
+          schema:
+            type: string
+            format: date
+        - name: channelId
+          in: query
+          required: false
+          description: Only this channel (within the caller's scope).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.range_invalid
+      responses:
+        '200':
+          description: The period's numbers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsOverview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /analytics/timeseries:
+    get:
+      operationId: getAnalyticsTimeseries
+      x-permission: 'analytics:read'
+      summary: One metric over time, by hour, day or week in the cabinet's time zone.
+      description: >
+        The metric per bucket of the period: `hour` (at most 31 days), `day`
+        or `week` (Monday-based, the first and last clipped to the period).
+        Buckets are local to the cabinet's time zone — a day across a DST
+        change is 23 or 25 hours — and every bucket of the period is listed,
+        empty ones included.
+      tags:
+        - analytics
+      parameters:
+        - name: metric
+          in: query
+          required: true
+          description: The metric to chart.
+          schema:
+            $ref: '#/components/schemas/AnalyticsMetric'
+        - name: granularity
+          in: query
+          required: false
+          description: The bucket size (default `day`).
+          schema:
+            $ref: '#/components/schemas/AnalyticsGranularity'
+        - name: from
+          in: query
+          required: false
+          description: The period's first day, a local date in the cabinet's time zone (default 6 days before `to`).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: The period's last day, inclusive (default today in the cabinet's time zone).
+          schema:
+            type: string
+            format: date
+        - name: channelId
+          in: query
+          required: false
+          description: Only this channel (within the caller's scope).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.range_invalid
+      responses:
+        '200':
+          description: The series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsTimeseries'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /analytics/breakdown:
+    get:
+      operationId: getAnalyticsBreakdown
+      x-permission: 'analytics:read'
+      summary: The period's numbers per channel, agent, origin or policy reason.
+      description: >
+        One row per channel (every channel in the caller's scope, zeros
+        included), per person whose own sends are counted (`agent`: replies,
+        responses to a waiting contact and their average time), per origin
+        of the messages (contact, api, console, desk, campaign, widget, phone,
+        unknown) or per send-policy reason (`policy`: `<verdict>:<code>`),
+        busiest first.
+      tags:
+        - analytics
+      parameters:
+        - name: by
+          in: query
+          required: true
+          description: The dimension.
+          schema:
+            $ref: '#/components/schemas/AnalyticsBreakdownBy'
+        - name: from
+          in: query
+          required: false
+          description: The period's first day, a local date in the cabinet's time zone (default 6 days before `to`).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: The period's last day, inclusive (default today in the cabinet's time zone).
+          schema:
+            type: string
+            format: date
+        - name: channelId
+          in: query
+          required: false
+          description: Only this channel (within the caller's scope).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.range_invalid
+      responses:
+        '200':
+          description: The breakdown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsBreakdown'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /analytics/heatmap:
+    get:
+      operationId: getAnalyticsHeatmap
+      x-permission: 'analytics:read'
+      summary: Messages by weekday and hour of day in the cabinet's time zone.
+      description: >
+        7 × 24 counts (Monday first; hours 0–23 local) of the period's inbound
+        (default) or outbound messages — when contacts write, when the
+        business answers.
+      tags:
+        - analytics
+      parameters:
+        - name: direction
+          in: query
+          required: false
+          description: inbound (default) or outbound.
+          schema:
+            type: string
+            enum:
+              - inbound
+              - outbound
+            x-enum-varnames:
+              - AnalyticsHeatmapInbound
+              - AnalyticsHeatmapOutbound
+        - name: from
+          in: query
+          required: false
+          description: The period's first day, a local date in the cabinet's time zone (default 6 days before `to`).
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: The period's last day, inclusive (default today in the cabinet's time zone).
+          schema:
+            type: string
+            format: date
+        - name: channelId
+          in: query
+          required: false
+          description: Only this channel (within the caller's scope).
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.range_invalid
+      responses:
+        '200':
+          description: The heatmap.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsHeatmap'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /analytics/campaigns/{campaignId}:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        description: Campaign id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAnalyticsCampaignReport
+      x-permission: 'analytics:read'
+      summary: A campaign's funnel — recipients, sent, delivered, read, replied.
+      description: >
+        The recipients by state and, for the messages the campaign sent, how
+        many were delivered, read or failed and how many recipients wrote back
+        within 72 hours. A campaign reaching channels outside the caller's
+        scope is 404 campaign.not_found, like any other read of it.
+      tags:
+        - analytics
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - campaign.not_found
+      responses:
+        '200':
+          description: The campaign's report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsCampaignReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /analytics/exports:
+    post:
+      operationId: createAnalyticsExport
+      x-permission: 'analytics:read'
+      x-suspension: allowed
+      x-suspension-reason: >
+        An export only reads the cabinet's own numbers; a suspended organization stays read-only, not locked out of its data.
+      summary: Export a report to a CSV or XLSX file in the background.
+      description: >
+        Queues the report (the same parameters as its read) as a file and
+        answers 202. The caller's channel scope and the cabinet's time zone are
+        frozen on the job, so the file shows exactly what the caller could
+        read. Text cells a spreadsheet would execute are neutralised (CSV: a
+        `'` prefix; XLSX: always a string, never a formula). The file is kept
+        for 24 hours, then deleted (`expired`); only its author sees the job
+        and downloads the file. Audited as `analytics.export.create`.
+      tags:
+        - analytics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyticsExportRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - analytics.range_invalid
+        - campaign.not_found
+      responses:
+        '202':
+          description: The export, queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listAnalyticsExports
+      x-permission: 'analytics:read'
+      summary: List the caller's recent report exports.
+      description: The caller's own 50 most recent report exports in the cabinet, newest first.
+      tags:
+        - analytics
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The caller's recent exports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsExportList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /analytics/exports/{exportId}:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        description: Export job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getAnalyticsExport
+      x-permission: 'analytics:read'
+      summary: Read one of the caller's report exports.
+      description: >
+        The export's state (`queued` → `running` → `completed`, or `failed`;
+        `expired` once the file is deleted) and, when completed,
+        `downloadPath` and `expiresAt`. Another member's export is 404
+        analytics.export_not_found.
+      tags:
+        - analytics
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.export_not_found
+      responses:
+        '200':
+          description: The export job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /analytics/exports/{exportId}/file:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        description: Export job id (uuid).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: downloadAnalyticsExport
+      x-permission: 'analytics:read'
+      summary: Download a completed report export.
+      description: >
+        Streams the file through the platform, authenticated like every other
+        call (ADR-0056 §1). Only its author may download it, only while it is
+        kept: 409 analytics.export_not_ready before it is completed, 410
+        analytics.export_expired after the retention deleted it. Every
+        download is audited (`analytics.export.download`).
+      tags:
+        - analytics
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - analytics.export_not_found
+        - analytics.export_not_ready
+        - analytics.export_expired
+      responses:
+        '200':
+          description: The report file.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          description: The file passed its retention and was deleted (analytics.export_expired).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  # ===========================================================================
+  # END R11-E analytics (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R11-B campaign dry run + launch wizard (paths) — issue #68, epic #18,
+  # ADR-0063 (addendum of 2026-09-24). One self-contained block placed right
+  # before /contacts; its schemas are the "BEGIN R11-B schemas" block at the
+  # end of components.schemas, its error code the "R11-B" block of ErrorCode.
+  # ===========================================================================
+  /campaigns/{campaignId}/dry-run:
+    parameters:
+      - name: campaignId
+        in: path
+        required: true
+        description: Campaign id (uuid).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: dryRunCampaign
+      x-permission: 'campaigns:manage'
+      summary: Dry-run a draft — who would receive it, who is blocked and why, how long it would take.
+      description: >
+        Resolves the draft's audience exactly as launchCampaign would (the same
+        query, the same scope rules) WITHOUT snapshotting it, and answers: how
+        many recipients the snapshot would hold (and per channel), how many of
+        them would be skipped and why (no address on the campaign's channels,
+        no consent — campaigns require consent in every compliance mode —,
+        opted out, WhatsApp's 24-hour window closed for a free-form message on
+        a wa_cloud channel, a frozen dialog, a template parameter the contact
+        cannot fill), an ESTIMATE of how long the send takes under the
+        channels' daily/hourly windows, the campaign's pace, the channel
+        pacing and the send-policy rate budget (warmup), the campaign window,
+        the cabinet's business hours and the monthly messages cap — naming the
+        limiting factor —, and what send policy says about one sample send per
+        channel. Nothing is enqueued, no send-policy counter is consumed, no
+        recipient row is written; the dry run only records WHEN it ran on the
+        draft, because launchCampaign requires a dry run newer than the
+        draft's last change (409 campaign.dry_run_required). Group chats are
+        never recipients (a group is not a contact, ADR-0062). Launch
+        problems (a template that does not fit, an empty audience, a start in
+        the past) are reported in `problems` rather than refused, so the
+        summary can show them.
+      tags:
+        - campaigns
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - campaign.not_found
+        - campaign.state_conflict
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The dry run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignDryRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /campaigns/audience-preview:
+    post:
+      operationId: previewCampaignAudience
+      x-permission: 'campaigns:manage'
+      summary: Count who an audience definition would reach on the given channels (the wizard's live count).
+      description: >
+        The audience half of dryRunCampaign for a definition that is not saved
+        yet: how many contacts it resolves to (the same query launchCampaign
+        runs, within the caller's channel scope) and how many of them have an
+        address on each channel. Nothing is stored. Every channel must be one
+        the caller works (403 otherwise); a channel that is not the cabinet's
+        is 404 channel.not_found.
+      tags:
+        - campaigns
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CampaignAudiencePreviewRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - campaign.invalid
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignAudiencePreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  # ===========================================================================
+  # END R11-B campaign dry run + launch wizard (paths)
+  # ===========================================================================
+  # ===========================================================================
+  # BEGIN R11-F Bitrix24 open-lines connector (paths) — issues #74/#75, epic
+  # #20, ADR-0094
+  # ===========================================================================
+  # OWNED BY R11-F: the connector's console surface on a linked portal — which
+  # channel is on which open line, the connector's state, the dispatcher's
+  # queue. The traffic itself (client messages into the line, the operator's
+  # replies, statuses) never passes through the contract: it is the desk
+  # projection (internal/bitrixdesk) and the host's events (/bitrix/events,
+  # outside the contract like the other host webhooks). Schemas: the "BEGIN
+  # R11-F schemas" block at the end of components.schemas; error codes: the
+  # "R11-F" block at the end of ErrorCode.
+  /bitrix/portals/{portalId}/connector:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    get:
+      operationId: getBitrixConnector
+      x-permission: 'settings:manage'
+      summary: The open-lines connector on a portal — bindings and queue health.
+      description: >
+        The connector's state on the cabinet's live portal (ADR-0094): whether
+        it is registered and its events bound (offline events, pulled — Bitrix
+        does not retry a pushed event), which channel is on which open line
+        with its status (`pending` while the connector is being activated,
+        `active`, or taken away by the portal — `line_deleted`,
+        `connector_disabled`), the default line new channels go onto, whether
+        Bitrix24 is the cabinet's desk (the `desk` settings section), and the
+        dispatcher's queue: pending and dead calls, a park (the portal's
+        request limit) and methods blocked by the operating-time limit until
+        the time the portal gave. Reading it on a linked portal for the first
+        time creates the connector's state row; it calls nothing on the portal.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The connector's state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixConnector'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    patch:
+      operationId: updateBitrixConnector
+      x-permission: 'settings:manage'
+      summary: Set the open line new channels go onto.
+      description: >
+        `defaultLineId` is the open line a channel without an explicit binding
+        is put on the first time a message of it is projected — the Bitrix
+        counterpart of Chatwoot opening an inbox per channel. `null` means only
+        explicit bindings: a channel nobody bound is not projected (its
+        messages stay ours; nothing is lost). Changing it moves nobody who is
+        already bound. Recorded in the audit trail.
+      tags:
+        - bitrix
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixConnectorUpdate'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+      responses:
+        '200':
+          description: The connector's state after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixConnector'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /bitrix/portals/{portalId}/open-lines:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    get:
+      operationId: listBitrixOpenLines
+      x-permission: 'settings:manage'
+      summary: The portal's open lines, as Bitrix24 lists them.
+      description: >
+        Asks the portal (imopenlines.config.list.get) for its open lines, so a
+        channel can be put on one. Read live, never cached: a line deleted on
+        the portal is gone here too. How many lines a portal may have depends
+        on its tariff — several channels may share one line, at the cost of
+        separate routing and per-number statistics (ADR-0054 §3). 503
+        provider.unavailable when the portal cannot be reached or is over its
+        request limit.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - provider.unavailable
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The portal's open lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixOpenLineList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /bitrix/portals/{portalId}/channels/{channelId}/line:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+      - name: channelId
+        in: path
+        required: true
+        description: The channel (uuid).
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: bindBitrixChannelLine
+      x-permission: 'settings:manage'
+      summary: Put a channel on an open line.
+      description: >
+        Binds the channel to the open line: the connector is registered on the
+        portal (once), its events are bound, and it is activated on the line —
+        all queued for the portal's dispatcher, so the binding answers
+        `pending` at once and turns `active` when the portal accepted it.
+        Several channels may be on one line. Moving a channel releases its old
+        line (the connector is switched off there when no channel is left on
+        it). A binding the portal took away (`line_deleted`,
+        `connector_disabled`) is revived only this way. Recorded in the audit
+        trail.
+      tags:
+        - bitrix
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLineBindingRequest'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - channel.not_found
+      responses:
+        '200':
+          description: The binding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLineBinding'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: unbindBitrixChannelLine
+      x-permission: 'settings:manage'
+      summary: Take a channel off its open line.
+      description: >
+        The channel's messages stop being projected into the portal; its queued
+        calls are dropped, and the connector is switched off on the line when
+        no channel is left on it. Our history is untouched. With a default line
+        set, the channel's next message puts it back there — clear the default
+        line to keep it off. Idempotent (204 without a binding). Recorded in the
+        audit trail.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The channel is off the line.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /bitrix/portals/{portalId}/queue/retry:
+    parameters:
+      - $ref: '#/components/parameters/BitrixPortalId'
+    post:
+      operationId: retryBitrixDeadLetters
+      x-permission: 'settings:manage'
+      summary: Run the portal's dead-lettered calls and events again.
+      description: >
+        Every call the dispatcher gave up on (dead letters — raised as the
+        `bitrix.dispatch_failed` alert) and every host event it could not
+        process goes back to the queue, due now. A dead call whose work was
+        queued again meanwhile stays dead (the newer one supersedes it).
+        Recorded in the audit trail.
+      tags:
+        - bitrix
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - bitrix.portal_not_found
+        - bitrix.portal_not_live
+        - validation.invalid_request
+      responses:
+        '200':
+          description: How many went back to the queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixQueueRetry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ===========================================================================
+  # END R11-F Bitrix24 open-lines connector (paths)
   # ===========================================================================
   /contacts:
     get:
@@ -8787,6 +10675,78 @@ components:
         - alert.rule_not_found
         - alert.rule_invalid
         # --- END R10-E ------------------------------------------------------------
+        # --- BEGIN R11-A (issues #66/#129, ADR-0062, ADR-0096): group management -
+        #   conversation.not_group (422): a group operation on a direct
+        #     conversation — only a group has members, a subject and a way out.
+        #   group.members_unresolvable (422): none of the contacts asked for can
+        #     be addressed on the channel (no such contact, or no phone the
+        #     channel can reach); errors[] names each.
+        - conversation.not_group
+        - group.members_unresolvable
+        # --- END R11-A ------------------------------------------------------------
+        # --- BEGIN R11-C (issue #59, ADR-0068): AI guard + questionnaire -------
+        #   guard_risk: a send-policy FINDING (warn, or deny in enforce mode)
+        #     — the AI guard judged the outbound message risky; params carry
+        #     score, risk, categories, reasons and a safer rewrite. A refused
+        #     send answers 403 policy.rule_blocked with this finding in
+        #     policyFindings.
+        #   guard_unavailable: a send-policy FINDING with verdict allow — the
+        #     guard did not answer in time (fail-open); the send went unchecked.
+        #   disabled (409): the cabinet has not consented to AI processing
+        #     (`ai.enabled` is off).
+        #   profile_no_conversation (409): the contact has no conversation with
+        #     text for the questionnaire to read.
+        - ai.guard_risk
+        - ai.guard_unavailable
+        - ai.disabled
+        - ai.profile_no_conversation
+        # --- END R11-C ------------------------------------------------------------
+        # --- BEGIN R11-D (issue #58, ADR-0067): compliance ----------------------
+        #   compliance.scan_not_found (404) / compliance.finding_not_found (404):
+        #     no such scan / finding the caller may see (another cabinet's, or a
+        #     finding on a channel outside the caller's scope — the same answer).
+        #   compliance.scan_active (409): a scan of the same target is already
+        #     queued or running.
+        #   compliance.scan_finished (409): the scan already ended (cancel).
+        #   compliance.ai_disabled (409): the cabinet has not consented to send
+        #     conversation text to its AI provider (`ai.enabled` is off).
+        #   compliance.no_rules (409): every rule of the `compliance` settings
+        #     is switched off — a scan would check nothing.
+        #   compliance.assignee_invalid (422): the assignee is not an active
+        #     member of the cabinet whose role reads compliance.
+        - compliance.scan_not_found
+        - compliance.finding_not_found
+        - compliance.scan_active
+        - compliance.scan_finished
+        - compliance.ai_disabled
+        - compliance.no_rules
+        - compliance.assignee_invalid
+        # --- END R11-D ------------------------------------------------------------
+        # --- BEGIN R11-E (issues #62/#63, ADR-0066): analytics ----------------
+        #   range_invalid (422): the report period is refused — `from` after
+        #     `to`, longer than 400 days, or an hourly series over 31 days.
+        #   export_not_found (404): no report export with that id of the
+        #     caller's in the cabinet.
+        #   export_not_ready (409): the export is not completed yet (or failed).
+        #   export_expired (410): the export file passed its retention.
+        - analytics.range_invalid
+        - analytics.export_not_found
+        - analytics.export_not_ready
+        - analytics.export_expired
+        # --- END R11-E ------------------------------------------------------------
+        # --- BEGIN R11-B (issue #68, ADR-0063 addendum): campaign dry run --------
+        #   campaign.dry_run_required (409): launchCampaign on a draft with no
+        #     dry run since its last change, or whose last dry run is older
+        #     than 24 hours. Run dryRunCampaign, show its summary, and launch
+        #     again (issue #68 DoD: a campaign cannot be launched without a
+        #     dry run).
+        - campaign.dry_run_required
+        # --- END R11-B ------------------------------------------------------------
+        # --- BEGIN R11-F (issues #74/#75, ADR-0094): Bitrix24 open-lines connector --
+        #   portal_not_live (409): the installation is uninstalled or unlinked —
+        #     the connector works only on a live portal (pair it again).
+        - bitrix.portal_not_live
+        # --- END R11-F ------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -10657,6 +12617,13 @@ components:
             participant list. The groups themselves are nobody's personal data
             and stay; the person's own messages in them are counted in
             `messages`.
+        # R11-D (#58, ADR-0067 §4): compliance evidence of the person.
+        complianceEvidence:
+          type: integer
+          description: >
+            Compliance evidence excerpts of the person's messages blanked. The
+            findings stay (rule, severity, review state); their explanations and
+            notes in the person's conversations are blanked too.
       required:
         - contacts
         - identities
@@ -10666,6 +12633,7 @@ components:
         - media
         - waLidPairs
         - groupParticipants
+        - complianceEvidence
 
     UpdateWebhookRequest:
       type: object
@@ -11793,6 +13761,25 @@ components:
           minLength: 1
           maxLength: 4096
           description: The moderation provider's key. Write-only.
+        # --- R11-C (issue #59, ADR-0068): the AI anti-ban guard ----------------
+        enabled:
+          type: boolean
+          description: >
+            Check every outbound message with the AI guard before it is sent
+            (needs `ai.enabled`). Off (the default) = the guard never calls the
+            provider.
+        mode:
+          $ref: '#/components/schemas/AiGuardMode'
+        warn_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Risk score from which the guard warns (default 0.5); campaigns in enforce mode are refused from here.
+        block_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Risk score from which enforce mode refuses an interactive send (default 0.8).
 
     AiProfileSettings:
       type: object
@@ -11812,6 +13799,36 @@ components:
             type: string
             pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
           description: BCP 47 language tags, e.g. uk, en, pt-BR.
+        # --- R11-C (issue #59, ADR-0068): the AI contact questionnaire ---------
+        questionnaire:
+          type: array
+          maxItems: 50
+          description: >
+            The contact field keys the AI fills from conversations, in order.
+            Empty or absent = every field marked `aiExtract`. A field the AI may
+            not write (not `aiExtract`, not owned by `ai`) is skipped.
+          items:
+            type: string
+            pattern: '^[a-z][a-z0-9_]{0,62}$'
+        summary_field:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{0,62}$'
+          description: >
+            A text contact field for the short AI summary of the contact
+            (provenance `ai`; a person's edit is never overwritten). Absent = no
+            summary.
+        min_confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Suggestions the model is less sure of are dropped (default 0.6).
+        min_messages:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: >
+            New customer messages since the last run before a conversation is
+            read again (default 1). Counted in the database.
 
     ComplianceSettings:
       type: object
@@ -11837,6 +13854,47 @@ components:
             warning (policy.consent_missing). enforce: such a send is refused
             with policy.consent_missing — the cabinet's own switch, once it
             collects consent.
+        # --- R11-D (issue #58, ADR-0067): the compliance scan's rules ---------
+        rules_builtin:
+          $ref: '#/components/schemas/ComplianceBuiltinRules'
+        rules_custom:
+          type: array
+          maxItems: 30
+          description: The cabinet's own rules, in natural language.
+          items:
+            $ref: '#/components/schemas/ComplianceCustomRule'
+        prohibited_topics:
+          type: array
+          maxItems: 50
+          description: Topics that must not be discussed (builtin.prohibited_topic).
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+        policy_notes:
+          type: string
+          maxLength: 4000
+          description: >
+            What agents may promise (refund terms, discounts, deadlines) — what
+            builtin.off_policy_promise checks promises against.
+        scan_schedule:
+          type: string
+          enum: [off, hourly, daily]
+          description: >
+            A periodic cabinet-wide scan of the last `scan_lookback_hours`
+            (default off). Needs `ai.enabled`.
+        scan_lookback_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          description: The period a scheduled scan covers, ending now (default 24).
+        auto_actions:
+          $ref: '#/components/schemas/ComplianceAutoActions'
+        finding_retention_days:
+          type: integer
+          minimum: 30
+          maximum: 1095
+          description: How long a finding and its evidence are kept (default 365).
 
     NotificationsSettings:
       type: object
@@ -12053,7 +14111,11 @@ components:
       properties:
         provider:
           type: string
-          enum: [chatwoot]
+          # R11-F (#74, ADR-0094 §1): the cabinet's desk — chatwoot, the
+          # Bitrix24 open lines, or none (API/embed only). Unset = the
+          # deployment's default (Chatwoot when it runs).
+          enum: [chatwoot, bitrix24, none]
+          x-enum-varnames: [DeskProviderChatwoot, DeskProviderBitrix24, DeskProviderNone]
         base_url:
           type: string
           format: uri
@@ -12989,7 +15051,11 @@ components:
         QR itself is read with getChannelStatus); `settings.updated`
         (settings:manage). Reserved, not emitted yet: `campaign.progress`,
         `sync.progress`, `compliance.scan_progress`, `alert.raised`. A type the
-        server does not know is delivered to nobody.
+        server does not know is delivered to nobody. R11-D (ADR-0067):
+        `compliance.scan_progress` is emitted (compliance:read; a channel or
+        conversation scan also needs its channel in scope —
+        ComplianceScanProgressEvent), and `compliance.notice` (channels:read on
+        the channel — ComplianceNoticeEvent) is a finding's `notify` action.
       properties:
         eventId:
           type: string
@@ -14144,10 +16210,14 @@ components:
     CampaignTemplateRef:
       type: object
       description: >
-        A reference to an approved provider (WABA) template and its variables.
-        Accepted and stored; launching a campaign that carries one is refused
-        (422 campaign.invalid, `template_unsupported`) until templates are
-        wired into sending.
+        A reference to an approved WhatsApp Business template (content `type:
+        template`, wa_cloud channels only — R11-B, issue #68). `params` fill
+        its placeholders per recipient, in send order (header first, then
+        body): a literal, the contact's name or one of its typed fields, with a
+        default. launchCampaign checks the template against every channel's
+        last template sync (approved, fillable, as many params as
+        placeholders). `variables` is kept for compatibility and not used for
+        sending.
       properties:
         name:
           type: string
@@ -14159,6 +16229,11 @@ components:
           type: object
           additionalProperties:
             type: string
+        params:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/CampaignTemplateParam'
       required:
         - name
 
@@ -14381,6 +16456,12 @@ components:
         error:
           type: string
           description: Why a failed campaign failed.
+        dryRunAt:
+          type: string
+          format: date-time
+          description: >
+            When the draft was last dry-run (dryRunCampaign); launchCampaign
+            requires one newer than updatedAt (R11-B).
         createdAt:
           type: string
           format: date-time
@@ -14860,19 +16941,29 @@ components:
         longer than the threshold, minutes), `channel.failure_spike` (failed
         sends in the window), `channel.daily_limit` (the daily send window was
         full), `quota.monthly_near` (a share of the plan's monthly messages
-        used; cabinet-wide).
+        used; cabinet-wide). R11-D (ADR-0067): `compliance.violation` — raised
+        by a compliance finding's `raise_alert` action (or its automatic
+        action), one per finding, about the conversation's channel; not a
+        threshold rule (no /alert-rules entry), but subscriptions can filter
+        on it. R11-F (ADR-0094): `bitrix.dispatch_failed` (calls to the
+        Bitrix24 portal or its events dead-lettered in the window;
+        cabinet-wide).
       enum:
         - channel.health_low
         - channel.disconnected
         - channel.failure_spike
         - channel.daily_limit
         - quota.monthly_near
+        - compliance.violation
+        - bitrix.dispatch_failed
       x-enum-varnames:
         - AlertTypeHealthLow
         - AlertTypeDisconnected
         - AlertTypeFailureSpike
         - AlertTypeDailyLimit
         - AlertTypeMonthlyQuota
+        - AlertTypeComplianceViolation
+        - AlertTypeBitrixDispatchFailed
 
     AlertSeverity:
       type: string
@@ -15236,3 +17327,2056 @@ components:
         - params
         - raisedAt
     # END R10-E schemas
+
+    # =========================================================================
+    # BEGIN R11-A schemas: groups while disabled (#129) and group management
+    # (#66), ADR-0062 §4/§9 and ADR-0096. Mirrors the "BEGIN R11-A groups"
+    # paths block. Enum constants are named explicitly (x-enum-varnames).
+    # =========================================================================
+    IgnoredGroup:
+      type: object
+      description: >
+        A group the channel's number is in while its group chats are off —
+        the group's own metadata only (issue #129): no message, author or
+        participant is kept.
+      properties:
+        chatId:
+          type: string
+          description: The group's address on the channel (wa_web `<id>@g.us`).
+        subject:
+          type: string
+          description: The group's name as the channel last reported it (absent when never reported).
+        firstSeenAt:
+          type: string
+          format: date-time
+        lastActivityAt:
+          type: string
+          format: date-time
+          description: When the latest message seen in the group was written.
+        messages24h:
+          type: integer
+          minimum: 0
+          description: Messages seen in the group during the last 24 hours (hourly granularity).
+      required:
+        - chatId
+        - firstSeenAt
+        - lastActivityAt
+        - messages24h
+
+    IgnoredGroupList:
+      type: object
+      properties:
+        channelId:
+          type: string
+        groupsEnabled:
+          type: boolean
+          description: Whether the channel's group chats are on (then the list is empty).
+        items:
+          type: array
+          description: Most recently active first; at most 500.
+          items:
+            $ref: '#/components/schemas/IgnoredGroup'
+      required:
+        - channelId
+        - groupsEnabled
+        - items
+
+    CreateGroupRequest:
+      type: object
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The group's name (WhatsApp allows up to 100 characters).
+        contactIds:
+          type: array
+          minItems: 1
+          maxItems: 256
+          description: The initial members — contacts of the cabinet.
+          items:
+            type: string
+            format: uuid
+      required:
+        - subject
+        - contactIds
+      additionalProperties: false
+
+    GroupMembersRequest:
+      type: object
+      properties:
+        contactIds:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items:
+            type: string
+            format: uuid
+      required:
+        - contactIds
+      additionalProperties: false
+
+    GroupRemoveRequest:
+      type: object
+      properties:
+        providerIds:
+          type: array
+          minItems: 1
+          maxItems: 256
+          description: Participant addresses as listConversationParticipants shows them.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+      required:
+        - providerIds
+      additionalProperties: false
+
+    UpdateGroupRequest:
+      type: object
+      properties:
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 100
+      required:
+        - subject
+      additionalProperties: false
+
+    GroupMemberFailureReason:
+      type: string
+      description: >
+        Why a requested member is not in the group: `contact_not_found` — no
+        such contact in the cabinet (or outside the caller's channel scope);
+        `no_address` — the contact has no phone the channel can address;
+        `refused` — the platform did not add them (privacy settings, a number
+        not on WhatsApp).
+      enum:
+        - contact_not_found
+        - no_address
+        - refused
+      x-enum-varnames:
+        - GroupMemberFailureContactNotFound
+        - GroupMemberFailureNoAddress
+        - GroupMemberFailureRefused
+
+    GroupMemberOutcome:
+      type: object
+      properties:
+        contactId:
+          type: string
+        providerId:
+          type: string
+          description: The member's address on the channel, when there is one.
+        reason:
+          $ref: '#/components/schemas/GroupMemberFailureReason'
+
+    GroupChangeResult:
+      type: object
+      description: >
+        What a group-management call did. `requested` are the addresses asked
+        of the platform; `failed` the members that are not in the group and
+        why. The member list itself is listConversationParticipants — re-read
+        from the channel after every change when the channel can read groups.
+      properties:
+        conversationId:
+          type: string
+        chatId:
+          type: string
+        subject:
+          type: string
+        requested:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMemberOutcome'
+        failed:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMemberOutcome'
+        membersRefreshed:
+          type: boolean
+          description: >
+            Whether the member list was re-read from the channel after the
+            change. false: the list shows what was asked, until the next
+            message in the group brings the real one.
+      required:
+        - conversationId
+        - chatId
+        - requested
+        - failed
+        - membersRefreshed
+    # =========================================================================
+    # END R11-A schemas
+    # =========================================================================
+
+    # =========================================================================
+    # BEGIN R11-C schemas: AI guard + contact questionnaire (issue #59,
+    # ADR-0068). Mirrors the "BEGIN R11-C ... (paths)" block. Every enum names
+    # its Go constants (x-enum-varnames): low/high/observe would collide.
+    # =========================================================================
+    AiGuardMode:
+      type: string
+      description: >
+        observe (the default): a risky message is sent with a warning. enforce:
+        above `block_threshold` an interactive send is refused, above
+        `warn_threshold` it is warned about; a campaign send is refused already
+        above `warn_threshold` (nobody reads a campaign's warnings).
+      enum:
+        - observe
+        - enforce
+      x-enum-varnames:
+        - AiGuardObserve
+        - AiGuardEnforce
+
+    AiGuardRiskLevel:
+      type: string
+      description: The model's risk level (score < 0.4 low, up to 0.7 medium, above high).
+      enum:
+        - low
+        - medium
+        - high
+      x-enum-varnames:
+        - AiGuardRiskLow
+        - AiGuardRiskMedium
+        - AiGuardRiskHigh
+
+    AiGuardCategory:
+      type: string
+      description: Why a message is risky — a closed vocabulary the console localizes.
+      enum:
+        - spam_bulk
+        - aggressive_sales
+        - scam_phishing
+        - prohibited_goods
+        - impersonation
+        - harassment
+        - suspicious_link
+        - blocked_topic
+        - other
+      x-enum-varnames:
+        - AiGuardSpamBulk
+        - AiGuardAggressiveSales
+        - AiGuardScamPhishing
+        - AiGuardProhibitedGoods
+        - AiGuardImpersonation
+        - AiGuardHarassment
+        - AiGuardSuspiciousLink
+        - AiGuardBlockedTopic
+        - AiGuardOther
+
+    AiGuardTestRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: The sample outbound message.
+        campaign:
+          type: boolean
+          description: Judge it as a campaign (bulk) message; default false.
+      required:
+        - text
+
+    AiGuardTestResult:
+      type: object
+      description: >
+        The guard's assessment of a sample text and the verdicts the current
+        `ai_guard` settings would give it. With `ok: false` there is no
+        assessment and `errorCode` says why (e.g. `ai.timeout`) — a real send
+        would have failed open.
+      properties:
+        ok:
+          type: boolean
+        runId:
+          type: string
+          format: uuid
+        errorCode:
+          type: string
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        risk:
+          $ref: '#/components/schemas/AiGuardRiskLevel'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiGuardCategory'
+        reasons:
+          type: array
+          description: The model's short reasons, for the operator.
+          items:
+            type: string
+        rewrite:
+          type: string
+          description: A safer version of the text, when the model offers one.
+        enabled:
+          type: boolean
+          description: Whether the guard is on (`ai.enabled` and `ai_guard.enabled`).
+        mode:
+          $ref: '#/components/schemas/AiGuardMode'
+        interactiveVerdict:
+          $ref: '#/components/schemas/PolicyVerdict'
+        campaignVerdict:
+          $ref: '#/components/schemas/PolicyVerdict'
+        latencyMs:
+          type: integer
+        totalTokens:
+          type: integer
+          format: int64
+      required:
+        - ok
+        - categories
+        - reasons
+        - enabled
+        - mode
+        - latencyMs
+        - totalTokens
+
+    ContactAiProfileField:
+      type: object
+      description: One questionnaire field and whether (and by whom) it is filled.
+      properties:
+        key:
+          type: string
+        filled:
+          type: boolean
+        source:
+          $ref: '#/components/schemas/ContactFieldValueSource'
+      required:
+        - key
+        - filled
+
+    ContactAiProfileRun:
+      type: object
+      description: The contact's latest questionnaire run (metadata only).
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AiRunStatus'
+        errorCode:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        applied:
+          type: array
+          description: Field keys the run wrote.
+          items:
+            type: string
+        kept:
+          type: array
+          description: Field keys it left alone because a more authoritative writer filled them.
+          items:
+            type: string
+      required:
+        - id
+        - status
+        - createdAt
+        - applied
+        - kept
+
+    ContactAiProfile:
+      type: object
+      description: >
+        The contact's AI questionnaire (ADR-0068 §5): whether it runs for the
+        cabinet, its fields, the short AI summary and the latest run.
+      properties:
+        enabled:
+          type: boolean
+          description: '`ai.enabled` and `ai.profile_extract` are both on.'
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactAiProfileField'
+        summaryField:
+          type: string
+          description: The field the summary is written to (`ai_profile.summary_field`), when configured.
+        summary:
+          type: string
+          description: The summary's current value.
+        summaryOrigin:
+          $ref: '#/components/schemas/ContactFieldValueOrigin'
+        lastRun:
+          $ref: '#/components/schemas/ContactAiProfileRun'
+      required:
+        - enabled
+        - fields
+
+    AiProfileFillResult:
+      type: object
+      properties:
+        runId:
+          type: string
+          format: uuid
+        created:
+          type: boolean
+          description: false = the same conversation up to the same message was already queued or read.
+        conversationId:
+          type: string
+          format: uuid
+      required:
+        - runId
+        - created
+        - conversationId
+    # END R11-C schemas
+
+    # BEGIN R11-D schemas: compliance scans, findings, actions (issue #58,
+    # epic #14, ADR-0067). The paths are the R11-D block before /contacts.
+    ComplianceSeverity:
+      type: string
+      description: How serious a violation is (and a rule's default).
+      enum:
+        - low
+        - medium
+        - high
+        - critical
+      x-enum-varnames:
+        - ComplianceSeverityLow
+        - ComplianceSeverityMedium
+        - ComplianceSeverityHigh
+        - ComplianceSeverityCritical
+
+    ComplianceAutoAction:
+      type: string
+      description: >
+        An automatic action's step, in rank order: none (record only), notify
+        (the `compliance.notice` event to the people on the channel), alert (a
+        `compliance.violation` alert), freeze (freeze the conversation). The
+        model recommends one; the cabinet's `auto_actions` caps it per
+        severity (default: none — observe mode).
+      enum:
+        - none
+        - notify
+        - alert
+        - freeze
+      x-enum-varnames:
+        - ComplianceAutoNone
+        - ComplianceAutoNotify
+        - ComplianceAutoAlert
+        - ComplianceAutoFreeze
+
+    ComplianceScanScope:
+      type: string
+      description: What a scan reads — one conversation, one channel, or the whole cabinet.
+      enum:
+        - conversation
+        - channel
+        - cabinet
+      x-enum-varnames:
+        - ComplianceScopeConversation
+        - ComplianceScopeChannel
+        - ComplianceScopeCabinet
+
+    ComplianceScanStatus:
+      type: string
+      description: >
+        queued (waiting for its turn, the AI quota or the provider —
+        `waitCode` says which) → running → succeeded (everything in the scope
+        and period was read) | failed (`errorCode`: a window could not be
+        judged — e.g. `ai.disabled`, `ai.not_configured`, `ai.invalid_output`,
+        `ai.auth` — the scan is NOT clean; what was found before stays) |
+        cancelled.
+      enum:
+        - queued
+        - running
+        - succeeded
+        - failed
+        - cancelled
+      x-enum-varnames:
+        - ComplianceScanQueued
+        - ComplianceScanRunning
+        - ComplianceScanSucceeded
+        - ComplianceScanFailed
+        - ComplianceScanCancelled
+
+    ComplianceRuleRef:
+      type: object
+      description: A rule a scan checked (from the snapshot kept with the scan).
+      properties:
+        key:
+          type: string
+          description: '`builtin.<key>` or `custom.<key>`.'
+        title:
+          type: string
+        severity:
+          $ref: '#/components/schemas/ComplianceSeverity'
+      required:
+        - key
+        - title
+        - severity
+
+    ComplianceScan:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        scope:
+          $ref: '#/components/schemas/ComplianceScanScope'
+        channelId:
+          type: string
+          format: uuid
+          description: The channel (channel and conversation scans).
+        conversationId:
+          type: string
+          format: uuid
+          description: The conversation (conversation scans).
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        rescan:
+          type: boolean
+          description: Messages already read by an earlier scan were read again.
+        trigger:
+          type: string
+          enum: [manual, schedule]
+          x-enum-varnames: [ComplianceTriggerManual, ComplianceTriggerSchedule]
+        status:
+          $ref: '#/components/schemas/ComplianceScanStatus'
+        cancelRequested:
+          type: boolean
+        waitCode:
+          type: string
+          description: >
+            Why a queued scan waits: `tenancy.quota_exceeded` (the monthly AI
+            tokens), `ai.<kind>` (the provider failed transiently). Empty
+            otherwise.
+        errorCode:
+          type: string
+          description: Why the scan failed. Empty unless failed.
+        errorDetail:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceRuleRef'
+        conversationsTotal:
+          type: integer
+          description: Conversations with unread messages in the scope and period (counted at the first claim).
+        conversationsDone:
+          type: integer
+        messagesScanned:
+          type: integer
+        windowsDone:
+          type: integer
+          description: AI runs committed (one per window of at most 40 messages).
+        findingsCount:
+          type: integer
+          description: New findings (a rescan's duplicates of existing ones are not counted).
+        tokens:
+          type: integer
+          format: int64
+          description: AI tokens the scan's windows used (the journal has each run).
+        requestedBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - scope
+        - from
+        - to
+        - rescan
+        - trigger
+        - status
+        - cancelRequested
+        - rules
+        - conversationsTotal
+        - conversationsDone
+        - messagesScanned
+        - windowsDone
+        - findingsCount
+        - tokens
+        - createdAt
+
+    ComplianceScanList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceScan'
+      required:
+        - items
+
+    StartComplianceScanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        scope:
+          $ref: '#/components/schemas/ComplianceScanScope'
+        channelId:
+          type: string
+          format: uuid
+          description: Required for a channel scan.
+        conversationId:
+          type: string
+          format: uuid
+          description: Required for a conversation scan.
+        from:
+          type: string
+          format: date-time
+          description: Start of the period (inclusive); at most 90 days before `to`.
+        to:
+          type: string
+          format: date-time
+          description: End of the period (exclusive); defaults to now.
+        rescan:
+          type: boolean
+          description: Read again what earlier scans already read (e.g. after the rules changed).
+      required:
+        - scope
+        - from
+
+    ComplianceFindingStatus:
+      type: string
+      description: open (to review) | reviewed (a real violation, handled) | false_positive.
+      enum:
+        - open
+        - reviewed
+        - false_positive
+      x-enum-varnames:
+        - ComplianceFindingOpen
+        - ComplianceFindingReviewed
+        - ComplianceFindingFalsePositive
+
+    ComplianceEvidence:
+      type: object
+      description: >
+        A message the finding points at: its id (the message itself is read
+        through the conversation) and a SHORT excerpt (≤ 160 characters, phone
+        numbers, e-mails, cards and IBANs always replaced). Empty after the
+        person was erased.
+      properties:
+        messageId:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          x-enum-varnames: [ComplianceEvidenceInbound, ComplianceEvidenceOutbound]
+        at:
+          type: string
+          format: date-time
+        excerpt:
+          type: string
+      required:
+        - messageId
+        - direction
+        - at
+        - excerpt
+
+    ComplianceFindingActionType:
+      type: string
+      enum:
+        - review
+        - false_positive
+        - reopen
+        - assign
+        - unassign
+        - raise_alert
+        - freeze_dialog
+        - unfreeze_dialog
+        - notify
+      x-enum-varnames:
+        - ComplianceActionReview
+        - ComplianceActionFalsePositive
+        - ComplianceActionReopen
+        - ComplianceActionAssign
+        - ComplianceActionUnassign
+        - ComplianceActionRaiseAlert
+        - ComplianceActionFreezeDialog
+        - ComplianceActionUnfreezeDialog
+        - ComplianceActionNotify
+
+    ComplianceFindingActionEntry:
+      type: object
+      description: One entry of a finding's history.
+      properties:
+        action:
+          $ref: '#/components/schemas/ComplianceFindingActionType'
+        automatic:
+          type: boolean
+          description: Taken by the scan under the cabinet's `auto_actions` (actor `system:compliance`).
+        actor:
+          type: string
+          description: '`account:<id>`, `api_key:<id>` or `system:compliance`.'
+        note:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+          description: Identifiers only (assigneeId, alertId, conversationId).
+        at:
+          type: string
+          format: date-time
+      required:
+        - action
+        - automatic
+        - actor
+        - note
+        - params
+        - at
+
+    ComplianceFinding:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        scanId:
+          type: string
+          format: uuid
+        conversationId:
+          type: string
+          format: uuid
+        channelId:
+          type: string
+          format: uuid
+        contactId:
+          type: string
+          format: uuid
+        rule:
+          type: string
+          description: '`builtin.<key>` or `custom.<key>`.'
+        ruleTitle:
+          type: string
+        severity:
+          $ref: '#/components/schemas/ComplianceSeverity'
+        confidence:
+          type: number
+          format: double
+        explanation:
+          type: string
+          description: The model's short explanation (redacted; empty after an erasure).
+        recommendedAction:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+        autoAction:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+        status:
+          $ref: '#/components/schemas/ComplianceFindingStatus'
+        assigneeId:
+          type: string
+          format: uuid
+        alertId:
+          type: string
+          format: uuid
+        conversationFrozen:
+          type: boolean
+          description: The conversation is frozen now (by this finding or otherwise).
+        reviewedBy:
+          type: string
+        reviewedAt:
+          type: string
+          format: date-time
+        erased:
+          type: boolean
+          description: A person in the conversation was erased; the texts are gone.
+        promptVersion:
+          type: string
+        aiRunId:
+          type: string
+          format: uuid
+          description: The journal row (/ai/runs) of the window that found it.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        evidence:
+          type: array
+          description: Only in getComplianceFinding / the action's answer.
+          items:
+            $ref: '#/components/schemas/ComplianceEvidence'
+        history:
+          type: array
+          description: Only in getComplianceFinding / the action's answer.
+          items:
+            $ref: '#/components/schemas/ComplianceFindingActionEntry'
+      required:
+        - id
+        - conversationId
+        - channelId
+        - rule
+        - ruleTitle
+        - severity
+        - confidence
+        - explanation
+        - recommendedAction
+        - autoAction
+        - status
+        - conversationFrozen
+        - erased
+        - createdAt
+        - updatedAt
+
+    ComplianceFindingList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceFinding'
+      required:
+        - items
+
+    ComplianceFindingActionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          $ref: '#/components/schemas/ComplianceFindingActionType'
+        assigneeId:
+          type: string
+          format: uuid
+          description: Required for `assign`.
+        note:
+          type: string
+          maxLength: 500
+      required:
+        - action
+
+    ComplianceBuiltinRule:
+      type: object
+      additionalProperties: false
+      description: A built-in rule's switch (absent = on, at its default severity).
+      properties:
+        enabled:
+          type: boolean
+        severity:
+          $ref: '#/components/schemas/ComplianceSeverity'
+
+    ComplianceBuiltinRules:
+      type: object
+      additionalProperties: false
+      description: >
+        The built-in rules: rudeness (medium), off_policy_promise — a promise
+        outside `policy_notes` (high), personal_data — asking for or sharing
+        personal data the conversation does not need (high),
+        offplatform_payment — a payment request outside the official channels
+        (high), prohibited_topic — one of `prohibited_topics` (high; on only
+        with topics listed).
+      properties:
+        rudeness:
+          $ref: '#/components/schemas/ComplianceBuiltinRule'
+        off_policy_promise:
+          $ref: '#/components/schemas/ComplianceBuiltinRule'
+        personal_data:
+          $ref: '#/components/schemas/ComplianceBuiltinRule'
+        offplatform_payment:
+          $ref: '#/components/schemas/ComplianceBuiltinRule'
+        prohibited_topic:
+          $ref: '#/components/schemas/ComplianceBuiltinRule'
+
+    ComplianceCustomRule:
+      type: object
+      additionalProperties: false
+      description: A cabinet's own rule, described in natural language.
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z0-9_]{1,40}$'
+          description: Stable key; findings name it as `custom.<key>`.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: What counts as a violation, in plain words (any language).
+        severity:
+          $ref: '#/components/schemas/ComplianceSeverity'
+        enabled:
+          type: boolean
+      required:
+        - key
+        - title
+        - description
+        - severity
+
+    ComplianceAutoActions:
+      type: object
+      additionalProperties: false
+      description: >
+        Severity → the most that may run automatically for a finding of that
+        severity (the model's recommendation, capped). Absent = none.
+      properties:
+        low:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+        medium:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+        high:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+        critical:
+          $ref: '#/components/schemas/ComplianceAutoAction'
+
+    ComplianceScanProgressEvent:
+      type: object
+      description: >
+        The payload of `compliance.scan_progress` (realtime stream only,
+        compliance:read; a channel or conversation scan also needs that
+        channel in scope). Counters only.
+      properties:
+        scanId:
+          type: string
+          format: uuid
+        channelId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ComplianceScanStatus'
+        conversationsTotal:
+          type: integer
+        conversationsDone:
+          type: integer
+        messagesScanned:
+          type: integer
+        findingsCount:
+          type: integer
+        waitCode:
+          type: string
+        errorCode:
+          type: string
+      required:
+        - scanId
+        - status
+        - conversationsTotal
+        - conversationsDone
+        - messagesScanned
+        - findingsCount
+
+    ComplianceNoticeEvent:
+      type: object
+      description: >
+        The payload of `compliance.notice` (realtime stream only; channels:read
+        on the channel — the people working on it): a finding's `notify`
+        action. Identifiers only.
+      properties:
+        findingId:
+          type: string
+          format: uuid
+        conversationId:
+          type: string
+          format: uuid
+        channelId:
+          type: string
+          format: uuid
+        rule:
+          type: string
+        severity:
+          $ref: '#/components/schemas/ComplianceSeverity'
+      required:
+        - findingId
+        - conversationId
+        - channelId
+        - rule
+        - severity
+    # END R11-D schemas
+
+    # BEGIN R11-E schemas: analytics — reports and exports (issues #62/#63,
+    # ADR-0066). Mirrors internal/analytics and internal/store/analytics*.go;
+    # the paths are the "BEGIN R11-E (paths)" block. Every enum names its Go
+    # constants (x-enum-varnames): `day`, `completed`, `channel`, `csv` exist in
+    # other enums or would collide.
+    # =========================================================================
+    AnalyticsMetric:
+      type: string
+      description: >
+        A metric of the catalogue (ADR-0066 §1). Counts: messages_in,
+        messages_out, messages_delivered, messages_read, messages_failed (of
+        the period's outbound messages, by the status they reached),
+        conversations_opened, responses (replies that answered a waiting
+        contact), policy_refusals (deferred + denied send-policy decisions),
+        policy_warnings, ai_runs, ai_tokens. Ratios 0..1: delivery_rate,
+        read_rate, failure_rate (of outbound messages),
+        responses_within_5m_rate (of responses). response_time_avg is seconds
+        (from the first waiting message to the reply); health_avg the average
+        channel health score (0–100); ai_cost micro-units of the provider's
+        currency. ai_* are cabinet-wide: absent for a channel-scoped caller.
+      enum:
+        - messages_in
+        - messages_out
+        - messages_delivered
+        - messages_read
+        - messages_failed
+        - delivery_rate
+        - read_rate
+        - failure_rate
+        - conversations_opened
+        - responses
+        - response_time_avg
+        - responses_within_5m_rate
+        - policy_refusals
+        - policy_warnings
+        - health_avg
+        - ai_runs
+        - ai_tokens
+        - ai_cost
+      x-enum-varnames:
+        - AnalyticsMetricMessagesIn
+        - AnalyticsMetricMessagesOut
+        - AnalyticsMetricMessagesDelivered
+        - AnalyticsMetricMessagesRead
+        - AnalyticsMetricMessagesFailed
+        - AnalyticsMetricDeliveryRate
+        - AnalyticsMetricReadRate
+        - AnalyticsMetricFailureRate
+        - AnalyticsMetricConversationsOpened
+        - AnalyticsMetricResponses
+        - AnalyticsMetricResponseTimeAvg
+        - AnalyticsMetricResponsesWithin5mRate
+        - AnalyticsMetricPolicyRefusals
+        - AnalyticsMetricPolicyWarnings
+        - AnalyticsMetricHealthAvg
+        - AnalyticsMetricAiRuns
+        - AnalyticsMetricAiTokens
+        - AnalyticsMetricAiCost
+
+    AnalyticsUnit:
+      type: string
+      description: How a metric's value reads — a count, a ratio 0..1, seconds, a 0–100 score, micro-units of a currency.
+      enum:
+        - count
+        - ratio
+        - seconds
+        - score
+        - micros
+      x-enum-varnames:
+        - AnalyticsUnitCount
+        - AnalyticsUnitRatio
+        - AnalyticsUnitSeconds
+        - AnalyticsUnitScore
+        - AnalyticsUnitMicros
+
+    AnalyticsGranularity:
+      type: string
+      description: A time series' bucket — an hour, a local day, a local ISO week (Monday).
+      enum:
+        - hour
+        - day
+        - week
+      x-enum-varnames:
+        - AnalyticsGranularityHour
+        - AnalyticsGranularityDay
+        - AnalyticsGranularityWeek
+
+    AnalyticsBreakdownBy:
+      type: string
+      description: A breakdown's dimension.
+      enum:
+        - channel
+        - agent
+        - origin
+        - policy
+      x-enum-varnames:
+        - AnalyticsByChannel
+        - AnalyticsByAgent
+        - AnalyticsByOrigin
+        - AnalyticsByPolicy
+
+    AnalyticsPeriod:
+      type: object
+      description: >
+        A report's period: local dates in the cabinet's time zone (both
+        inclusive) and the instants they span.
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        timeZone:
+          type: string
+          description: The IANA zone the dates are in (the cabinet's messaging default; UTC when unset).
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+          description: Exclusive.
+      required:
+        - from
+        - to
+        - timeZone
+        - start
+        - end
+
+    AnalyticsBackfillStatus:
+      type: string
+      description: >
+        The aggregation of the cabinet's history before live aggregation
+        started: pending, running, done, failed; `none` before the first
+        aggregation pass saw the cabinet.
+      enum:
+        - none
+        - pending
+        - running
+        - done
+        - failed
+      x-enum-varnames:
+        - AnalyticsBackfillNone
+        - AnalyticsBackfillPending
+        - AnalyticsBackfillRunning
+        - AnalyticsBackfillDone
+        - AnalyticsBackfillFailed
+
+    AnalyticsFreshness:
+      type: object
+      description: How current the numbers are.
+      properties:
+        lastPassAt:
+          type: string
+          format: date-time
+          description: When the aggregation last ran for the cabinet (absent before its first pass).
+        watermark:
+          type: string
+          format: date-time
+          description: Hours before this are final (a late status change still re-opens its hour).
+        backfill:
+          $ref: '#/components/schemas/AnalyticsBackfillStatus'
+        backfillProgress:
+          type: number
+          format: double
+          description: The backfill's share done, 0..1.
+        historyFrom:
+          type: string
+          format: date-time
+          description: The oldest hour the backfill found data for.
+      required:
+        - backfill
+        - backfillProgress
+
+    AnalyticsKpi:
+      type: object
+      description: >
+        One metric of a period and of the period before it. A value is absent
+        when it is undefined (a rate with nothing to divide); a delta when
+        either side is absent, deltaPct also when the previous value is 0.
+      properties:
+        metric:
+          $ref: '#/components/schemas/AnalyticsMetric'
+        unit:
+          $ref: '#/components/schemas/AnalyticsUnit'
+        value:
+          type: number
+          format: double
+        previous:
+          type: number
+          format: double
+        delta:
+          type: number
+          format: double
+        deltaPct:
+          type: number
+          format: double
+          description: The relative change, as a fraction (0.25 = +25 %).
+      required:
+        - metric
+        - unit
+
+    AnalyticsOverview:
+      type: object
+      properties:
+        period:
+          $ref: '#/components/schemas/AnalyticsPeriod'
+        previousPeriod:
+          $ref: '#/components/schemas/AnalyticsPeriod'
+        scoped:
+          type: boolean
+          description: The numbers are limited to the caller's channels (cabinet-wide metrics left out).
+        kpis:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsKpi'
+        freshness:
+          $ref: '#/components/schemas/AnalyticsFreshness'
+      required:
+        - period
+        - previousPeriod
+        - scoped
+        - kpis
+        - freshness
+
+    AnalyticsPoint:
+      type: object
+      properties:
+        start:
+          type: string
+          format: date-time
+        label:
+          type: string
+          description: The bucket in the cabinet's time zone (YYYY-MM-DD for a day or a week's first day; date, time and zone for an hour).
+        value:
+          type: number
+          format: double
+          description: Absent when undefined in the bucket.
+      required:
+        - start
+        - label
+
+    AnalyticsTimeseries:
+      type: object
+      properties:
+        metric:
+          $ref: '#/components/schemas/AnalyticsMetric'
+        unit:
+          $ref: '#/components/schemas/AnalyticsUnit'
+        granularity:
+          $ref: '#/components/schemas/AnalyticsGranularity'
+        period:
+          $ref: '#/components/schemas/AnalyticsPeriod'
+        scoped:
+          type: boolean
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsPoint'
+      required:
+        - metric
+        - unit
+        - granularity
+        - period
+        - scoped
+        - points
+
+    AnalyticsBreakdownRow:
+      type: object
+      properties:
+        key:
+          type: string
+          description: A channel id, an account id, an origin, or `<verdict>:<code>` of a policy reason.
+        label:
+          type: string
+          description: The channel's or the person's name; empty for an origin or a policy reason.
+        kind:
+          type: string
+          description: The channel kind (channel breakdown only).
+        values:
+          type: object
+          description: The row's metrics (the breakdown's `metrics`); an undefined one is absent.
+          additionalProperties:
+            type: number
+            format: double
+      required:
+        - key
+        - label
+        - values
+
+    AnalyticsBreakdown:
+      type: object
+      properties:
+        by:
+          $ref: '#/components/schemas/AnalyticsBreakdownBy'
+        period:
+          $ref: '#/components/schemas/AnalyticsPeriod'
+        scoped:
+          type: boolean
+        metrics:
+          type: array
+          description: The columns, in order.
+          items:
+            $ref: '#/components/schemas/AnalyticsMetric'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsBreakdownRow'
+      required:
+        - by
+        - period
+        - scoped
+        - metrics
+        - rows
+
+    AnalyticsHeatmap:
+      type: object
+      properties:
+        direction:
+          type: string
+          description: inbound or outbound.
+        period:
+          $ref: '#/components/schemas/AnalyticsPeriod'
+        scoped:
+          type: boolean
+        cells:
+          type: array
+          description: 7 rows (Monday first) of 24 counts (local hours 0–23).
+          items:
+            type: array
+            items:
+              type: integer
+              format: int64
+        max:
+          type: integer
+          format: int64
+      required:
+        - direction
+        - period
+        - scoped
+        - cells
+        - max
+
+    AnalyticsCampaignFunnel:
+      type: object
+      description: >
+        recipients → sent (handed to the channel) → delivered → read →
+        replied (wrote back within 72 hours); beside the funnel the
+        recipients still pending, skipped by policy, failed or cancelled and
+        the messages that failed after sending.
+      properties:
+        recipients:
+          type: integer
+          format: int64
+        pending:
+          type: integer
+          format: int64
+        sent:
+          type: integer
+          format: int64
+        skipped:
+          type: integer
+          format: int64
+        recipientsFailed:
+          type: integer
+          format: int64
+        cancelled:
+          type: integer
+          format: int64
+        delivered:
+          type: integer
+          format: int64
+        read:
+          type: integer
+          format: int64
+        messagesFailed:
+          type: integer
+          format: int64
+        replied:
+          type: integer
+          format: int64
+        replyWindowHours:
+          type: integer
+      required:
+        - recipients
+        - pending
+        - sent
+        - skipped
+        - recipientsFailed
+        - cancelled
+        - delivered
+        - read
+        - messagesFailed
+        - replied
+        - replyWindowHours
+
+    AnalyticsCampaignReport:
+      type: object
+      properties:
+        campaignId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          description: The campaign's status (draft, scheduled, running, paused, completed, cancelled, failed).
+        launchedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        funnel:
+          $ref: '#/components/schemas/AnalyticsCampaignFunnel'
+      required:
+        - campaignId
+        - name
+        - status
+        - funnel
+
+    AnalyticsExportFormat:
+      type: string
+      enum:
+        - csv
+        - xlsx
+      x-enum-varnames:
+        - AnalyticsFormatCsv
+        - AnalyticsFormatXlsx
+
+    AnalyticsReportKind:
+      type: string
+      description: The report an export renders — the same as its read operation.
+      enum:
+        - overview
+        - timeseries
+        - breakdown
+        - campaign
+      x-enum-varnames:
+        - AnalyticsReportOverview
+        - AnalyticsReportTimeseries
+        - AnalyticsReportBreakdown
+        - AnalyticsReportCampaign
+
+    AnalyticsExportRequest:
+      type: object
+      description: >
+        The report and its parameters, as the read operation takes them:
+        `metric` (+ `granularity`) for a time series, `by` for a breakdown,
+        `campaignId` for a campaign report.
+      properties:
+        report:
+          $ref: '#/components/schemas/AnalyticsReportKind'
+        format:
+          $ref: '#/components/schemas/AnalyticsExportFormat'
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        channelId:
+          type: string
+          format: uuid
+        metric:
+          $ref: '#/components/schemas/AnalyticsMetric'
+        granularity:
+          $ref: '#/components/schemas/AnalyticsGranularity'
+        by:
+          $ref: '#/components/schemas/AnalyticsBreakdownBy'
+        campaignId:
+          type: string
+          format: uuid
+      required:
+        - report
+        - format
+
+    AnalyticsExportStatus:
+      type: string
+      enum:
+        - queued
+        - running
+        - completed
+        - failed
+        - expired
+      x-enum-varnames:
+        - AnalyticsExportStatusQueued
+        - AnalyticsExportStatusRunning
+        - AnalyticsExportStatusCompleted
+        - AnalyticsExportStatusFailed
+        - AnalyticsExportStatusExpired
+
+    AnalyticsExport:
+      type: object
+      description: One report export job.
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AnalyticsExportStatus'
+        request:
+          $ref: '#/components/schemas/AnalyticsExportRequest'
+        timeZone:
+          type: string
+        scoped:
+          type: boolean
+          description: The file is limited to the channels its author works.
+        rowCount:
+          type: integer
+        sizeBytes:
+          type: integer
+          format: int64
+        createdBy:
+          $ref: '#/components/schemas/JobActor'
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the file is deleted.
+        downloadPath:
+          type: string
+          description: The API path the completed file is downloaded from (downloadAnalyticsExport), relative to the server URL.
+      required:
+        - id
+        - status
+        - request
+        - timeZone
+        - scoped
+        - rowCount
+        - sizeBytes
+        - createdBy
+        - createdAt
+
+    AnalyticsExportList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsExport'
+      required:
+        - items
+    # END R11-E schemas
+
+    # =========================================================================
+    # BEGIN R11-B schemas: campaign dry run, launch wizard, templates in
+    # campaigns (issue #68, ADR-0063 addendum of 2026-09-24). Mirrors the
+    # "BEGIN R11-B campaign dry run + launch wizard (paths)" block and
+    # internal/campaigns/{template,estimate}.go. Reason / factor / warning keys
+    # are strings, not enums: a newer server may add one, and the console
+    # renders an unknown key as itself.
+    # =========================================================================
+    CampaignTemplateParamSource:
+      type: string
+      description: >
+        Where one template parameter's value comes from: a fixed text
+        (`literal`), the contact's display name (`contact_name`), or one of the
+        contact's typed fields (`contact_field`).
+      enum:
+        - literal
+        - contact_name
+        - contact_field
+      x-enum-varnames:
+        - CampaignParamLiteral
+        - CampaignParamContactName
+        - CampaignParamContactField
+
+    CampaignTemplateParam:
+      type: object
+      description: >
+        The value of one template placeholder, per recipient. A contact whose
+        name / field is empty gets `default`; with no default either, that
+        recipient is skipped with template.params_invalid (the dry run counts
+        them). A contact-derived value has its line breaks, tabs and runs of
+        spaces collapsed to one space (Meta refuses them in a parameter).
+      properties:
+        source:
+          $ref: '#/components/schemas/CampaignTemplateParamSource'
+        value:
+          type: string
+          maxLength: 1024
+          description: The text of a `literal` parameter.
+        field:
+          type: string
+          maxLength: 64
+          description: The typed field key of a `contact_field` parameter.
+        default:
+          type: string
+          maxLength: 1024
+          description: The value used when the contact's name / field is empty.
+      required:
+        - source
+
+    CampaignAudienceCount:
+      type: object
+      description: What an audience definition resolves to now (nothing is stored).
+      properties:
+        matched:
+          type: integer
+          description: >
+            Recipients the snapshot would hold (explicit contacts of the
+            cabinet in scope, plus filter matches reachable on the channels,
+            each person once), capped at `limit` + 1.
+        explicitRequested:
+          type: integer
+        explicitIncluded:
+          type: integer
+        tooLarge:
+          type: boolean
+          description: More than `limit` recipients — launchCampaign would refuse it.
+        limit:
+          type: integer
+          description: The largest snapshot a campaign may have (100 000).
+      required:
+        - matched
+        - explicitRequested
+        - explicitIncluded
+        - tooLarge
+        - limit
+
+    CampaignAudienceChannelCount:
+      type: object
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        addressable:
+          type: integer
+          description: How many of the matched recipients have an address on this channel.
+      required:
+        - channelId
+        - kind
+        - addressable
+
+    CampaignAudiencePreviewRequest:
+      type: object
+      properties:
+        channelIds:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: string
+            format: uuid
+        audience:
+          $ref: '#/components/schemas/CampaignAudience'
+      required:
+        - channelIds
+        - audience
+
+    CampaignAudiencePreview:
+      type: object
+      properties:
+        audience:
+          $ref: '#/components/schemas/CampaignAudienceCount'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignAudienceChannelCount'
+      required:
+        - audience
+        - channels
+
+    CampaignDryRunBlocked:
+      type: object
+      description: >
+        Recipients the snapshot would hold who would be skipped, for one
+        reason. `reason` is one of no_address (no identity / conversation on
+        any of the campaign's channels), template_params_missing (a template
+        parameter from the contact's name / field is empty and has no
+        default), no_consent, opted_out (consent revoked), service_window_closed
+        (a free-form message to a wa_cloud contact outside WhatsApp's 24-hour
+        window), dialog_frozen; `code` is the catalog code the recipient would
+        be skipped with.
+      properties:
+        reason:
+          type: string
+        code:
+          type: string
+        count:
+          type: integer
+      required:
+        - reason
+        - code
+        - count
+
+    CampaignDryRunChannel:
+      type: object
+      description: One channel of the campaign in the dry run.
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        position:
+          type: integer
+        live:
+          type: boolean
+          description: Connected and not held — a channel that is not live sends nothing until it is.
+        addressable:
+          type: integer
+          description: Recipients with an address on this channel.
+        assigned:
+          type: integer
+          description: Recipients the rotation would send through this channel (not blocked).
+        blocked:
+          type: integer
+          description: Recipients whose turn falls on this channel but who would be skipped.
+        perMinute:
+          type: number
+          description: >
+            The effective pace on this channel: the smallest of the campaign's
+            ratePerMinute, the channel's send pacing (session channels pause
+            1–3 s between messages) and the send-policy rate budget (with the
+            channel's warmup stage).
+        paceLimitedBy:
+          type: string
+          description: campaign_rate, channel_pacing or rate_budget.
+        dailyLimit:
+          type: integer
+          description: The channel's daily window (messaging defaults); omitted = none.
+        hourlyLimit:
+          type: integer
+          description: The channel's hourly window; omitted = none.
+        finishesAt:
+          type: string
+          format: date-time
+          description: When this channel's share would be sent (omitted when beyond the horizon).
+      required:
+        - channelId
+        - kind
+        - position
+        - live
+        - addressable
+        - assigned
+        - blocked
+        - perMinute
+        - paceLimitedBy
+
+    CampaignDryRunFactor:
+      type: object
+      properties:
+        factor:
+          type: string
+        seconds:
+          type: integer
+      required:
+        - factor
+        - seconds
+
+    CampaignDryRunEstimate:
+      type: object
+      description: >
+        How long the send would take from `startsAt`, simulated minute by
+        minute over the channel that finishes last: its pace, its daily and
+        hourly windows (minus what they already hold today), the campaign
+        window, the cabinet's business hours and the organization's monthly
+        messages cap (reset on the 1st, UTC). `limitingFactor` is the factor
+        that accounts for most of that time — none, campaign_rate,
+        channel_pacing, rate_budget, hourly_limit, daily_limit,
+        campaign_window, business_hours or monthly_quota; `factors` is the
+        whole breakdown, largest first. Other campaigns sharing the channels
+        are not simulated.
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+        finishesAt:
+          type: string
+          format: date-time
+          description: Omitted when the send would not finish within the horizon (400 days).
+        durationSeconds:
+          type: integer
+        complete:
+          type: boolean
+          description: False when the horizon was reached before every recipient was sent.
+        limitingFactor:
+          type: string
+        factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignDryRunFactor'
+      required:
+        - startsAt
+        - durationSeconds
+        - complete
+        - limitingFactor
+        - factors
+
+    CampaignDryRunSample:
+      type: object
+      description: >
+        What send policy says right now about one send of this campaign (in
+        its campaign mode) through this channel to its first recipient there —
+        the checkSendPolicy dry run: nothing is consumed.
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        contactId:
+          type: string
+          format: uuid
+        verdict:
+          $ref: '#/components/schemas/PolicyVerdict'
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyFinding'
+        meters:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyMeter'
+      required:
+        - channelId
+        - contactId
+        - verdict
+        - findings
+        - meters
+
+    CampaignDryRunWarning:
+      type: object
+      description: >
+        Something the operator should know before launching (`key`:
+        channel_not_live, audience_too_large, nobody_reachable,
+        monthly_quota_short, estimate_incomplete, …; `params` fill the message).
+      properties:
+        key:
+          type: string
+        params:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - key
+
+    CampaignDryRun:
+      type: object
+      description: The dry run of a draft (dryRunCampaign).
+      properties:
+        campaignId:
+          type: string
+          format: uuid
+        evaluatedAt:
+          type: string
+          format: date-time
+        launchable:
+          type: boolean
+          description: launchCampaign would accept the draft now (no problem, someone reachable).
+        problems:
+          type: array
+          description: The reasons launchCampaign would refuse the draft (its 422 errors[]).
+          items:
+            $ref: '#/components/schemas/ValidationError'
+        audience:
+          $ref: '#/components/schemas/CampaignAudienceCount'
+        reachable:
+          type: integer
+          description: Recipients who would be sent to (matched minus blocked).
+        blocked:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignDryRunBlocked'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignDryRunChannel'
+        estimate:
+          $ref: '#/components/schemas/CampaignDryRunEstimate'
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignDryRunSample'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/CampaignDryRunWarning'
+      required:
+        - campaignId
+        - evaluatedAt
+        - launchable
+        - problems
+        - audience
+        - reachable
+        - blocked
+        - channels
+        - estimate
+        - samples
+        - warnings
+    # END R11-B schemas
+
+    # BEGIN R11-F schemas: Bitrix24 open-lines connector (issues #74/#75,
+    # ADR-0094). Mirrors the "BEGIN R11-F ... (paths)" block.
+    BitrixLineBindingStatus:
+      type: string
+      description: >
+        `pending` — the connector is being registered / activated on the line
+        (queued; messages wait behind it); `active` — traffic flows;
+        `line_deleted` — the portal deleted the open line; `connector_disabled`
+        — the connector was switched off on the line, or the portal refused to
+        activate it. The last two take no traffic until the channel is bound
+        again.
+      enum:
+        - pending
+        - active
+        - line_deleted
+        - connector_disabled
+      x-enum-varnames:
+        - BitrixLinePending
+        - BitrixLineActive
+        - BitrixLineDeleted
+        - BitrixLineConnectorDisabled
+    BitrixLineBinding:
+      type: object
+      description: One channel on one open line (ADR-0052 §4, ADR-0094 §3).
+      required: [channelId, lineId, status, sharedLine, updatedAt]
+      properties:
+        channelId:
+          type: string
+          format: uuid
+        lineId:
+          type: string
+          description: The open line's id on the portal.
+        status:
+          $ref: '#/components/schemas/BitrixLineBindingStatus'
+        statusReason:
+          type: string
+        sharedLine:
+          type: boolean
+          description: >
+            Another channel is on the same line: routing and statistics per
+            number are lost there (the console warns).
+        activatedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BitrixLineBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [lineId]
+      properties:
+        lineId:
+          type: string
+          pattern: '^[0-9]{1,18}$'
+    BitrixBlockedMethod:
+      type: object
+      description: A REST method the portal blocked for its operating-time limit.
+      required: [method, until]
+      properties:
+        method:
+          type: string
+        until:
+          type: string
+          format: date-time
+    BitrixQueueStatus:
+      type: object
+      description: >
+        The portal's dispatcher (ADR-0094 §4): calls waiting, calls given up on
+        (dead letters), the park after the portal's request limit, methods
+        blocked by its operating-time limit, and the offline-event pull.
+      required: [pending, due, dead, blockedMethods, inboxPending, inboxDead]
+      properties:
+        pending:
+          type: integer
+        due:
+          type: integer
+          description: Pending calls whose time has come (the rest wait out a retry backoff).
+        dead:
+          type: integer
+        lastDeadError:
+          type: string
+        oldestPendingAt:
+          type: string
+          format: date-time
+        parkedUntil:
+          type: string
+          format: date-time
+        parkReason:
+          type: string
+        blockedMethods:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixBlockedMethod'
+        lastPollAt:
+          type: string
+          format: date-time
+        lastPollError:
+          type: string
+        inboxPending:
+          type: integer
+          description: Host events taken in and not processed yet.
+        inboxDead:
+          type: integer
+    BitrixConnector:
+      type: object
+      description: The open-lines connector on a linked portal (ADR-0094).
+      required: [portalId, connectorId, registered, eventsBound, eventDelivery, desk, deskActive, bindings, queue]
+      properties:
+        portalId:
+          type: string
+          format: uuid
+        connectorId:
+          type: string
+        registered:
+          type: boolean
+          description: imconnector.register went through on the portal.
+        registeredAt:
+          type: string
+          format: date-time
+        eventsBound:
+          type: boolean
+          description: The connector's events are bound (as offline events).
+        eventsBoundAt:
+          type: string
+          format: date-time
+        eventDelivery:
+          type: string
+          enum: [offline]
+          x-enum-varnames: [BitrixEventDeliveryOffline]
+          description: >
+            How the connector's events reach us: pulled offline events
+            (event.offline.get), with the ONOFFLINEEVENT push only as a nudge.
+        desk:
+          type: string
+          description: >
+            The cabinet's desk as the `desk` settings section resolves it
+            (`chatwoot`, `bitrix24`, `none`).
+        deskActive:
+          type: boolean
+          description: Bitrix24 is the cabinet's desk — projection into the lines is on.
+        defaultLineId:
+          type: string
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixLineBinding'
+        queue:
+          $ref: '#/components/schemas/BitrixQueueStatus'
+    BitrixConnectorUpdate:
+      type: object
+      additionalProperties: false
+      required: [defaultLineId]
+      properties:
+        defaultLineId:
+          type: string
+          nullable: true
+          pattern: '^[0-9]{1,18}$'
+          description: The line new channels go onto; null = explicit bindings only.
+    BitrixOpenLine:
+      type: object
+      required: [id, name, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        active:
+          type: boolean
+    BitrixOpenLineList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BitrixOpenLine'
+    BitrixQueueRetry:
+      type: object
+      required: [requeued]
+      properties:
+        requeued:
+          type: integer
+    # END R11-F schemas

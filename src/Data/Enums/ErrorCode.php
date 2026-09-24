@@ -148,6 +148,27 @@ enum ErrorCode: string
     case ProviderUpstreamError = 'provider.upstream_error';
     case ProviderUnavailable = 'provider.unavailable';
 
+    // Round 11: groups, AI guard and questionnaire, compliance, analytics, campaign dry run, Bitrix24 connector.
+    case ConversationNotGroup = 'conversation.not_group';
+    case GroupMembersUnresolvable = 'group.members_unresolvable';
+    case AiGuardRisk = 'ai.guard_risk';
+    case AiGuardUnavailable = 'ai.guard_unavailable';
+    case AiDisabled = 'ai.disabled';
+    case AiProfileNoConversation = 'ai.profile_no_conversation';
+    case ComplianceScanNotFound = 'compliance.scan_not_found';
+    case ComplianceFindingNotFound = 'compliance.finding_not_found';
+    case ComplianceScanActive = 'compliance.scan_active';
+    case ComplianceScanFinished = 'compliance.scan_finished';
+    case ComplianceAiDisabled = 'compliance.ai_disabled';
+    case ComplianceNoRules = 'compliance.no_rules';
+    case ComplianceAssigneeInvalid = 'compliance.assignee_invalid';
+    case AnalyticsRangeInvalid = 'analytics.range_invalid';
+    case AnalyticsExportNotFound = 'analytics.export_not_found';
+    case AnalyticsExportNotReady = 'analytics.export_not_ready';
+    case AnalyticsExportExpired = 'analytics.export_expired';
+    case CampaignDryRunRequired = 'campaign.dry_run_required';
+    case BitrixPortalNotLive = 'bitrix.portal_not_live';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 
