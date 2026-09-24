@@ -19,6 +19,7 @@ use Linqelio\Laravel\Data\Enums\AnalyticsGranularity;
 use Linqelio\Laravel\Data\Enums\AnalyticsMetric;
 use Linqelio\Laravel\Data\Enums\MessageDirection;
 use Linqelio\Laravel\Data\Read;
+use Linqelio\Laravel\Exceptions\AnalyticsException;
 
 /**
  * The cabinet's reports, for a dashboard of your own or a file to hand on.
@@ -113,7 +114,7 @@ final readonly class AnalyticsResource
 
     /**
      * The file. Before it is ready the answer is `analytics.export_not_ready`,
-     * after it expired `analytics.export_expired` ({@see \Linqelio\Laravel\Exceptions\AnalyticsException}).
+     * after it expired `analytics.export_expired` ({@see AnalyticsException}).
      */
     public function download(string $exportId): BinaryResponse
     {

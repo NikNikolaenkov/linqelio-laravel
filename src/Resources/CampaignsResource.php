@@ -15,6 +15,7 @@ use Linqelio\Laravel\Data\Campaigns\CampaignRecipient;
 use Linqelio\Laravel\Data\Enums\CampaignRecipientState;
 use Linqelio\Laravel\Data\Enums\CampaignStatus;
 use Linqelio\Laravel\Data\Read;
+use Linqelio\Laravel\Exceptions\CampaignException;
 
 /**
  * Campaigns: one message to an audience, sent through send policy in its
@@ -122,7 +123,7 @@ final readonly class CampaignsResource
      * Resolve the audience into the recipient list — once; nobody is added later
      * — and schedule the campaign, or start it when it has no future `startAt`.
      * An invalid draft answers `campaign.invalid` with one `errors[]` entry per
-     * reason ({@see \Linqelio\Laravel\Exceptions\CampaignException::errors()}).
+     * reason ({@see CampaignException::errors()}).
      */
     public function launch(string $campaignId): CampaignLaunch
     {
