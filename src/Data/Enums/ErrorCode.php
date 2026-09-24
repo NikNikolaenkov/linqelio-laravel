@@ -174,6 +174,10 @@ enum ErrorCode: string
     case BitrixCrmEntityUnavailable = 'bitrix.crm_entity_unavailable';
     case EmbedConversationUnsupported = 'embed.conversation_unsupported';
 
+    // Round 13: creating a contact from a Bitrix24 CRM card.
+    case BitrixCrmContactUnaddressable = 'bitrix.crm_contact_unaddressable';
+    case BitrixCrmLinkedElsewhere = 'bitrix.crm_linked_elsewhere';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 

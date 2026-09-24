@@ -4,9 +4,34 @@ declare(strict_types=1);
 
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Linqelio\Laravel\Data\Analytics\AnalyticsExportRequest;
+use Linqelio\Laravel\Data\Campaigns\CampaignAudience;
+use Linqelio\Laravel\Data\Campaigns\CampaignContent;
+use Linqelio\Laravel\Data\Campaigns\CampaignInput;
+use Linqelio\Laravel\Data\Campaigns\CampaignTemplate;
+use Linqelio\Laravel\Data\Campaigns\CampaignTemplateParam;
+use Linqelio\Laravel\Data\Campaigns\CampaignWindow;
+use Linqelio\Laravel\Data\Enums\AlertDeliveryChannel;
+use Linqelio\Laravel\Data\Enums\AlertSeverity;
+use Linqelio\Laravel\Data\Enums\AlertStatus;
+use Linqelio\Laravel\Data\Enums\AlertType;
+use Linqelio\Laravel\Data\Enums\AnalyticsBreakdownBy;
+use Linqelio\Laravel\Data\Enums\AnalyticsExportFormat;
+use Linqelio\Laravel\Data\Enums\AnalyticsGranularity;
+use Linqelio\Laravel\Data\Enums\AnalyticsMetric;
+use Linqelio\Laravel\Data\Enums\AnalyticsReportKind;
+use Linqelio\Laravel\Data\Enums\CampaignRecipientState;
+use Linqelio\Laravel\Data\Enums\CampaignStatus;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
+use Linqelio\Laravel\Data\Enums\ContactStatus;
 use Linqelio\Laravel\Data\Enums\ErrorCode;
+use Linqelio\Laravel\Data\Enums\MessageDirection;
 use Linqelio\Laravel\Data\Enums\MessageType;
+use Linqelio\Laravel\Data\Enums\ScheduledSendStatus;
+use Linqelio\Laravel\Data\Imports\ContactExportFilter;
+use Linqelio\Laravel\Data\Imports\ImportColumn;
+use Linqelio\Laravel\Data\Imports\ImportMapping;
+use Linqelio\Laravel\Data\Policy\SendTemplate;
 use Linqelio\Laravel\Facades\Linqelio;
 use Symfony\Component\Yaml\Yaml;
 
@@ -64,6 +89,86 @@ final class Contract
         'getMessageMedia' => 'media()->fetch()',
 
         'createEmbedSession' => 'embed()->session()',
+
+        // Issue #9: consent, typed fields, the send-policy dry run.
+        'listContactConsents' => 'contacts()->consents()',
+        'grantContactConsent' => 'contacts()->grantConsent()',
+        'revokeContactConsent' => 'contacts()->revokeConsent()',
+        'getContactFields' => 'contacts()->fields()',
+        'setContactFields' => 'contacts()->setFields()',
+        'listContactFields' => 'contacts()->fieldDefinitions()',
+        'checkSendPolicy' => 'messages()->check()',
+        'getContactAiProfile' => 'contacts()->aiProfile()',
+        'fillContactAiProfile' => 'contacts()->fillAiProfile()',
+
+        'sendConversationMessage' => 'conversations()->send()',
+        'checkConversationSendPolicy' => 'conversations()->check()',
+        'listConversationParticipants' => 'conversations()->participants()',
+
+        'listChannelTemplates' => 'channels()->templates()',
+        'syncChannelTemplates' => 'channels()->syncTemplates()',
+
+        'createGroup' => 'groups()->create()',
+        'addGroupParticipants' => 'groups()->addParticipants()',
+        'removeGroupParticipants' => 'groups()->removeParticipants()',
+        'updateGroup' => 'groups()->rename()',
+        'leaveGroup' => 'groups()->leave()',
+        'listChannelIgnoredGroups' => 'groups()->ignored()',
+
+        'createCampaign' => 'campaigns()->create()',
+        'listCampaigns' => 'campaigns()->list()',
+        'getCampaign' => 'campaigns()->find()',
+        'updateCampaign' => 'campaigns()->update()',
+        'deleteCampaign' => 'campaigns()->delete()',
+        'setCampaignAudience' => 'campaigns()->setAudience()',
+        'dryRunCampaign' => 'campaigns()->dryRun()',
+        'previewCampaignAudience' => 'campaigns()->previewAudience()',
+        'launchCampaign' => 'campaigns()->launch()',
+        'pauseCampaign' => 'campaigns()->pause()',
+        'resumeCampaign' => 'campaigns()->resume()',
+        'cancelCampaign' => 'campaigns()->cancel()',
+        'listCampaignRecipients' => 'campaigns()->recipients()',
+
+        'createScheduledSend' => 'scheduledSends()->create()',
+        'listScheduledSends' => 'scheduledSends()->list()',
+        'getScheduledSend' => 'scheduledSends()->find()',
+        'updateScheduledSend' => 'scheduledSends()->update()',
+        'cancelScheduledSend' => 'scheduledSends()->cancel()',
+
+        'listChannelHealth' => 'health()->list()',
+        'getChannelHealth' => 'health()->find()',
+        'getChannelHealthHistory' => 'health()->history()',
+
+        'listAlerts' => 'alerts()->list()',
+        'getAlert' => 'alerts()->find()',
+        'acknowledgeAlert' => 'alerts()->acknowledge()',
+        'resolveAlert' => 'alerts()->resolve()',
+        'listAlertSubscriptions' => 'alerts()->subscriptions()',
+        'createAlertSubscription' => 'alerts()->subscribe()',
+        'updateAlertSubscription' => 'alerts()->updateSubscription()',
+        'deleteAlertSubscription' => 'alerts()->unsubscribe()',
+
+        'uploadContactImport' => 'contactImports()->upload()',
+        'previewContactImport' => 'contactImports()->preview()',
+        'startContactImport' => 'contactImports()->start()',
+        'cancelContactImport' => 'contactImports()->cancel()',
+        'getContactImport' => 'contactImports()->find()',
+        'listContactImports' => 'contactImports()->list()',
+        'getContactImportReport' => 'contactImports()->report()',
+        'createContactExport' => 'contactExports()->create()',
+        'listContactExports' => 'contactExports()->list()',
+        'getContactExport' => 'contactExports()->find()',
+        'downloadContactExport' => 'contactExports()->download()',
+
+        'getAnalyticsOverview' => 'analytics()->overview()',
+        'getAnalyticsTimeseries' => 'analytics()->timeseries()',
+        'getAnalyticsBreakdown' => 'analytics()->breakdown()',
+        'getAnalyticsHeatmap' => 'analytics()->heatmap()',
+        'getAnalyticsCampaignReport' => 'analytics()->campaign()',
+        'createAnalyticsExport' => 'analytics()->export()',
+        'listAnalyticsExports' => 'analytics()->exports()',
+        'getAnalyticsExport' => 'analytics()->findExport()',
+        'downloadAnalyticsExport' => 'analytics()->download()',
     ];
 
     /**
@@ -149,41 +254,28 @@ final class Contract
         'getMyOrganizationUsage' => 'console "My company" — no integration use case yet',
         'updateMyOrganization' => 'console "My company" requisites — needs billing:manage',
 
-        // Round 8 (ADR-0082/0084, ADR-0061 §10). These ARE integration surface —
-        // a host records consent (source host_api), writes typed contact fields
-        // and previews a send — but the wrappers are not written yet. Listed
-        // here so the gap is visible, not forgotten; tracked as a follow-up.
-        'checkSendPolicy' => 'not wrapped yet — send-policy dry run (follow-up)',
-        'listContactConsents' => 'not wrapped yet — contact consent (follow-up)',
-        'grantContactConsent' => 'not wrapped yet — contact consent, source host_api (follow-up)',
-        'revokeContactConsent' => 'not wrapped yet — contact consent (follow-up)',
-        'getContactFields' => 'not wrapped yet — typed contact fields (follow-up)',
-        'setContactFields' => 'not wrapped yet — typed contact fields (follow-up)',
-        'listContactFields' => 'console field schema editor; read side not wrapped yet (follow-up)',
+        // Round 8 (ADR-0061 §10). The field SCHEMA is edited in the console;
+        // a host reads it (contacts()->fieldDefinitions()) and writes values.
         'putContactField' => 'console field schema editor — settings:manage',
         'deleteContactField' => 'console field schema editor — settings:manage',
 
         // Round 9 (ADR-0069, ADR-0089, ADR-0090).
         'streamEvents' => 'realtime SSE for the console/session (ADR-0069); a server-side host has no use for it yet',
         'streamEmbedEvents' => 'widget-side realtime stream, embed token',
-        'listContactMergeProposals' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'getContactMergeProposal' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'dismissContactMergeProposal' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'mergeContacts' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'listContactMerges' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'getContactMerge' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'undoContactMerge' => 'not wrapped yet — contact merge, integration surface (follow-up #9)',
-        'uploadContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'previewContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'startContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'cancelContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'getContactImport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'listContactImports' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'getContactImportReport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'createContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'listContactExports' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'getContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
-        'downloadContactExport' => 'not wrapped yet — contact import/export jobs, integration surface (follow-up #9)',
+        // Contact merge (ADR-0090): deciding that two contacts are one person is
+        // a human judgement over both records, made in the console's merge
+        // review — the platform itself never merges on a guess, and the undo is
+        // time-boxed. A host that could merge unattended would be exactly the
+        // guessing the design rules out; hosts link their own records with
+        // hostRefs instead. Wrap it when a host needs to show proposals, not
+        // before.
+        'listContactMergeProposals' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        'getContactMergeProposal' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        'dismissContactMergeProposal' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        'mergeContacts' => 'console merge review (ADR-0090) — an unattended host merge is the guess the design rules out',
+        'listContactMerges' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        'getContactMerge' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        'undoContactMerge' => 'console merge review (ADR-0090) — time-boxed undo of a person\'s decision',
 
         // Round 10 (ADR-0062/0063/0064/0065/0092/0093).
         'listBitrixPortals' => 'Bitrix24 host surface (ADR-0093) — called by the portal page or the console',
@@ -194,52 +286,12 @@ final class Contract
         'confirmBitrixUserLink' => 'Bitrix24 host surface (ADR-0093) — called by the portal page or the console',
         'listAiRuns' => 'console AI settings (ADR-0064)',
         'testAiProvider' => 'console AI settings (ADR-0064)',
-        'createCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listCampaigns' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'updateCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'deleteCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'setCampaignAudience' => 'not wrapped yet — integration surface (follow-up #9)',
-        'launchCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'pauseCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'resumeCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'cancelCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listCampaignRecipients' => 'not wrapped yet — integration surface (follow-up #9)',
-        'createScheduledSend' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listScheduledSends' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getScheduledSend' => 'not wrapped yet — integration surface (follow-up #9)',
-        'updateScheduledSend' => 'not wrapped yet — integration surface (follow-up #9)',
-        'cancelScheduledSend' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listChannelHealth' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getChannelHealth' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getChannelHealthHistory' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listAlerts' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAlert' => 'not wrapped yet — integration surface (follow-up #9)',
-        'acknowledgeAlert' => 'not wrapped yet — integration surface (follow-up #9)',
-        'resolveAlert' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listAlertSubscriptions' => 'not wrapped yet — integration surface (follow-up #9)',
-        'createAlertSubscription' => 'not wrapped yet — integration surface (follow-up #9)',
-        'updateAlertSubscription' => 'not wrapped yet — integration surface (follow-up #9)',
-        'deleteAlertSubscription' => 'not wrapped yet — integration surface (follow-up #9)',
         'listAlertRules' => 'console alert rules (ADR-0065) — settings:manage',
         'putAlertRule' => 'console alert rules (ADR-0065) — settings:manage',
         'resetAlertRule' => 'console alert rules (ADR-0065) — settings:manage',
-        'listChannelTemplates' => 'not wrapped yet — integration surface (follow-up #9)',
-        'syncChannelTemplates' => 'not wrapped yet — integration surface (follow-up #9)',
-        'sendConversationMessage' => 'not wrapped yet — integration surface (follow-up #9)',
-        'checkConversationSendPolicy' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listConversationParticipants' => 'not wrapped yet — integration surface (follow-up #9)',
 
         // Round 11 (ADR-0066/0067/0068/0094/0096).
-        'listChannelIgnoredGroups' => 'not wrapped yet — integration surface (follow-up #9)',
-        'createGroup' => 'not wrapped yet — integration surface (follow-up #9)',
-        'addGroupParticipants' => 'not wrapped yet — integration surface (follow-up #9)',
-        'removeGroupParticipants' => 'not wrapped yet — integration surface (follow-up #9)',
-        'updateGroup' => 'not wrapped yet — integration surface (follow-up #9)',
-        'leaveGroup' => 'not wrapped yet — integration surface (follow-up #9)',
         'testAiGuard' => 'console AI guard settings (ADR-0068) — settings:manage',
-        'getContactAiProfile' => 'not wrapped yet — integration surface (follow-up #9)',
-        'fillContactAiProfile' => 'not wrapped yet — integration surface (follow-up #9)',
         'listComplianceScans' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
         'startComplianceScan' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
         'getComplianceScan' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
@@ -247,17 +299,6 @@ final class Contract
         'listComplianceFindings' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
         'getComplianceFinding' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
         'actOnComplianceFinding' => 'console compliance review (ADR-0067) — a supervisor or admin reviews findings',
-        'getAnalyticsOverview' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAnalyticsTimeseries' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAnalyticsBreakdown' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAnalyticsHeatmap' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAnalyticsCampaignReport' => 'not wrapped yet — integration surface (follow-up #9)',
-        'createAnalyticsExport' => 'not wrapped yet — integration surface (follow-up #9)',
-        'listAnalyticsExports' => 'not wrapped yet — integration surface (follow-up #9)',
-        'getAnalyticsExport' => 'not wrapped yet — integration surface (follow-up #9)',
-        'downloadAnalyticsExport' => 'not wrapped yet — integration surface (follow-up #9)',
-        'dryRunCampaign' => 'not wrapped yet — integration surface (follow-up #9)',
-        'previewCampaignAudience' => 'not wrapped yet — integration surface (follow-up #9)',
         'getBitrixConnector' => 'Bitrix24 connector settings (ADR-0094) — called by the console',
         'updateBitrixConnector' => 'Bitrix24 connector settings (ADR-0094) — called by the console',
         'listBitrixOpenLines' => 'Bitrix24 connector settings (ADR-0094) — called by the console',
@@ -272,6 +313,7 @@ final class Contract
         'listBitrixLineRequests' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
         'createBitrixOpenLine' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
         'resolveEmbedAgentCrmCard' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'createEmbedAgentCrmContact' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'listEmbedAgentContactMessages' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'sendEmbedAgentMessage' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
         'checkEmbedAgentSendPolicy' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
@@ -636,6 +678,18 @@ function contractDrivers(): array
                 ['text' => 'hello'],
                 channelId: 'ch-1',
                 replyTo: 'm-0',
+                acknowledgedWarnings: ['policy.contact_frequency'],
+                template: new SendTemplate('order_update', 'uk', ['A-17']),
+            ),
+        ],
+        'checkSendPolicy' => [
+            'call' => fn () => Linqelio::messages()->check(
+                'c-1',
+                MessageType::Text,
+                ['text' => 'hello'],
+                channelId: 'ch-1',
+                replyTo: 'm-0',
+                template: new SendTemplate('order_update', 'uk', ['A-17']),
             ),
         ],
         'listContactMessages' => [
@@ -670,7 +724,353 @@ function contractDrivers(): array
         'createEmbedSession' => [
             'call' => fn (): array => Linqelio::embed()->session('c-1', ['read', 'write'], 'cv-1'),
         ],
+
+        'listContactConsents' => [
+            'call' => fn (): array => Linqelio::contacts()->consents('c-1'),
+            'paged' => true,
+        ],
+        'grantContactConsent' => [
+            'call' => fn () => Linqelio::contacts()->grantConsent('c-1', 'ch-1', 'crm-form-12'),
+        ],
+        'revokeContactConsent' => [
+            'call' => fn () => Linqelio::contacts()->revokeConsent('c-1', 'ch-1'),
+        ],
+        'getContactFields' => [
+            'call' => fn () => Linqelio::contacts()->fields('c-1'),
+        ],
+        'setContactFields' => [
+            'call' => fn () => Linqelio::contacts()->setFields('c-1', ['tier' => 'gold', 'old' => null]),
+        ],
+        'listContactFields' => [
+            'call' => fn (): array => Linqelio::contacts()->fieldDefinitions(),
+            'paged' => true,
+        ],
+        'getContactAiProfile' => [
+            'call' => fn () => Linqelio::contacts()->aiProfile('c-1'),
+        ],
+        'fillContactAiProfile' => [
+            'call' => fn () => Linqelio::contacts()->fillAiProfile('c-1'),
+        ],
+
+        'sendConversationMessage' => [
+            'call' => fn () => Linqelio::conversations()->send(
+                'cv-1',
+                MessageType::Text,
+                ['text' => 'hello'],
+                channelId: 'ch-1',
+                replyTo: 'm-0',
+                idempotencyKey: 'k-1',
+                acknowledgedWarnings: [],
+                template: new SendTemplate('order_update', 'uk'),
+            ),
+        ],
+        'checkConversationSendPolicy' => [
+            'call' => fn () => Linqelio::conversations()->check(
+                'cv-1',
+                MessageType::Text,
+                ['text' => 'hello'],
+                channelId: 'ch-1',
+                replyTo: 'm-0',
+                template: new SendTemplate('order_update', 'uk'),
+            ),
+        ],
+        'listConversationParticipants' => [
+            'call' => fn (): array => Linqelio::conversations()->participants('cv-1'),
+            'paged' => true,
+        ],
+
+        'listChannelTemplates' => [
+            'call' => fn (): array => Linqelio::channels()->templates('ch-1')->templates,
+            'paged' => true,
+        ],
+        'syncChannelTemplates' => [
+            'call' => fn () => Linqelio::channels()->syncTemplates('ch-1'),
+        ],
+
+        'createGroup' => [
+            'call' => fn () => Linqelio::groups()->create('ch-1', 'Team', ['c-1', 'c-2']),
+        ],
+        'addGroupParticipants' => [
+            'call' => fn () => Linqelio::groups()->addParticipants('cv-1', ['c-3']),
+        ],
+        'removeGroupParticipants' => [
+            'call' => fn () => Linqelio::groups()->removeParticipants('cv-1', ['380500000000']),
+        ],
+        'updateGroup' => [
+            'call' => fn () => Linqelio::groups()->rename('cv-1', 'New name'),
+        ],
+        'leaveGroup' => [
+            'call' => fn () => Linqelio::groups()->leave('cv-1'),
+        ],
+        'listChannelIgnoredGroups' => [
+            'call' => fn (): array => Linqelio::groups()->ignored('ch-1')->groups,
+            'paged' => true,
+        ],
+
+        'createCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->create(contractCampaignInput()),
+        ],
+        'listCampaigns' => [
+            'call' => fn (): array => Linqelio::campaigns()->list(CampaignStatus::Running, 'cur-2', 25)['campaigns'],
+            'paged' => true,
+        ],
+        'getCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->find('cmp-1'),
+        ],
+        'updateCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->update('cmp-1', contractCampaignInput()),
+        ],
+        'deleteCampaign' => [
+            'call' => fn (): bool => Linqelio::campaigns()->delete('cmp-1'),
+        ],
+        'setCampaignAudience' => [
+            'call' => fn () => Linqelio::campaigns()->setAudience('cmp-1', contractAudience()),
+        ],
+        'dryRunCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->dryRun('cmp-1'),
+        ],
+        'previewCampaignAudience' => [
+            'call' => fn () => Linqelio::campaigns()->previewAudience(['ch-1'], contractAudience()),
+        ],
+        'launchCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->launch('cmp-1'),
+        ],
+        'pauseCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->pause('cmp-1'),
+        ],
+        'resumeCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->resume('cmp-1'),
+        ],
+        'cancelCampaign' => [
+            'call' => fn () => Linqelio::campaigns()->cancel('cmp-1'),
+        ],
+        'listCampaignRecipients' => [
+            'call' => fn (): array => Linqelio::campaigns()->recipients(
+                'cmp-1',
+                CampaignRecipientState::Failed,
+                'cur-2',
+                25,
+            )['recipients'],
+            'paged' => true,
+        ],
+
+        'createScheduledSend' => [
+            'call' => fn () => Linqelio::scheduledSends()->create(
+                'c-1',
+                new DateTimeImmutable('2026-10-01T09:00:00+03:00'),
+                MessageType::Text,
+                ['text' => 'hello'],
+                channelId: 'ch-1',
+                replyTo: 'm-0',
+                idempotencyKey: 'k-1',
+            ),
+        ],
+        'listScheduledSends' => [
+            'call' => fn (): array => Linqelio::scheduledSends()->list(
+                'c-1',
+                ScheduledSendStatus::Scheduled,
+                'cur-2',
+                25,
+            )['scheduledSends'],
+            'paged' => true,
+        ],
+        'getScheduledSend' => [
+            'call' => fn () => Linqelio::scheduledSends()->find('s-1'),
+        ],
+        'updateScheduledSend' => [
+            'call' => fn () => Linqelio::scheduledSends()->update(
+                's-1',
+                new DateTimeImmutable('2026-10-02T09:00:00+03:00'),
+                MessageType::Text,
+                ['text' => 'later'],
+            ),
+        ],
+        'cancelScheduledSend' => [
+            'call' => fn () => Linqelio::scheduledSends()->cancel('s-1'),
+        ],
+
+        'listChannelHealth' => [
+            'call' => fn (): array => Linqelio::health()->list(),
+            'paged' => true,
+        ],
+        'getChannelHealth' => [
+            'call' => fn () => Linqelio::health()->find('ch-1'),
+        ],
+        'getChannelHealthHistory' => [
+            'call' => fn (): array => Linqelio::health()->history('ch-1', new DateTimeImmutable('2026-09-01T00:00:00Z'), 100),
+            'paged' => true,
+        ],
+
+        'listAlerts' => [
+            'call' => fn (): array => Linqelio::alerts()->list(AlertStatus::Open, 'ch-1', 'cur-2', 25)['alerts'],
+            'paged' => true,
+        ],
+        'getAlert' => [
+            'call' => fn () => Linqelio::alerts()->find('al-1'),
+        ],
+        'acknowledgeAlert' => [
+            'call' => fn () => Linqelio::alerts()->acknowledge('al-1'),
+        ],
+        'resolveAlert' => [
+            'call' => fn () => Linqelio::alerts()->resolve('al-1'),
+        ],
+        'listAlertSubscriptions' => [
+            'call' => fn (): array => Linqelio::alerts()->subscriptions(),
+            'paged' => true,
+        ],
+        'createAlertSubscription' => [
+            'call' => fn () => Linqelio::alerts()->subscribe(
+                AlertDeliveryChannel::Webhook,
+                webhookId: 'wh-1',
+                role: 'admin',
+                minSeverity: AlertSeverity::Warning,
+                ruleTypes: [AlertType::ChannelDisconnected],
+                channelIds: ['ch-1'],
+                enabled: true,
+            ),
+        ],
+        'updateAlertSubscription' => [
+            'call' => fn () => Linqelio::alerts()->updateSubscription(
+                'sub-1',
+                AlertSeverity::Critical,
+                [AlertType::ChannelHealthLow],
+                ['ch-1'],
+                false,
+            ),
+        ],
+        'deleteAlertSubscription' => [
+            'call' => fn () => Linqelio::alerts()->unsubscribe('sub-1'),
+        ],
+
+        'uploadContactImport' => [
+            'call' => fn () => Linqelio::contactImports()->upload("phone\n380500000000\n", 'customers.csv'),
+        ],
+        'previewContactImport' => [
+            'call' => fn () => Linqelio::contactImports()->preview('job-1', contractMapping(), 20),
+        ],
+        'startContactImport' => [
+            'call' => fn () => Linqelio::contactImports()->start('job-1', contractMapping()),
+        ],
+        'cancelContactImport' => [
+            'call' => fn () => Linqelio::contactImports()->cancel('job-1'),
+        ],
+        'getContactImport' => [
+            'call' => fn () => Linqelio::contactImports()->find('job-1'),
+        ],
+        'listContactImports' => [
+            'call' => fn (): array => Linqelio::contactImports()->list(),
+            'paged' => true,
+        ],
+        'getContactImportReport' => [
+            'call' => fn () => Linqelio::contactImports()->report('job-1'),
+        ],
+        'createContactExport' => [
+            'call' => fn () => Linqelio::contactExports()->create(new ContactExportFilter(
+                tags: ['vip'],
+                channelIds: ['ch-1'],
+                fields: ['tier' => 'gold'],
+                status: ContactStatus::Active,
+            )),
+        ],
+        'listContactExports' => [
+            'call' => fn (): array => Linqelio::contactExports()->list(),
+            'paged' => true,
+        ],
+        'getContactExport' => [
+            'call' => fn () => Linqelio::contactExports()->find('exp-1'),
+        ],
+        'downloadContactExport' => [
+            'call' => fn () => Linqelio::contactExports()->download('exp-1'),
+        ],
+
+        'getAnalyticsOverview' => [
+            'call' => fn () => Linqelio::analytics()->overview('2026-09-01', '2026-09-30', 'ch-1'),
+        ],
+        'getAnalyticsTimeseries' => [
+            'call' => fn () => Linqelio::analytics()->timeseries(
+                AnalyticsMetric::MessagesOut,
+                AnalyticsGranularity::Day,
+                new DateTimeImmutable('2026-09-01'),
+                '2026-09-30',
+                'ch-1',
+            ),
+        ],
+        'getAnalyticsBreakdown' => [
+            'call' => fn () => Linqelio::analytics()->breakdown(AnalyticsBreakdownBy::Channel, '2026-09-01', '2026-09-30', 'ch-1'),
+        ],
+        'getAnalyticsHeatmap' => [
+            'call' => fn () => Linqelio::analytics()->heatmap(MessageDirection::Inbound, '2026-09-01', '2026-09-30', 'ch-1'),
+        ],
+        'getAnalyticsCampaignReport' => [
+            'call' => fn () => Linqelio::analytics()->campaign('cmp-1'),
+        ],
+        'createAnalyticsExport' => [
+            'call' => fn () => Linqelio::analytics()->export(new AnalyticsExportRequest(
+                report: AnalyticsReportKind::Timeseries,
+                format: AnalyticsExportFormat::Xlsx,
+                from: '2026-09-01',
+                to: '2026-09-30',
+                channelId: 'ch-1',
+                metric: AnalyticsMetric::MessagesOut,
+                granularity: AnalyticsGranularity::Week,
+                by: AnalyticsBreakdownBy::Channel,
+                campaignId: 'cmp-1',
+            )),
+        ],
+        'listAnalyticsExports' => [
+            'call' => fn (): array => Linqelio::analytics()->exports(),
+            'paged' => true,
+        ],
+        'getAnalyticsExport' => [
+            'call' => fn () => Linqelio::analytics()->findExport('ax-1'),
+        ],
+        'downloadAnalyticsExport' => [
+            'call' => fn () => Linqelio::analytics()->download('ax-1'),
+        ],
     ];
+}
+
+/**
+ * A campaign draft with every member set, so the body gate sees them all.
+ */
+function contractCampaignInput(): CampaignInput
+{
+    return new CampaignInput(
+        name: 'Autumn sale',
+        channelIds: ['ch-1', 'ch-2'],
+        content: CampaignContent::template(new CampaignTemplate(
+            name: 'sale',
+            language: 'uk',
+            params: [CampaignTemplateParam::contactName('friend'), CampaignTemplateParam::literal('20%')],
+        )),
+        audience: contractAudience(),
+        startAt: new DateTimeImmutable('2026-10-01T09:00:00+03:00'),
+        timeZone: 'Europe/Kyiv',
+        window: new CampaignWindow('09:00', '20:00'),
+        ratePerMinute: 30,
+        maxAttempts: 3,
+    );
+}
+
+function contractAudience(): CampaignAudience
+{
+    return new CampaignAudience(
+        contactIds: ['c-1'],
+        tags: ['vip'],
+        fields: ['tier' => 'gold'],
+        status: 'active',
+        all: true,
+    );
+}
+
+function contractMapping(): ImportMapping
+{
+    return new ImportMapping(
+        ImportColumn::identity(0, ChannelKind::WaWeb),
+        ImportColumn::hostRef(1, 'crm'),
+        ImportColumn::field(2, 'tier'),
+        ImportColumn::consent(3, 'ch-1'),
+    );
 }
 
 /**

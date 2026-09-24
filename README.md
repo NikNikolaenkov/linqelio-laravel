@@ -130,6 +130,114 @@ fetch above streams the bytes under your key, and sets `nosniff` — the content
 type comes from whoever sent the file, so serving it unguarded on your own
 origin is how an attachment claiming to be HTML ends up executing there.
 
+### Check → confirm → send
+
+Send policy can hold a message back — a rate limit, a frequency rule, business
+hours, missing consent — or let it through with a warning somebody should see.
+Ask it first; the check sends nothing and consumes nothing, so it is safe to
+call while an operator is still typing:
+
+```php
+use Linqelio\Laravel\Data\Enums\MessageType;
+use Linqelio\Laravel\Exceptions\PolicyException;
+
+$content = ['text' => 'Your order has shipped'];
+
+// 1. Check.
+$check = Linqelio::messages()->check($contactId, MessageType::Text, $content);
+
+if (! $check->sendable) {
+    // deny or defer: $check->blockers() say why, $check->retryAt when
+    return back()->withErrors(array_map(fn ($f) => $f->message(), $check->blockers()));
+}
+
+// 2. Confirm: show $check->warnings() and let somebody agree.
+if ($check->needsConfirmation() && ! $request->boolean('confirmed')) {
+    return view('confirm-send', ['warnings' => $check->warnings()]);
+}
+
+// 3. Send, acknowledging exactly the warnings that were shown.
+try {
+    Linqelio::messages()->send($contactId, MessageType::Text, $content,
+        acknowledgedWarnings: $check->warningKeys);
+} catch (PolicyException $e) {
+    if ($e->needsConfirmation()) {
+        // A warning appeared between check and send. Nothing was sent;
+        // $e->findings() are the new ones — show them and ask again.
+    }
+}
+```
+
+`acknowledgedWarnings` makes it a *confirmed* send: it goes out only if every
+warning policy raises at that moment was acknowledged. An empty array confirms
+"no warnings". Leave the argument out for an unconfirmed send, where warnings
+never block and come back on the result's `policyWarnings`.
+
+A finding's `code` is a message key to localise with its `params`; `message()`
+falls back to the platform's English `detail` for a code you do not know. A
+verdict newer than this package reads as `deny`.
+
+WhatsApp Business templates — the one thing a `wa_cloud` channel may send
+outside the 24-hour window — go through the same path:
+
+```php
+$templates = Linqelio::channels()->templates($channelId);   // as of the last sync
+$template = $templates->find('order_update', 'uk');
+
+Linqelio::messages()->sendTemplate($contactId, $template->toSend(['A-17', 'Olena']));
+
+Linqelio::channels()->syncTemplates($channelId);   // after a template was approved
+```
+
+### Consent
+
+Consent is per channel. While a cabinet enforces it, a send on a channel
+without an active consent is refused with `policy.consent_missing`. Record it
+from the place the person actually said yes:
+
+```php
+Linqelio::contacts()->grantConsent($contactId, $channelId, evidence: "crm-form-{$form->id}");
+Linqelio::contacts()->revokeConsent($contactId, $channelId);
+
+foreach (Linqelio::contacts()->consents($contactId) as $consent) {
+    $consent->status;   // granted | revoked | missing
+    $consent->source;   // host_api for anything recorded through this package
+}
+```
+
+The source is not an argument: the platform records who called, and an API key
+is `host_api`. `evidence` is a reference (a form id, a CRM record), never
+personal data. Both calls are idempotent — `changed` is false on a repeat — but
+a grant lifts an earlier revocation, so call it only when the person said yes
+again.
+
+### Typed contact fields
+
+```php
+Linqelio::contacts()->fieldDefinitions();   // the cabinet's schema: key, type, options
+
+$result = Linqelio::contacts()->setFields($contactId, ['tier' => 'gold', 'old_note' => null]);
+$result->applied;   // ['tier']
+$result->cleared;   // ['old_note']
+$result->kept;      // fields a PERSON set, which a host write does not overwrite
+
+$values = Linqelio::contacts()->fields($contactId);
+$values->get('tier');
+$values->origin('tier')->source;   // host
+```
+
+Writes are recorded as `host`. Authority runs `human > host > platform > ai`: a
+value an operator corrected by hand is kept, reported in `kept`, and not an
+error. An invalid value fails the whole write with `contact.field_invalid`;
+`ContactException::errors()` names each field and why.
+
+The AI questionnaire fills fields too, and never over anybody else's value:
+
+```php
+Linqelio::contacts()->aiProfile($contactId);       // fields, summary, last run
+Linqelio::contacts()->fillAiProfile($contactId);   // queue a run now (idempotent)
+```
+
 ## Receiving
 
 Register `https://your-app.test/linqelio/webhook` with Linqelio, put the same
@@ -249,6 +357,143 @@ store. Passing a `secret://…` string as `secret` is refused rather than sent,
 because the platform would store and sign with it literally, and every delivery
 would then fail verification here for a reason nothing in the logs explains.
 
+## Conversations and groups
+
+A group is a conversation, not a contact, so a contact send cannot reach it:
+
+```php
+Linqelio::conversations()->send($conversationId, MessageType::Text, ['text' => 'Hi all']);
+Linqelio::conversations()->check($conversationId, MessageType::Text, ['text' => 'Hi all']);
+Linqelio::conversations()->participants($conversationId);   // role, joinedAt, leftAt
+
+$change = Linqelio::groups()->create($channelId, 'Project team', [$contactA, $contactB]);
+Linqelio::groups()->addParticipants($change->conversationId, [$contactC]);
+Linqelio::groups()->removeParticipants($change->conversationId, [$providerId]);
+Linqelio::groups()->rename($change->conversationId, 'Project team (2026)');
+Linqelio::groups()->leave($change->conversationId);
+Linqelio::groups()->ignored($channelId);   // groups a number is in while groups are off
+```
+
+Group changes happen on the messenger and can be partial: check
+`$change->failed` (who, and why) rather than assuming everyone is in.
+
+## Scheduled sends
+
+One message to one contact, held by the platform until its moment — it survives
+your deploys and queue outages, and an operator can see and cancel it:
+
+```php
+$scheduled = Linqelio::scheduledSends()->create($contactId, $booking->remindAt,
+    MessageType::Text, ['text' => 'See you tomorrow'],
+    idempotencyKey: "booking-{$booking->id}-reminder");
+
+Linqelio::scheduledSends()->update($scheduled->id, sendAt: $newTime);
+Linqelio::scheduledSends()->cancel($scheduled->id);
+Linqelio::scheduledSends()->list(contactId: $contactId);
+```
+
+## Campaigns
+
+One message to an audience, paced by send policy — a limit reschedules a
+recipient instead of failing it, and a recipient without consent is skipped.
+Launch requires a dry run newer than the draft's last change:
+
+```php
+use Linqelio\Laravel\Data\Campaigns\{CampaignAudience, CampaignContent, CampaignInput};
+
+$draft = Linqelio::campaigns()->create(new CampaignInput(
+    name: 'Autumn sale',
+    channelIds: [$channelId],
+    content: CampaignContent::text('20% off this week'),
+    audience: CampaignAudience::tagged(['vip']),
+));
+
+$run = Linqelio::campaigns()->dryRun($draft->id);
+// $run->audience->matched, $run->blocked (who is skipped, why), $run->estimate,
+// $run->problems (why it would not launch)
+
+if ($run->launchable) {
+    $launch = Linqelio::campaigns()->launch($draft->id);   // snapshot: $launch->recipients
+}
+
+Linqelio::campaigns()->pause($draft->id);
+Linqelio::campaigns()->resume($draft->id);
+Linqelio::campaigns()->recipients($draft->id, CampaignRecipientState::Failed);
+```
+
+`CampaignAudience::everyone()` is the only way to address every reachable
+contact — an empty audience is nobody. Before a draft exists,
+`previewAudience($channelIds, $audience)` gives the live count. Template
+campaigns take per-recipient parameters:
+`CampaignTemplateParam::contactName('friend')`, `::contactField('city')`,
+`::literal('20%')`.
+
+## Channel health and alerts
+
+```php
+Linqelio::health()->list();                        // score, rating, explanation
+Linqelio::health()->history($channelId, now()->subWeek());
+
+Linqelio::alerts()->list('active');                // open + acknowledged
+Linqelio::alerts()->acknowledge($alertId);
+Linqelio::alerts()->resolve($alertId);
+```
+
+Route alerts to the webhook your other events already use:
+
+```php
+Linqelio::alerts()->subscribe(AlertDeliveryChannel::Webhook,
+    webhookId: $webhookId, minSeverity: AlertSeverity::Warning);
+```
+
+A `rating` newer than this package reads as `unknown`, and an alert of a type it
+does not know keeps its raw `typeValue` with `type` null — never a crash.
+
+## Contact import and export
+
+```php
+$job = Linqelio::contactImports()->upload($csv, 'customers.csv');
+
+$mapping = new ImportMapping(
+    ImportColumn::identity($job->columnOf('phone'), ChannelKind::WaWeb),
+    ImportColumn::hostRef($job->columnOf('id'), 'crm'),
+    ImportColumn::consent($job->columnOf('opt_in'), $channelId),
+);
+
+Linqelio::contactImports()->preview($job->id, $mapping);   // nothing written
+Linqelio::contactImports()->start($job->id, $mapping);
+// poll find($job->id) until $job->status->isFinished(), then:
+Linqelio::contactImports()->report($job->id)->save(storage_path('import-report.csv'));
+
+$export = Linqelio::contactExports()->create(new ContactExportFilter(tags: ['vip']));
+// poll find($export->id) until $export->status->isReady(), then:
+return Linqelio::contactExports()->download($export->id)->toResponse(download: true);
+```
+
+An import needs a `consent` column: it is how a cabinet brings in people it may
+message, and it has to say on whose word.
+
+## Analytics
+
+```php
+$overview = Linqelio::analytics()->overview('2026-09-01', '2026-09-30');
+$overview->kpi(AnalyticsMetric::DeliveryRate)?->value;   // null = nothing to measure, not 0
+
+Linqelio::analytics()->timeseries(AnalyticsMetric::MessagesOut, AnalyticsGranularity::Day);
+Linqelio::analytics()->breakdown(AnalyticsBreakdownBy::Channel);
+Linqelio::analytics()->heatmap(MessageDirection::Inbound);
+Linqelio::analytics()->campaign($campaignId)->funnel;    // recipients → sent → read → replied
+
+$export = Linqelio::analytics()->export(
+    AnalyticsExportRequest::breakdown(AnalyticsBreakdownBy::Agent, AnalyticsExportFormat::Xlsx)
+        ->between('2026-09-01', '2026-09-30'),
+);
+Linqelio::analytics()->download($export->id);   // once it is ready
+```
+
+Numbers are computed in passes: `$overview->lastPassAt` says how fresh they are,
+and `backfill` whether history before the install is still being filled in.
+
 ## Erasing a person
 
 When someone asks to be deleted, one call removes them:
@@ -348,6 +593,16 @@ try {
     report($e);
 }
 ```
+
+Each error domain has its family: `ValidationException`, `AuthException`,
+`TenancyException`, `ChannelException`, `PolicyException`, `MessageException`,
+`ContactException`, `IdempotencyException`, `EmbedException`,
+`ProviderException`, and for the newer surfaces `CampaignException` (campaigns
+and scheduled sends), `AlertException`, `TemplateException`,
+`AnalyticsException`, `AiException` and `ConversationException` (conversations
+and groups). `ValidationException`, `ContactException` and `CampaignException`
+carry `errors()` — field => reason — for `validation.*`,
+`contact.field_invalid` and `campaign.invalid`.
 
 Switch on `$e->errorCode()`, not on HTTP status or message text. The registry is
 additive — codes are never reassigned — so matching one is safe across versions,

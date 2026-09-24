@@ -40,6 +40,12 @@ final class ExceptionFactory
             'contact' => new ContactException($message, $code, $status, $problem, $requestId),
             'embed' => new EmbedException($message, $code, $status, $problem, $requestId),
             'provider' => new ProviderException($message, $code, $status, $problem, $requestId),
+            'campaign', 'scheduled_send' => new CampaignException($message, $code, $status, $problem, $requestId),
+            'alert' => new AlertException($message, $code, $status, $problem, $requestId),
+            'template' => new TemplateException($message, $code, $status, $problem, $requestId),
+            'analytics' => new AnalyticsException($message, $code, $status, $problem, $requestId),
+            'ai' => new AiException($message, $code, $status, $problem, $requestId),
+            'conversation', 'group' => new ConversationException($message, $code, $status, $problem, $requestId),
             default => new LinqelioException($message, $code, $status, $problem, $requestId),
         };
     }

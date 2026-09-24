@@ -9,6 +9,45 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Check → confirm → send** (#9, ADR-0082). `messages()->check()` asks send
+  policy about a message without sending it and returns a `SendPolicyCheck` —
+  verdict, every finding, the current limits, and the `warningKeys` to
+  confirm. `messages()->send()` takes `acknowledgedWarnings` for a confirmed
+  send and `template` for a WhatsApp Business template (`sendTemplate()` is the
+  shortcut); the returned `Message` carries the `policyWarnings` it went out
+  with. A confirmation that went stale raises `PolicyException` with
+  `needsConfirmation()` and the new `findings()`. A verdict newer than the
+  package reads as `deny`, as the contract requires.
+- **Consent** (#9, ADR-0084): `contacts()->consents()`, `grantConsent()` and
+  `revokeConsent()`. Recorded through an API key, the platform stores the source
+  as `host_api`.
+- **Typed contact fields** (#9, ADR-0061): `contacts()->fields()`,
+  `setFields()` (written as `host`; `kept` reports values a person set, which a
+  host write does not overwrite) and `fieldDefinitions()` for the schema.
+- The AI questionnaire: `contacts()->aiProfile()` and `fillAiProfile()`.
+- Conversations: `conversations()->send()` (the way into a group),
+  `check()` and `participants()`; groups under `Linqelio::groups()` — create,
+  add / remove participants, rename, leave, and the groups a number ignores.
+- WhatsApp Business templates: `channels()->templates()` and `syncTemplates()`.
+- `Linqelio::campaigns()` — drafts, audience, dry run, audience preview,
+  launch, pause, resume, cancel, recipients — with typed inputs
+  (`CampaignInput`, `CampaignContent`, `CampaignAudience`,
+  `CampaignTemplateParam`).
+- `Linqelio::scheduledSends()` — one message held until a later moment, with a
+  pinnable idempotency key.
+- `Linqelio::health()` (channel health, explained, and its history) and
+  `Linqelio::alerts()` (alerts, acknowledge / resolve, and subscriptions —
+  including routing alerts to a webhook).
+- `Linqelio::contactImports()` and `Linqelio::contactExports()` — CSV jobs,
+  mapping preview, per-row report and file download.
+- `Linqelio::analytics()` — overview, timeseries, breakdown, heatmap, campaign
+  funnel, and CSV / XLSX exports with download.
+- Exception families for the new domains: `CampaignException` (campaigns and
+  scheduled sends), `AlertException`, `TemplateException`,
+  `AnalyticsException`, `AiException`, `ConversationException` (conversations
+  and groups). Each extends `LinqelioException`, so existing `catch` blocks
+  keep catching them. `ContactException` and `CampaignException` carry
+  `errors()` like `ValidationException` does.
 - `channels()->delete()` retires a channel with everything it carried —
   conversations, their messages and attachments, outbound work still queued, and
   the inbox the channel owns on the operator desk. The platform grew the
@@ -29,6 +68,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   both forms over a user account and the voice form over a bot; a round frame
   degrades to a plain video there, because the Bot API will not take a URL for a
   video note.
+
+### Changed
+
+- The contact-merge operations stay unwrapped, now as a decision rather than a
+  gap: deciding that two contacts are one person belongs to a person in the
+  console's merge review, not to an unattended host.
+
+### Fixed
+
+- `ValidationException::errors()` read each entry's `message`, but the
+  contract names it `reason` — so every field came back empty-handed. It reads
+  `reason` now, and still falls back to `message`.
 
 ## [0.6.0] - 2026-08-31
 

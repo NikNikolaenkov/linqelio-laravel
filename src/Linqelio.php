@@ -5,12 +5,20 @@ declare(strict_types=1);
 namespace Linqelio\Laravel;
 
 use Linqelio\Laravel\Client\HttpClient;
+use Linqelio\Laravel\Resources\AlertsResource;
+use Linqelio\Laravel\Resources\AnalyticsResource;
+use Linqelio\Laravel\Resources\CampaignsResource;
 use Linqelio\Laravel\Resources\ChannelsResource;
+use Linqelio\Laravel\Resources\ContactExportsResource;
+use Linqelio\Laravel\Resources\ContactImportsResource;
 use Linqelio\Laravel\Resources\ContactsResource;
 use Linqelio\Laravel\Resources\ConversationsResource;
 use Linqelio\Laravel\Resources\EmbedResource;
+use Linqelio\Laravel\Resources\GroupsResource;
+use Linqelio\Laravel\Resources\HealthResource;
 use Linqelio\Laravel\Resources\MediaResource;
 use Linqelio\Laravel\Resources\MessagesResource;
+use Linqelio\Laravel\Resources\ScheduledSendsResource;
 use Linqelio\Laravel\Resources\WebhooksResource;
 
 /**
@@ -34,6 +42,22 @@ final class Linqelio
     private ?EmbedResource $embed = null;
 
     private ?WebhooksResource $webhooks = null;
+
+    private ?GroupsResource $groups = null;
+
+    private ?CampaignsResource $campaigns = null;
+
+    private ?ScheduledSendsResource $scheduledSends = null;
+
+    private ?HealthResource $health = null;
+
+    private ?AlertsResource $alerts = null;
+
+    private ?ContactImportsResource $contactImports = null;
+
+    private ?ContactExportsResource $contactExports = null;
+
+    private ?AnalyticsResource $analytics = null;
 
     public function __construct(private readonly HttpClient $client) {}
 
@@ -70,6 +94,46 @@ final class Linqelio
     public function webhooks(): WebhooksResource
     {
         return $this->webhooks ??= new WebhooksResource($this->client);
+    }
+
+    public function groups(): GroupsResource
+    {
+        return $this->groups ??= new GroupsResource($this->client);
+    }
+
+    public function campaigns(): CampaignsResource
+    {
+        return $this->campaigns ??= new CampaignsResource($this->client);
+    }
+
+    public function scheduledSends(): ScheduledSendsResource
+    {
+        return $this->scheduledSends ??= new ScheduledSendsResource($this->client);
+    }
+
+    public function health(): HealthResource
+    {
+        return $this->health ??= new HealthResource($this->client);
+    }
+
+    public function alerts(): AlertsResource
+    {
+        return $this->alerts ??= new AlertsResource($this->client);
+    }
+
+    public function contactImports(): ContactImportsResource
+    {
+        return $this->contactImports ??= new ContactImportsResource($this->client);
+    }
+
+    public function contactExports(): ContactExportsResource
+    {
+        return $this->contactExports ??= new ContactExportsResource($this->client);
+    }
+
+    public function analytics(): AnalyticsResource
+    {
+        return $this->analytics ??= new AnalyticsResource($this->client);
     }
 
     /**
