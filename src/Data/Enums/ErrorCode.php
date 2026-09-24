@@ -169,6 +169,11 @@ enum ErrorCode: string
     case CampaignDryRunRequired = 'campaign.dry_run_required';
     case BitrixPortalNotLive = 'bitrix.portal_not_live';
 
+    // Round 12: Bitrix24 CRM, the CRM card widget, the contact centre.
+    case BitrixCrmMappingInvalid = 'bitrix.crm_mapping_invalid';
+    case BitrixCrmEntityUnavailable = 'bitrix.crm_entity_unavailable';
+    case EmbedConversationUnsupported = 'embed.conversation_unsupported';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 

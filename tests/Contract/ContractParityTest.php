@@ -265,6 +265,25 @@ final class Contract
         'unbindBitrixChannelLine' => 'Bitrix24 connector settings (ADR-0094) — called by the console',
         'retryBitrixDeadLetters' => 'Bitrix24 connector settings (ADR-0094) — called by the console',
 
+        // Round 12 (ADR-0097/0099/0100).
+        'getBitrixCrmSettings' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
+        'updateBitrixCrmSettings' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
+        'listBitrixCrmFields' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
+        'listBitrixLineRequests' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
+        'createBitrixOpenLine' => 'Bitrix24 CRM settings (ADR-0097) — called by the console',
+        'resolveEmbedAgentCrmCard' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'listEmbedAgentContactMessages' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'sendEmbedAgentMessage' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'checkEmbedAgentSendPolicy' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'listEmbedAgentChannelTemplates' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'uploadEmbedAgentMedia' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'getEmbedAgentMessageMedia' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'streamEmbedAgentEvents' => 'Bitrix24 CRM card widget (ADR-0099) — operator-token surface of the embed widget',
+        'listAgentConversations' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
+        'markAgentConversationRead' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
+        'createAgentConversationSession' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
+        'listAgentChannelHealth' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
+
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.
         'listPlatformOperators' => 'platform:admin only',
