@@ -150,11 +150,18 @@ final readonly class ContactsResource
      * bots); asking a paired WhatsApp channel yields
      * `channel.capability_unsupported`.
      *
+     * Pin `$idempotencyKey` to make a retry replay the first link rather than
+     * mint a second one (ADR-0103).
+     *
      * @return array<string, mixed>
      */
-    public function invite(string $id, string $channelId): array
+    public function invite(string $id, string $channelId, ?string $idempotencyKey = null): array
     {
-        return $this->client->post("/contacts/{$id}/invite", ['channelId' => $channelId])->data;
+        return $this->client->post(
+            "/contacts/{$id}/invite",
+            ['channelId' => $channelId],
+            idempotencyKey: $idempotencyKey,
+        )->data;
     }
 
     /**
@@ -247,8 +254,9 @@ final readonly class ContactsResource
      */
     public function setFields(string $id, array $fields): ContactFieldsUpdate
     {
-        // An empty map still has to be an OBJECT on the wire.
-        $body = ['fields' => $fields === [] ? new \stdClass : $fields];
+        // An empty map goes as `[]`; the platform reads it as `{}` (issue #140)
+        // — writes nothing and answers the current values.
+        $body = ['fields' => $fields];
 
         return ContactFieldsUpdate::fromArray($this->client->patch("/contacts/{$id}/fields", $body)->data);
     }
@@ -278,8 +286,10 @@ final readonly class ContactsResource
      * anything new was said returns the same run. Fails with `ai.disabled`
      * ({@see AiException}) when the cabinet has not consented to AI processing.
      */
-    public function fillAiProfile(string $id): AiProfileFill
+    public function fillAiProfile(string $id, ?string $idempotencyKey = null): AiProfileFill
     {
-        return AiProfileFill::fromArray($this->client->post("/contacts/{$id}/ai-profile/fill")->data);
+        return AiProfileFill::fromArray(
+            $this->client->post("/contacts/{$id}/ai-profile/fill", idempotencyKey: $idempotencyKey)->data,
+        );
     }
 }

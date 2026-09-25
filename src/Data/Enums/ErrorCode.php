@@ -110,6 +110,8 @@ enum ErrorCode: string
     case DeadLetterNotFound = 'deadletter.not_found';
 
     case IdempotencyKeyReused = 'idempotency.key_reused';
+    /** The first request with this key is still running (409 + Retry-After); retry it unchanged. */
+    case IdempotencyInProgress = 'idempotency.in_progress';
 
     case ContactNotFound = 'contact.not_found';
     case ContactMergeConflict = 'contact.merge_conflict';
@@ -205,6 +207,7 @@ enum ErrorCode: string
     {
         return match ($this) {
             self::PolicyRateLimited,
+            self::IdempotencyInProgress,
             self::ProviderUnavailable,
             self::ProviderUpstreamError => true,
             default => false,

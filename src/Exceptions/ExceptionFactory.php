@@ -19,8 +19,12 @@ final class ExceptionFactory
     /**
      * @param  array<string, mixed>  $problem
      */
-    public static function make(array $problem, int $status, ?string $requestId = null): LinqelioException
-    {
+    public static function make(
+        array $problem,
+        int $status,
+        ?string $requestId = null,
+        ?int $retryAfter = null,
+    ): LinqelioException {
         $raw = is_string($problem['code'] ?? null) ? $problem['code'] : null;
         $code = ErrorCode::parse($raw);
         $message = self::message($problem, $code, $status);
@@ -30,23 +34,23 @@ final class ExceptionFactory
         // would send every future `channel.*` to the base class — exactly the
         // degradation the additive registry is supposed to avoid.
         return match (self::domainOf($raw)) {
-            'validation' => new ValidationException($message, $code, $status, $problem, $requestId),
-            'auth' => new AuthException($message, $code, $status, $problem, $requestId),
-            'tenancy', 'keyring' => new TenancyException($message, $code, $status, $problem, $requestId),
-            'channel' => new ChannelException($message, $code, $status, $problem, $requestId),
-            'policy', 'accesspool' => new PolicyException($message, $code, $status, $problem, $requestId),
-            'message' => new MessageException($message, $code, $status, $problem, $requestId),
-            'idempotency' => new IdempotencyException($message, $code, $status, $problem, $requestId),
-            'contact' => new ContactException($message, $code, $status, $problem, $requestId),
-            'embed' => new EmbedException($message, $code, $status, $problem, $requestId),
-            'provider' => new ProviderException($message, $code, $status, $problem, $requestId),
-            'campaign', 'scheduled_send' => new CampaignException($message, $code, $status, $problem, $requestId),
-            'alert' => new AlertException($message, $code, $status, $problem, $requestId),
-            'template' => new TemplateException($message, $code, $status, $problem, $requestId),
-            'analytics' => new AnalyticsException($message, $code, $status, $problem, $requestId),
-            'ai' => new AiException($message, $code, $status, $problem, $requestId),
-            'conversation', 'group' => new ConversationException($message, $code, $status, $problem, $requestId),
-            default => new LinqelioException($message, $code, $status, $problem, $requestId),
+            'validation' => new ValidationException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'auth' => new AuthException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'tenancy', 'keyring' => new TenancyException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'channel' => new ChannelException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'policy', 'accesspool' => new PolicyException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'message' => new MessageException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'idempotency' => new IdempotencyException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'contact' => new ContactException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'embed' => new EmbedException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'provider' => new ProviderException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'campaign', 'scheduled_send' => new CampaignException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'alert' => new AlertException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'template' => new TemplateException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'analytics' => new AnalyticsException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'ai' => new AiException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'conversation', 'group' => new ConversationException($message, $code, $status, $problem, $requestId, $retryAfter),
+            default => new LinqelioException($message, $code, $status, $problem, $requestId, $retryAfter),
         };
     }
 

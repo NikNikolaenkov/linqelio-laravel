@@ -122,9 +122,17 @@ final class HttpClient
      *
      * @param  array<string, mixed>  $query
      */
-    public function postRaw(string $path, string $bytes, array $query = [], ?string $contentType = null): Response
-    {
+    public function postRaw(
+        string $path,
+        string $bytes,
+        array $query = [],
+        ?string $contentType = null,
+        ?string $idempotencyKey = null,
+    ): Response {
+        // Same rule as send(): one key per logical call, fixed before the first
+        // attempt so the transport's own retries repeat it.
         $response = $this->request($this->uploadTimeout)
+            ->withHeader('Idempotency-Key', $idempotencyKey ?? IdempotencyKey::generate())
             ->withBody($bytes, $contentType ?: 'application/octet-stream')
             ->post($this->url($path, $query));
 
@@ -168,6 +176,11 @@ final class HttpClient
         // than demanding it means a caller cannot forget; passing one in stays
         // possible for the case where the key should come from the caller's own
         // domain (an order id, say) so a retry across processes still dedupes.
+        //
+        // The key is generated ONCE per logical call, here, before the first
+        // attempt: the header lives on the pending request, and retry() below
+        // re-sends that same request — so a 503 followed by a retry carries the
+        // same key, and the platform replays instead of doing the work twice.
         if (in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
             $request = $request->withHeader(
                 'Idempotency-Key',
@@ -238,6 +251,7 @@ final class HttpClient
             status: $response->status(),
             data: $response->json() ?? [],
             requestId: $response->header('X-Request-Id') ?: null,
+            replayed: strtolower(trim($response->header('Idempotent-Replayed'))) === 'true',
         );
     }
 
@@ -249,7 +263,29 @@ final class HttpClient
             is_array($problem) ? $problem : [],
             $response->status(),
             $response->header('X-Request-Id') ?: null,
+            self::retryAfter($response->header('Retry-After')),
         );
+    }
+
+    /**
+     * Retry-After in seconds: either form RFC 9110 allows — delay-seconds or an
+     * HTTP-date — or null when absent or unreadable.
+     */
+    private static function retryAfter(string $header): ?int
+    {
+        $header = trim($header);
+
+        if ($header === '') {
+            return null;
+        }
+
+        if (ctype_digit($header)) {
+            return (int) $header;
+        }
+
+        $at = strtotime($header);
+
+        return $at === false ? null : max(0, $at - time());
     }
 
     /**

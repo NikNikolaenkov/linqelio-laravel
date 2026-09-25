@@ -19,11 +19,15 @@ final readonly class ContactExportsResource
 {
     public function __construct(private HttpClient $client) {}
 
-    public function create(?ContactExportFilter $filter = null): ContactExport
+    /**
+     * A retry with the same `$idempotencyKey` replays the first job instead of
+     * queuing a second export (ADR-0103).
+     */
+    public function create(?ContactExportFilter $filter = null, ?string $idempotencyKey = null): ContactExport
     {
         $body = $filter?->toArray() ?? [];
 
-        return ContactExport::fromArray($this->client->post('/contact-exports', $body)->data);
+        return ContactExport::fromArray($this->client->post('/contact-exports', $body, idempotencyKey: $idempotencyKey)->data);
     }
 
     /**

@@ -32,10 +32,10 @@ final class SendBody
     ): array {
         return Read::compact([
             'type' => $type->value,
-            // `content` is a JSON object in the contract; an empty PHP array
-            // would encode as `[]`, which a template send (all in `template`)
-            // would otherwise put on the wire.
-            'content' => $content === [] ? new \stdClass : $content,
+            // Exactly one of `content` / `template` carries the message (issue
+            // #140): a template send leaves `content` out. Any other empty
+            // content goes as `[]`, which the platform reads as `{}`.
+            'content' => $content === [] && $template !== null ? null : $content,
             'channelId' => $channelId,
             'replyTo' => $replyTo,
             // An EMPTY list is meaningful — "I confirm there are no warnings" —

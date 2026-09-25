@@ -6,6 +6,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Linqelio\Laravel\Data\Enums\AlertDeliveryChannel;
 use Linqelio\Laravel\Data\Enums\AlertSeverity;
+use Linqelio\Laravel\Data\Enums\AlertState;
 use Linqelio\Laravel\Data\Enums\AlertStatus;
 use Linqelio\Laravel\Data\Enums\AlertType;
 use Linqelio\Laravel\Data\Enums\HealthRating;
@@ -49,8 +50,13 @@ it('reads channel health with its explanation and history', function (): void {
         && $r['since'] === '2026-09-01T00:00:00+00:00' && (int) $r['limit'] === 30);
 });
 
-it('pages alerts with `cursor` and a top-level `nextCursor`', function (): void {
-    Http::fake(['*/alerts*' => Http::response(['items' => [alertBody(), alertBody('channel.tomorrow')], 'nextCursor' => 'a-2'])]);
+it('pages alerts like every other list: `since` out, `pageInfo.nextCursor` back', function (): void {
+    Http::fake(['*/alerts*' => Http::response([
+        'items' => [alertBody(), alertBody('channel.tomorrow')],
+        'pageInfo' => ['nextCursor' => 'a-2', 'hasMore' => true],
+        // The deprecated copy; a newer platform may stop sending it.
+        'nextCursor' => 'a-2-legacy',
+    ])]);
 
     $page = Linqelio::alerts()->list(AlertStatus::Open, 'ch-1', 'a-1', 20);
 
@@ -62,15 +68,42 @@ it('pages alerts with `cursor` and a top-level `nextCursor`', function (): void 
         ->and($page['alerts'][1]->typeValue)->toBe('channel.tomorrow')
         ->and($page['nextCursor'])->toBe('a-2');
 
-    Http::assertSent(fn (Request $r): bool => $r['cursor'] === 'a-1' && $r['status'] === 'open' && $r['channelId'] === 'ch-1');
+    Http::assertSent(fn (Request $r): bool => $r['since'] === 'a-1'
+        && ! isset($r['cursor'])
+        && $r['status'] === 'open'
+        && $r['channelId'] === 'ch-1');
 });
 
-it('asks for open and acknowledged alerts together with `active`', function (): void {
-    Http::fake(['*' => Http::response(['items' => []])]);
+it('still reads the top-level `nextCursor` of a platform older than issue #140', function (): void {
+    Http::fake(['*' => Http::response(['items' => [alertBody()], 'nextCursor' => 'old-2'])]);
 
+    expect(Linqelio::alerts()->list()['nextCursor'])->toBe('old-2');
+});
+
+it('filters on state and time, and turns the deprecated `active` status into `state`', function (): void {
+    Http::fake(['*' => Http::response(['items' => [], 'pageInfo' => []])]);
+
+    Linqelio::alerts()->list(state: AlertState::Active, before: new DateTimeImmutable('2026-09-25T12:00:00+00:00'));
     Linqelio::alerts()->list('active');
+    Linqelio::alerts()->list('resolved', state: AlertState::All);
 
-    Http::assertSent(fn (Request $r): bool => $r['status'] === 'active');
+    $queries = Http::recorded()->map(function (array $pair): array {
+        parse_str((string) parse_url($pair[0]->url(), PHP_URL_QUERY), $query);
+
+        return $query;
+    })->all();
+
+    expect($queries[0])->toBe(['state' => 'active', 'before' => '2026-09-25T12:00:00+00:00'])
+        ->and($queries[1])->toBe(['state' => 'active'])
+        ->and($queries[2])->toBe(['status' => 'resolved', 'state' => 'all']);
+});
+
+it('refuses a status string that is no alert status', function (): void {
+    Http::fake();
+
+    expect(fn () => Linqelio::alerts()->list('closed'))->toThrow(InvalidArgumentException::class);
+
+    Http::assertNothingSent();
 });
 
 it('acknowledges and resolves idempotently', function (): void {

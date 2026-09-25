@@ -22,6 +22,7 @@ class LinqelioException extends RuntimeException
 {
     /**
      * @param  array<string, mixed>  $problem  the decoded problem+json body
+     * @param  int|null  $retryAfterHeader  the response's Retry-After, in seconds
      */
     public function __construct(
         string $message,
@@ -29,8 +30,19 @@ class LinqelioException extends RuntimeException
         protected readonly int $status,
         protected readonly array $problem = [],
         protected readonly ?string $requestId = null,
+        protected readonly ?int $retryAfterHeader = null,
     ) {
         parent::__construct($message, $status);
+    }
+
+    /**
+     * Seconds to wait before trying again, when the response said so (its
+     * `Retry-After` header). Null means the platform gave no hint — not that a
+     * retry is pointless; {@see self::isRetryable()} answers that.
+     */
+    public function retryAfter(): ?int
+    {
+        return $this->retryAfterHeader;
     }
 
     public function errorCode(): ErrorCode

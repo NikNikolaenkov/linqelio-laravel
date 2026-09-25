@@ -5,6 +5,8 @@ declare(strict_types=1);
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Linqelio\Laravel\Data\Analytics\AnalyticsExportRequest;
+use Linqelio\Laravel\Data\Analytics\AnalyticsOverview;
+use Linqelio\Laravel\Data\Enums\AnalyticsBackfillStatus;
 use Linqelio\Laravel\Data\Enums\AnalyticsBreakdownBy;
 use Linqelio\Laravel\Data\Enums\AnalyticsExportFormat;
 use Linqelio\Laravel\Data\Enums\AnalyticsGranularity;
@@ -101,4 +103,21 @@ it('maps an export that is not ready to an AnalyticsException', function (): voi
     Http::fake(['*' => Http::response(['code' => 'analytics.export_not_ready', 'detail' => 'wait'], 409)]);
 
     expect(fn () => Linqelio::analytics()->download('ax-1'))->toThrow(AnalyticsException::class);
+});
+
+it('types the backfill status, and leaves a value newer than the package null', function (): void {
+    $overview = fn (mixed $backfill): AnalyticsOverview => AnalyticsOverview::fromArray([
+        'period' => analyticsPeriod(),
+        'previousPeriod' => analyticsPeriod(),
+        'freshness' => ['backfill' => $backfill, 'backfillProgress' => 0.4],
+    ]);
+
+    expect($overview('running')->backfillStatus())->toBe(AnalyticsBackfillStatus::Running)
+        ->and($overview('running')->backfillStatus()?->isInProgress())->toBeTrue()
+        ->and($overview('done')->backfillStatus())->toBe(AnalyticsBackfillStatus::Done)
+        ->and($overview('done')->backfillStatus()?->isInProgress())->toBeFalse()
+        ->and($overview('rewinding')->backfillStatus())->toBeNull()
+        ->and($overview('rewinding')->backfill)->toBe('rewinding')
+        // Absent: the platform's own default, `none`.
+        ->and($overview(null)->backfillStatus())->toBe(AnalyticsBackfillStatus::None);
 });

@@ -94,3 +94,11 @@ it('reads the cabinet\'s field schema', function (): void {
 
     Http::assertSent(fn (Request $r): bool => $r->method() === 'GET' && str_ends_with($r->url(), '/contact-fields'));
 });
+
+it('writes nothing with an empty map, sent as `[]` (issue #140)', function (): void {
+    Http::fake(['*' => Http::response(['fields' => ['tier' => ['value' => 'gold']], 'kept' => []])]);
+
+    Linqelio::contacts()->setFields('c-1', []);
+
+    Http::assertSent(fn (Request $r): bool => $r->method() === 'PATCH' && $r->body() === '{"fields":[]}');
+});

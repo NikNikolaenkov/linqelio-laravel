@@ -19,7 +19,19 @@ final readonly class Response
         public int $status,
         public array $data,
         public ?string $requestId = null,
+        public bool $replayed = false,
     ) {}
+
+    /**
+     * The platform answered from its idempotency store (`Idempotent-Replayed:
+     * true`): an earlier request with the same Idempotency-Key and the same
+     * body already did the work, and this is its stored answer — nothing was
+     * done a second time.
+     */
+    public function replayed(): bool
+    {
+        return $this->replayed;
+    }
 
     public function get(string $key, mixed $default = null): mixed
     {

@@ -91,10 +91,15 @@ final readonly class AnalyticsResource
      *     Linqelio::analytics()->export(
      *         AnalyticsExportRequest::breakdown(AnalyticsBreakdownBy::Channel)->between('2026-09-01', '2026-09-30'),
      *     );
+     *
+     * A retry with the same `$idempotencyKey` replays the first export instead
+     * of rendering a second one (ADR-0103).
      */
-    public function export(AnalyticsExportRequest $request): AnalyticsExport
+    public function export(AnalyticsExportRequest $request, ?string $idempotencyKey = null): AnalyticsExport
     {
-        return AnalyticsExport::fromArray($this->client->post('/analytics/exports', $request->toArray())->data);
+        return AnalyticsExport::fromArray(
+            $this->client->post('/analytics/exports', $request->toArray(), idempotencyKey: $idempotencyKey)->data,
+        );
     }
 
     /**

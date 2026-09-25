@@ -32,21 +32,26 @@ final readonly class ContactImportsResource
 {
     public function __construct(private HttpClient $client) {}
 
-    /** Upload the file. Nothing is imported until {@see self::start()}. */
-    public function upload(string $csv, ?string $filename = null): ContactImport
+    /**
+     * Upload the file. Nothing is imported until {@see self::start()}.
+     *
+     * Pin `$idempotencyKey` so a retried upload replays the first job instead
+     * of storing the file twice (ADR-0103).
+     */
+    public function upload(string $csv, ?string $filename = null, ?string $idempotencyKey = null): ContactImport
     {
         $response = $this->client->postRaw('/contact-imports', $csv, Read::compact([
             'filename' => $filename,
-        ]), 'text/csv');
+        ]), 'text/csv', $idempotencyKey);
 
         return ContactImport::fromArray($response->data);
     }
 
-    public function uploadPath(string $path): ContactImport
+    public function uploadPath(string $path, ?string $idempotencyKey = null): ContactImport
     {
         $bytes = file_get_contents($path);
 
-        return $this->upload($bytes === false ? '' : $bytes, basename($path));
+        return $this->upload($bytes === false ? '' : $bytes, basename($path), $idempotencyKey);
     }
 
     /**
@@ -66,10 +71,10 @@ final readonly class ContactImportsResource
     }
 
     /** Run the import in the background with this mapping. */
-    public function start(string $jobId, ImportMapping $mapping): ContactImport
+    public function start(string $jobId, ImportMapping $mapping, ?string $idempotencyKey = null): ContactImport
     {
         return ContactImport::fromArray(
-            $this->client->post("/contact-imports/{$jobId}/start", $mapping->toArray())->data,
+            $this->client->post("/contact-imports/{$jobId}/start", $mapping->toArray(), idempotencyKey: $idempotencyKey)->data,
         );
     }
 

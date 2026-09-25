@@ -75,6 +75,21 @@ info:
     channel provisioning accepts it, and the rest of the command surface does not
     read the header at all. Do not infer from "this is a command" that a retry is
     safe — check the operation.
+
+
+    Operations marked `x-idempotency: replay` (ADR-0103) accept an optional
+    `Idempotency-Key` handled by one generic layer. The key belongs to the
+    caller (the API key or the person) in the cabinet, per operation, for 24
+    hours. The first request with a key runs; a retry with the same key and the
+    same request (method, path, query and body; JSON is compared canonically)
+    gets the first answer again — same status and body — with the response
+    header `Idempotent-Replayed: true`, and nothing is done a second time. The
+    same key with a different request is 409 idempotency.key_reused; a retry
+    while the first request is still running is 409 idempotency.in_progress.
+    Only successful (2xx) answers are kept: after a 4xx or 5xx the key is free
+    again, so a corrected or later retry with it runs. The operations whose
+    repeat is already harmless (PUT, DELETE, state transitions that answer
+    `changed: false`) are not marked.
   license:
     name: Proprietary
 
@@ -973,6 +988,9 @@ paths:
     post:
       operationId: registerWebhook
       x-permission: 'settings:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Register an outbound webhook subscription.
       description: >
         Subscribe an HTTPS endpoint to cabinet events (ADR-0031, ADR-0046).
@@ -1008,6 +1026,9 @@ paths:
         - provider.unavailable
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       requestBody:
         required: true
         content:
@@ -1030,6 +1051,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /webhooks/{id}:
     parameters:
@@ -1164,6 +1187,9 @@ paths:
     post:
       operationId: addAccessPoolEntry
       x-permission: 'channels:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Add a provider credential to the access pool.
       description: >
         Register an auth-out credential (ADR-0029). `credentialsRef` is a
@@ -1181,6 +1207,9 @@ paths:
         - auth.origin_rejected
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       requestBody:
         required: true
         content:
@@ -1200,6 +1229,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /access-pool/{id}/health:
     put:
@@ -1268,6 +1299,9 @@ paths:
     post:
       operationId: rotateAccessPool
       x-permission: 'channels:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Rotate the access pool for a channel kind (zero-downtime).
       description: >
         Promote the healthy `next` credential to active and retire the current
@@ -1286,6 +1320,9 @@ paths:
         - auth.origin_rejected
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       requestBody:
         required: true
         content:
@@ -1865,6 +1902,9 @@ paths:
     post:
       operationId: createBitrixPairing
       x-permission: 'settings:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Issue a one-time code that links a Bitrix24 portal to the cabinet.
       description: >
         Linking a portal is a deliberate act of the cabinet's administrator, not
@@ -1900,6 +1940,9 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The pairing code (shown once).
@@ -1913,6 +1956,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bitrix/app/pairing:
     post:
@@ -2226,6 +2271,9 @@ paths:
     post:
       operationId: createCampaign
       x-permission: 'campaigns:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Create a campaign draft.
       description: >
         Stores a DRAFT: name, the channels it rotates over (in order), the
@@ -2255,6 +2303,9 @@ paths:
         - channel.not_found
         - campaign.invalid
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The draft.
@@ -2270,6 +2321,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
     get:
@@ -2519,6 +2572,9 @@ paths:
     post:
       operationId: launchCampaign
       x-permission: 'campaigns:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Resolve the audience and schedule (or start) the campaign.
       description: >
         Checks the draft (422 campaign.invalid, one `errors[]` entry per
@@ -2553,6 +2609,9 @@ paths:
         - campaign.invalid
         - campaign.dry_run_required
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '200':
           description: The launched campaign and what its audience resolved to.
@@ -3204,15 +3263,26 @@ paths:
         the monthly quota near. An alert about a channel is visible to whoever
         may read that channel (an agent: only their channels); a cabinet-wide
         alert (the monthly quota) to those who manage the cabinet's settings.
-        `status=active` means open or acknowledged. Page with `cursor` (the
-        previous page's `nextCursor`).
+        `state=active` means open or acknowledged. Page like every other list:
+        pass `pageInfo.nextCursor` back as `since` (ADR-0008 §3).
+
+
+        Deprecated forms, still accepted (issue #140, ADR-0065 amended
+        2026-09-25): `status=active` (use `state=active`), `cursor` (use
+        `since`) and the top-level `nextCursor` (read `pageInfo.nextCursor`;
+        both carry the same cursor, and either parameter accepts it). A
+        request that uses one of them is answered with a `Deprecation` header.
       tags:
         - channels
       parameters:
         - name: status
           in: query
           required: false
-          description: open, acknowledged, resolved, or active (= open + acknowledged).
+          description: >
+            Only alerts in this status: open, acknowledged or resolved. The
+            value `active` (= open + acknowledged) is DEPRECATED — use
+            `state=active`; it is still accepted and means the same. Combined
+            with `state`, both must hold.
           schema:
             type: string
             enum:
@@ -3233,10 +3303,36 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: state
+          in: query
+          required: false
+          description: >
+            `active` — alerts still needing attention (open or acknowledged);
+            `all` (the default) — every status.
+          schema:
+            type: string
+            enum:
+              - active
+              - all
+            x-enum-varnames:
+              - ListAlertsStateActive
+              - ListAlertsStateAll
+        - $ref: '#/components/parameters/Cursor'
+        - name: before
+          in: query
+          required: false
+          description: Only alerts raised strictly before this instant.
+          schema:
+            type: string
+            format: date-time
         - name: cursor
           in: query
           required: false
-          description: The opaque `nextCursor` of the previous page.
+          deprecated: true
+          description: >
+            DEPRECATED — use `since`. The opaque `nextCursor` of the previous
+            page; the same cursor `since` takes. Sending both is a 400 unless
+            they are equal.
           schema:
             type: string
             maxLength: 200
@@ -3438,6 +3534,9 @@ paths:
     post:
       operationId: createAlertSubscription
       x-permission: 'channels:read'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Subscribe to alerts.
       description: >
         Without `role` and `webhookId` the subscription is the caller's own
@@ -3470,6 +3569,9 @@ paths:
         - tenancy.suspended
         - alert.subscription_invalid
         - alert.subscription_conflict
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The subscription.
@@ -3839,6 +3941,12 @@ paths:
         confirmation and `policyWarnings` answer. `channelId` in the body must
         be absent or equal to the conversation's channel. `Idempotency-Key` is
         REQUIRED (ADR-0002 §5).
+
+
+        A template send (`type: template` + `template`, no `content`) works as
+        on sendContactMessage: wa_cloud conversations only (409
+        channel.capability_unsupported elsewhere), rendered from the channel's
+        synced template (issue #140, ADR-0092 amended 2026-09-25).
       tags:
         - conversations
       parameters:
@@ -3877,6 +3985,12 @@ paths:
         - policy.dialog_frozen
         - tenancy.quota_exceeded
         - policy.groups_disabled
+        # Issue #140 (ADR-0092 amended 2026-09-25): template sends.
+        - channel.capability_unsupported
+        - template.not_found
+        - template.not_approved
+        - template.unsupported
+        - template.params_invalid
       responses:
         '202':
           description: >
@@ -3943,6 +4057,12 @@ paths:
         - conversation.not_found
         - message.type_unsupported
         - provider.unavailable
+        # Issue #140 (ADR-0092 amended 2026-09-25): a template send is checked like a real one.
+        - channel.capability_unsupported
+        - template.not_found
+        - template.not_approved
+        - template.unsupported
+        - template.params_invalid
       responses:
         '200':
           description: The send-policy answer for this prospective send.
@@ -3958,6 +4078,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '503':
@@ -4062,6 +4184,7 @@ paths:
     post:
       operationId: createGroup
       x-permission: 'channels:manage'
+      x-idempotency: replay
       summary: Create a group on the channel with contacts of the cabinet as its members.
       description: >
         Creates a group owned by the channel's own account (issue #66) and
@@ -4082,6 +4205,7 @@ paths:
       tags:
         - channels
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/ChannelId'
       requestBody:
         required: true
@@ -4106,6 +4230,9 @@ paths:
         - group.members_unresolvable
         - provider.upstream_error
         - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The group was created; its conversation is open.
@@ -4134,6 +4261,7 @@ paths:
     post:
       operationId: addGroupParticipants
       x-permission: 'channels:manage'
+      x-idempotency: replay
       summary: Add contacts of the cabinet to a group.
       description: >
         Adds the contacts to the group of this conversation, as the channel's
@@ -4146,6 +4274,7 @@ paths:
       tags:
         - conversations
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/ConversationId'
       requestBody:
         required: true
@@ -4171,6 +4300,9 @@ paths:
         - group.members_unresolvable
         - provider.upstream_error
         - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '200':
           description: The participants were added (see `failed` for those who were not).
@@ -4199,6 +4331,7 @@ paths:
     post:
       operationId: removeGroupParticipants
       x-permission: 'channels:manage'
+      x-idempotency: replay
       summary: Remove participants from a group.
       description: >
         Removes participants — by their `providerId` as
@@ -4210,6 +4343,7 @@ paths:
       tags:
         - conversations
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/ConversationId'
       requestBody:
         required: true
@@ -4234,6 +4368,9 @@ paths:
         - policy.groups_disabled
         - provider.upstream_error
         - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '200':
           description: The participants were removed.
@@ -4323,6 +4460,7 @@ paths:
     post:
       operationId: leaveGroup
       x-permission: 'channels:manage'
+      x-idempotency: replay
       summary: Make the channel's account leave a group.
       description: >
         The channel's account leaves the group: no further messages from it
@@ -4333,6 +4471,7 @@ paths:
       tags:
         - conversations
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/ConversationId'
       x-error-codes:
         - validation.invalid_request
@@ -4350,6 +4489,9 @@ paths:
         - channel.capability_unsupported
         - provider.upstream_error
         - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '204':
           description: The account left the group.
@@ -4487,6 +4629,9 @@ paths:
     post:
       operationId: fillContactAiProfile
       x-permission: 'contacts:write'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Fill the contact's AI questionnaire now.
       description: >
         Queues a questionnaire run (task `profile.extract`) over the contact's
@@ -4513,6 +4658,9 @@ paths:
         - contact.not_found
         - ai.disabled
         - ai.profile_no_conversation
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The run is queued (or was already).
@@ -4607,6 +4755,9 @@ paths:
     post:
       operationId: startComplianceScan
       x-permission: 'compliance:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Start a compliance scan of a conversation, a channel or the cabinet over a period.
       description: >
         Queues a scan (202). The scan worker reads the text messages of the
@@ -4645,6 +4796,9 @@ paths:
         - compliance.scan_active
         - compliance.ai_disabled
         - compliance.no_rules
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The queued scan.
@@ -4897,6 +5051,9 @@ paths:
     post:
       operationId: actOnComplianceFinding
       x-permission: 'compliance:review'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Act on a finding.
       description: >
         Needs `compliance:review` (supervisors and administrators; NOT
@@ -4933,6 +5090,9 @@ paths:
         - tenancy.suspended
         - compliance.finding_not_found
         - compliance.assignee_invalid
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '200':
           description: The finding after the action.
@@ -4948,6 +5108,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
   # ===========================================================================
@@ -5286,6 +5448,9 @@ paths:
     post:
       operationId: createAnalyticsExport
       x-permission: 'analytics:read'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       x-suspension: allowed
       x-suspension-reason: >
         An export only reads the cabinet's own numbers; a suspended organization stays read-only, not locked out of its data.
@@ -5317,6 +5482,9 @@ paths:
         - tenancy.cross_cabinet_denied
         - analytics.range_invalid
         - campaign.not_found
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The export, queued.
@@ -5332,6 +5500,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
     get:
@@ -6115,6 +6285,9 @@ paths:
     post:
       operationId: createBitrixOpenLine
       x-permission: 'settings:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Create a new open line on the portal, optionally for some channels.
       description: >
         Queues imopenlines.config.add for the portal's dispatcher (ADR-0094 §4:
@@ -6145,6 +6318,9 @@ paths:
         - bitrix.portal_not_found
         - bitrix.portal_not_live
         - channel.not_found
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The request, queued.
@@ -7386,6 +7562,7 @@ paths:
     post:
       operationId: createContactInvite
       x-permission: 'contacts:write'
+      x-idempotency: replay
       summary: Mint a deep-link invite that opts a contact into a bot channel.
       description: >
         Bot channels cannot start a conversation (Telegram requires /start, Viber
@@ -7399,6 +7576,7 @@ paths:
       tags:
         - contacts
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - $ref: '#/components/parameters/ContactId'
       requestBody:
         required: true
@@ -7420,6 +7598,9 @@ paths:
         - channel.capability_unsupported
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The invite link (single use, short-lived).
@@ -7435,6 +7616,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           description: The channel kind has no deep-link opt-in.
           content:
@@ -9088,6 +9271,9 @@ paths:
     post:
       operationId: inviteMember
       x-permission: 'team:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Invite a person into the cabinet and get the invite link.
       description: >
         Creates (or re-uses) an account in status `invited` for the email and an
@@ -9159,6 +9345,9 @@ paths:
         - provider.unavailable
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: >
@@ -10250,6 +10439,9 @@ paths:
     post:
       operationId: mergeContacts
       x-permission: 'contacts:write'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Merge one contact into another.
       description: >
         Fold `mergedId` into `survivorId` (ADR-0008 §4, ADR-0090). Everything the
@@ -10303,6 +10495,9 @@ paths:
         - contact.merge_conflict
         - contact.field_invalid
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The recorded merge.
@@ -10626,6 +10821,7 @@ paths:
     post:
       operationId: uploadContactImport
       x-permission: 'contacts:write'
+      x-idempotency: replay
       summary: Upload a CSV file of contacts to import.
       description: >
         Stores the file as an import job in the `uploaded` state and answers
@@ -10646,6 +10842,7 @@ paths:
       tags:
         - contacts
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
         - name: filename
           in: query
           required: false
@@ -10676,6 +10873,9 @@ paths:
         - contact.import_invalid
         - contact.import_too_large
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '201':
           description: The uploaded file, ready to be mapped.
@@ -10689,6 +10889,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -10856,6 +11058,9 @@ paths:
     post:
       operationId: startContactImport
       x-permission: 'contacts:write'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Run the import in the background.
       description: >
         Queues the uploaded file with the mapping (checked exactly as in
@@ -10899,6 +11104,9 @@ paths:
         - contact.job_conflict
         - contact.import_invalid
         - tenancy.suspended
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The job, queued.
@@ -11023,6 +11231,9 @@ paths:
     post:
       operationId: createContactExport
       x-permission: 'contacts:export'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
       x-suspension: allowed
       x-suspension-reason: >
         An export only reads the cabinet's own contacts; a suspended organization stays read-only, not locked out of its data.
@@ -11059,6 +11270,9 @@ paths:
         - auth.second_factor_required
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
       responses:
         '202':
           description: The export, queued.
@@ -11072,6 +11286,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
     get:
       operationId: listContactExports
       x-permission: 'contacts:export'
@@ -11374,6 +11590,11 @@ components:
         response provisions a second resource, and the first one is
         indistinguishable from it afterwards. Send a key on any call you would
         retry.
+
+        On an operation marked `x-idempotency: replay` the key is served by the
+        generic layer (ADR-0103; see the API description): a replay carries
+        `Idempotent-Replayed: true`, and a retry while the first request still
+        runs is 409 idempotency.in_progress.
       schema:
         type: string
         minLength: 1
@@ -11913,6 +12134,13 @@ components:
         #     link stands, nothing is created.
         - bitrix.crm_linked_elsewhere
         # --- END R13-D ------------------------------------------------------------
+        # --- BEGIN R14-A (issue #140, ADR-0103): the generic Idempotency-Key layer --
+        #   in_progress (409): an operation marked `x-idempotency: replay` was
+        #     called with an Idempotency-Key whose first request (same body) is
+        #     still running. Nothing was done; retry after a short back-off and
+        #     the first request's answer is replayed once it has finished.
+        - idempotency.in_progress
+        # --- END R14-A ------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -12413,18 +12641,31 @@ components:
 
         `type: template` (wa_cloud only, R10-C, ADR-0092) sends an approved
         WhatsApp Business template: name it and fill its placeholders in
-        `template`, and send `content: {}` — the platform renders the content
-        itself ({"text": <the filled template>, "template": {...}}). `template`
-        is refused with any other type. A free-form message to a wa_cloud
-        contact outside the 24-hour customer-service window is refused with
-        policy.service_window_closed; a template is not.
+        `template`, and omit `content` (or send it empty) — the platform
+        renders the content itself ({"text": <the filled template>, "template":
+        {...}}). `template` is refused with any other type. A free-form message
+        to a wa_cloud contact outside the 24-hour customer-service window is
+        refused with policy.service_window_closed; a template is not.
+
+
+        Exactly one of `content` / `template` carries the message (issue #140,
+        ADR-0092 amended 2026-09-25): every type but `template` requires
+        `content` (422 validation.invalid_request, field `content`, reason
+        `required` when it is missing); `type: template` takes `template` and
+        refuses a non-empty `content` (422 validation.invalid_request, field
+        `content`, reason `not_allowed_with_template`). `content: {}` with a
+        template stays valid, as before.
       properties:
         type:
           $ref: '#/components/schemas/MsgType'
         content:
           type: object
           additionalProperties: true
-          description: Type-dependent payload matching `type`.
+          description: >
+            Type-dependent payload matching `type`. Required for every type but
+            `template`, where it is omitted or empty. An empty JSON array `[]`
+            is read as the empty object `{}` (for clients whose serializers
+            cannot tell the two apart).
         replyTo:
           type: string
           description: Optional provider message id to reply to.
@@ -12457,7 +12698,6 @@ components:
           $ref: '#/components/schemas/SendTemplate'
       required:
         - type
-        - content
 
     # --- R8-D (#42/#109, ADR-0082): send-policy dry run and warnings ---------------
     PolicyVerdict:
@@ -15831,6 +16071,10 @@ components:
         fields:
           type: object
           additionalProperties: true
+          description: >
+            The values to write. `{}` writes nothing and answers the contact's
+            current values. An empty JSON array `[]` is read as `{}` (issue
+            #140, for clients whose serializers cannot tell the two apart).
       required:
         - fields
 
@@ -17399,8 +17643,9 @@ components:
         body): a literal, the contact's name or one of its typed fields, with a
         default. launchCampaign checks the template against every channel's
         last template sync (approved, fillable, as many params as
-        placeholders). `variables` is kept for compatibility and not used for
-        sending.
+        placeholders). `variables` is DEPRECATED (issue #140): kept for
+        compatibility, never used for sending — fill placeholders with
+        `params`.
       properties:
         name:
           type: string
@@ -17410,6 +17655,10 @@ components:
           maxLength: 16
         variables:
           type: object
+          deprecated: true
+          description: >
+            DEPRECATED — use `params`. Accepted and stored as before, but never
+            used for sending.
           additionalProperties:
             type: string
         params:
@@ -17447,6 +17696,13 @@ components:
         or every contact with `all: true` — that are reachable on one of the
         campaign's channels. Merged-away contacts and contacts outside the
         author's channel scope are never included.
+
+
+        An empty definition (`{}`) selects nobody. Wherever an audience is
+        accepted (createCampaign, updateCampaign, setCampaignAudience,
+        previewCampaignAudience), an empty JSON array `[]` in place of the
+        audience or of its `fields` is read as the empty object `{}` (issue
+        #140, for clients whose serializers cannot tell the two apart).
       properties:
         contactIds:
           type: array
@@ -18253,11 +18509,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Alert'
+        pageInfo:
+          $ref: '#/components/schemas/PageInfo'
         nextCursor:
           type: string
-          description: Pass as `cursor` for the next page; absent on the last one.
+          deprecated: true
+          description: >
+            DEPRECATED — read `pageInfo.nextCursor` (the same value). Absent on
+            the last page.
       required:
         - items
+        - pageInfo
 
     AlertChange:
       type: object

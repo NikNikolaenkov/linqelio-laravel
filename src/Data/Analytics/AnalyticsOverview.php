@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Linqelio\Laravel\Data\Analytics;
 
 use DateTimeImmutable;
+use Linqelio\Laravel\Data\Enums\AnalyticsBackfillStatus;
 use Linqelio\Laravel\Data\Enums\AnalyticsMetric;
 use Linqelio\Laravel\Data\Read;
 
@@ -20,7 +21,7 @@ final readonly class AnalyticsOverview
     /**
      * @param  bool  $scoped  the key's channel scope narrowed the numbers
      * @param  array<int, AnalyticsKpi>  $kpis
-     * @param  string  $backfill  none | pending | running | done | failed
+     * @param  string  $backfill  none | pending | running | done | failed; see backfillStatus()
      * @param  float  $backfillProgress  0..1
      */
     public function __construct(
@@ -53,6 +54,15 @@ final readonly class AnalyticsOverview
             backfillProgress: Read::float($freshness, 'backfillProgress'),
             historyFrom: Read::date($freshness, 'historyFrom'),
         );
+    }
+
+    /**
+     * `backfill` as the contract's enum; null for a value newer than this
+     * package. The raw string stays on {@see self::$backfill}.
+     */
+    public function backfillStatus(): ?AnalyticsBackfillStatus
+    {
+        return AnalyticsBackfillStatus::tryFrom($this->backfill);
     }
 
     public function kpi(AnalyticsMetric $metric): ?AnalyticsKpi

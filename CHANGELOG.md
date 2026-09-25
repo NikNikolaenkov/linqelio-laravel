@@ -69,8 +69,50 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   degrades to a plain video there, because the Bot API will not take a URL for a
   video note.
 
+- **Idempotency replay** (Linqelio issue #140, ADR-0103). The platform now
+  replays 22 creating operations under an `Idempotency-Key`. Every wrapped one
+  takes an optional `$idempotencyKey` (last argument, so existing calls are
+  untouched): `campaigns()->create()` / `launch()`, `alerts()->subscribe()`,
+  `groups()->create()` / `addParticipants()` / `removeParticipants()` /
+  `leave()`, `contactExports()->create()`, `analytics()->export()`,
+  `contactImports()->upload()` / `uploadPath()` / `start()`,
+  `contacts()->fillAiProfile()` / `invite()` and `webhooks()->register()`.
+  The contract parity test now fails for any replayable operation whose wrapper
+  does not pass the caller's key through.
+- `ErrorCode::IdempotencyInProgress` (`idempotency.in_progress`): the first
+  request with the key is still running. It raises `IdempotencyException`
+  (with `isInProgress()` / `isKeyReused()`) and counts as retryable.
+- `LinqelioException::retryAfter()` — the response's `Retry-After` header in
+  seconds, for every exception family. `PolicyException::retryAfter()` still
+  prefers the problem's own `retryAfter` and falls back to the header.
+- `Response::replayed()` — the platform answered from its idempotency store
+  (`Idempotent-Replayed: true`).
+- `alerts()->list()` takes `$state` (`AlertState::Active` / `All`) and
+  `$before`.
+- `AnalyticsOverview::backfillStatus()` — `backfill` as the new
+  `AnalyticsBackfillStatus` enum (null for a value newer than the package).
+
 ### Changed
 
+- `alerts()->list()` pages like every other list: the cursor goes out as
+  `since` and comes back from `pageInfo.nextCursor` (the top-level
+  `nextCursor` is still read from an older platform). A `status` string is
+  deprecated: `'active'` is sent as `state=active`, a status name is mapped to
+  `AlertStatus`, and anything else throws `InvalidArgumentException` instead of
+  reaching the platform as a filter it rejects.
+- Template sends (`sendTemplate()`, and `send()` / `check()` with a `template`
+  on contacts and conversations) no longer put `content: {}` on the wire — the
+  template alone carries the message. A template sent into a conversation is
+  now rendered by the platform (it used to be ignored there).
+- An empty `setFields()` map and an empty audience in `previewAudience()` go as
+  `[]`, which the platform now reads as `{}`; the `stdClass` workarounds are
+  gone.
+- `CampaignTemplate::$variables` is `@deprecated`: still read, never sent — use
+  `params`.
+- `HttpClient::postRaw()` (raw uploads) now sends an `Idempotency-Key` too, fixed
+  before the first attempt like every other unsafe command, so the transport's
+  own retries repeat it. `send()` already generated one key per logical call
+  and never per attempt; a test now pins that.
 - The contact-merge operations stay unwrapped, now as a decision rather than a
   gap: deciding that two contacts are one person belongs to a person in the
   console's merge review, not to an unattended host.
