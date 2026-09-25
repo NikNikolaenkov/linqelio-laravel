@@ -7212,6 +7212,22 @@ paths:
             matches phones written with separators.
           schema:
             type: string
+        # BEGIN UI-R2-D contacts page filters (issue #159)
+        - name: channelKind
+          in: query
+          required: false
+          description: Only contacts with an identity on this channel kind.
+          schema:
+            $ref: '#/components/schemas/ChannelKind'
+        - name: tag
+          in: query
+          required: false
+          description: Only contacts carrying this tag (exact match).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        # END UI-R2-D
       x-error-codes:
         - validation.invalid_request
         - auth.invalid_key
@@ -10812,6 +10828,67 @@ paths:
   # ===========================================================================
 
   # ===========================================================================
+  # BEGIN UI-R2-D contacts page columns (issue #159)
+  # ===========================================================================
+  # Not under /contacts/…: /contacts/{id} owns the segment (see R9-A below).
+  # Schemas: the "BEGIN UI-R2-D schemas" block at the end of components.schemas.
+  /contact-digests:
+    get:
+      operationId: listContactDigests
+      x-permission: 'channels:read'
+      summary: The console's list columns for a set of contacts.
+      description: >
+        What the contacts table shows next to a Contact and the frozen Contact
+        shape does not carry: its stored status, its tags and when the person
+        last exchanged a message (inbound or outbound, on any conversation of
+        the contact). One call per page of listContacts, with that page's ids.
+        Ids that are unknown, of another cabinet or outside the caller's
+        channel scope are left out of the answer — not an error.
+      tags:
+        - contacts
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          description: Contact ids, comma-separated (1..200).
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 200
+            items:
+              type: string
+              format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: One digest per visible contact of the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactDigestList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # ===========================================================================
+  # END UI-R2-D contacts page columns (paths)
+  # ===========================================================================
+
+  # ===========================================================================
   # BEGIN R9-A contact import / export as background jobs (issue #49, ADR-0089)
   # ===========================================================================
   # OWNED BY R9-A: the /contact-imports and /contact-exports families below. Not
@@ -12458,6 +12535,16 @@ components:
           description: Preview of the newest message ("" for non-text payloads).
         lastMessageDirection:
           $ref: '#/components/schemas/Direction'
+        # UI-14 (#158): what the newest message IS, so a list can label a
+        # non-text preview ("[Photo]", "[Voice]") instead of showing nothing or
+        # a raw payload — additive.
+        lastMessageType:
+          $ref: '#/components/schemas/MsgType'
+        lastMessageMime:
+          type: string
+          description: >
+            The newest message's attachment MIME type, when it carries one (e.g.
+            `audio/ogg` for a voice message, `image/webp` for a sticker).
         # R10-A (#64, ADR-0062): group conversations — additive.
         conversationKind:
           $ref: '#/components/schemas/ConversationKind'
@@ -13223,6 +13310,13 @@ components:
           type: string
         kind:
           $ref: '#/components/schemas/ChannelKind'
+        # UI round 2 (#157): the operator-facing name given at create time.
+        label:
+          type: string
+          description: >
+            The optional operator-facing name the channel was created with
+            (CreateChannelRequest.label) — what the admin channel list shows so
+            a channel is recognisable without its id. Absent when none was given.
         state:
           type: string
           description: >
@@ -13351,6 +13445,12 @@ components:
           type: string
         orgId:
           type: string
+        # UI round 2 (#156): the cabinet picker names the owner, not only the cabinet.
+        organizationName:
+          type: string
+          description: >
+            The owning organization's name. Filled by listCabinets; absent on
+            the other operations that return a Cabinet.
         name:
           type: string
         slug:
@@ -14588,6 +14688,10 @@ components:
           type: string
         organizationId:
           type: string
+        # UI round 2 (#156): shown next to the cabinet name in the picker.
+        organizationName:
+          type: string
+          description: The owning organization's name.
         via:
           type: string
           enum:
@@ -21614,3 +21718,42 @@ components:
           type: string
           example: '7'
     # END R13-D schemas
+    # =========================================================================
+    # BEGIN UI-R2-D schemas — contacts page columns (issue #159)
+    # =========================================================================
+    ContactDigest:
+      type: object
+      description: The console's list columns for one contact (listContactDigests).
+      required: [contactId, status, tags]
+      properties:
+        contactId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: >
+            The stored lifecycle state: `new` (not yet host-linked), `active`,
+            or `merged` (folded into another contact, ADR-0090). A plain
+            string rather than an enum, so a future state is not a breaking
+            change for readers.
+          example: active
+        tags:
+          type: array
+          description: Free-form labels on the contact, sorted.
+          items:
+            type: string
+        lastMessageAt:
+          type: string
+          format: date-time
+          description: >
+            The latest message on any conversation of the contact, either
+            direction; absent when there is none.
+    ContactDigestList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContactDigest'
+    # END UI-R2-D schemas
