@@ -18,13 +18,15 @@ final readonly class CampaignTemplate
 {
     /**
      * @param  array<int, CampaignTemplateParam>  $params  in send order: header first, then body
-     * @param  array<string, string>  $variables  kept by the platform for compatibility and
-     *                                            not used for sending; read only
+     * @param  array<string, string>  $variables  DEPRECATED (issue #140) — kept by the
+     *                                            platform for compatibility, never used
+     *                                            for sending; read only. Use `$params`.
      */
     public function __construct(
         public string $name,
         public ?string $language = null,
         public array $params = [],
+        /** @deprecated read only and never used for sending — fill placeholders with $params */
         public array $variables = [],
     ) {}
 

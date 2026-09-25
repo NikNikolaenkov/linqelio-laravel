@@ -46,6 +46,9 @@ final readonly class WebhooksResource
      *
      * Leave `$eventTypes` empty to receive every type.
      *
+     * Pin `$idempotencyKey` so a retry replays the first registration instead of
+     * subscribing the endpoint twice (ADR-0103).
+     *
      * @param  array<int, string>  $eventTypes
      *
      * @throws \InvalidArgumentException when both key arguments are given, or
@@ -56,6 +59,7 @@ final readonly class WebhooksResource
         array $eventTypes = [],
         ?string $secretRef = null,
         ?string $secret = null,
+        ?string $idempotencyKey = null,
     ): RegisteredWebhook {
         if ($secretRef !== null && $secret !== null) {
             throw new \InvalidArgumentException(
@@ -77,7 +81,7 @@ final readonly class WebhooksResource
             'secret' => $secret,
         ], static fn ($v): bool => $v !== null);
 
-        return RegisteredWebhook::fromArray($this->client->post('/webhooks', $body)->data);
+        return RegisteredWebhook::fromArray($this->client->post('/webhooks', $body, idempotencyKey: $idempotencyKey)->data);
     }
 
     /**

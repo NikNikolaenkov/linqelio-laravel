@@ -19,7 +19,9 @@ class PolicyException extends LinqelioException
     {
         $value = $this->problem['retryAfter'] ?? null;
 
-        return is_numeric($value) ? (int) $value : null;
+        // The problem's own member first (it is the finding's figure); the
+        // Retry-After header otherwise.
+        return is_numeric($value) ? (int) $value : parent::retryAfter();
     }
 
     /**

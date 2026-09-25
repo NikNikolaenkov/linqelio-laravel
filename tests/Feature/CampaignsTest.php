@@ -127,3 +127,24 @@ it('maps campaign refusals, with the reasons of an invalid draft', function (): 
         expect($e->errors())->toBe(['audience' => 'empty']);
     }
 });
+
+it('sends a template campaign without content, and an empty audience as `[]` (issue #140)', function (): void {
+    Http::fake(['*' => Http::response(['id' => 'cmp-1', 'status' => 'draft'], 201)]);
+
+    Linqelio::campaigns()->create(new CampaignInput(
+        name: 'Sale',
+        channelIds: ['ch-1'],
+        content: CampaignContent::template(new CampaignTemplate('sale', 'uk')),
+        audience: new CampaignAudience,
+    ));
+
+    Http::assertSent(fn (Request $r): bool => $r['content'] === ['type' => 'template', 'template' => ['name' => 'sale', 'language' => 'uk']]
+        && str_contains($r->body(), '"audience":[]'));
+});
+
+it('reads the deprecated template `variables` but never sends them', function (): void {
+    $template = CampaignTemplate::fromArray(['name' => 'sale', 'variables' => ['1' => 'x'], 'params' => []]);
+
+    expect($template->variables)->toBe(['1' => 'x'])
+        ->and($template->toArray())->toBe(['name' => 'sale']);
+});

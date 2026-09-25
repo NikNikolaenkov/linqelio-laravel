@@ -19,6 +19,10 @@ use Linqelio\Laravel\Data\Groups\IgnoredGroups;
  * group with `conversations()->send()`.
  *
  * Groups can be switched off per channel (`policy.groups_disabled`).
+ *
+ * Every change but the rename takes an optional `$idempotencyKey`: pinned, a
+ * retry with the same key replays the first answer instead of acting on the
+ * messenger twice (ADR-0103).
  */
 final readonly class GroupsResource
 {
@@ -29,12 +33,12 @@ final readonly class GroupsResource
      *
      * @param  array<int, string>  $contactIds
      */
-    public function create(string $channelId, string $subject, array $contactIds): GroupChange
+    public function create(string $channelId, string $subject, array $contactIds, ?string $idempotencyKey = null): GroupChange
     {
         $response = $this->client->post("/channels/{$channelId}/groups", [
             'subject' => $subject,
             'contactIds' => array_values($contactIds),
-        ]);
+        ], idempotencyKey: $idempotencyKey);
 
         return GroupChange::fromArray($response->data);
     }
@@ -42,11 +46,11 @@ final readonly class GroupsResource
     /**
      * @param  array<int, string>  $contactIds
      */
-    public function addParticipants(string $conversationId, array $contactIds): GroupChange
+    public function addParticipants(string $conversationId, array $contactIds, ?string $idempotencyKey = null): GroupChange
     {
         $response = $this->client->post("/conversations/{$conversationId}/participants/add", [
             'contactIds' => array_values($contactIds),
-        ]);
+        ], idempotencyKey: $idempotencyKey);
 
         return GroupChange::fromArray($response->data);
     }
@@ -57,11 +61,11 @@ final readonly class GroupsResource
      *
      * @param  array<int, string>  $providerIds
      */
-    public function removeParticipants(string $conversationId, array $providerIds): GroupChange
+    public function removeParticipants(string $conversationId, array $providerIds, ?string $idempotencyKey = null): GroupChange
     {
         $response = $this->client->post("/conversations/{$conversationId}/participants/remove", [
             'providerIds' => array_values($providerIds),
-        ]);
+        ], idempotencyKey: $idempotencyKey);
 
         return GroupChange::fromArray($response->data);
     }
@@ -77,9 +81,9 @@ final readonly class GroupsResource
      * Make the channel's account leave the group. The conversation and its
      * history stay; nothing new arrives in it.
      */
-    public function leave(string $conversationId): void
+    public function leave(string $conversationId, ?string $idempotencyKey = null): void
     {
-        $this->client->post("/conversations/{$conversationId}/group/leave");
+        $this->client->post("/conversations/{$conversationId}/group/leave", idempotencyKey: $idempotencyKey);
     }
 
     /**

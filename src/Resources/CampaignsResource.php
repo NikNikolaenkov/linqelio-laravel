@@ -36,9 +36,16 @@ final readonly class CampaignsResource
 {
     public function __construct(private HttpClient $client) {}
 
-    public function create(CampaignInput $input): Campaign
+    /**
+     * Pin `$idempotencyKey` when the create is worth retrying: a retry with the
+     * same key and the same draft answers with the FIRST draft instead of
+     * storing a second one (ADR-0103).
+     */
+    public function create(CampaignInput $input, ?string $idempotencyKey = null): Campaign
     {
-        return Campaign::fromArray($this->client->post('/campaigns', $input->toArray())->data);
+        return Campaign::fromArray(
+            $this->client->post('/campaigns', $input->toArray(), idempotencyKey: $idempotencyKey)->data,
+        );
     }
 
     /**
@@ -112,8 +119,9 @@ final readonly class CampaignsResource
     {
         $response = $this->client->post('/campaigns/audience-preview', [
             'channelIds' => array_values($channelIds),
-            // The audience is an OBJECT in the contract, even when empty.
-            'audience' => $audience->toArray() === [] ? new \stdClass : $audience->toArray(),
+            // An empty audience goes as `[]`, which the platform reads as `{}`
+            // (issue #140): it selects nobody.
+            'audience' => $audience->toArray(),
         ]);
 
         return AudiencePreview::fromArray($response->data);
@@ -124,10 +132,15 @@ final readonly class CampaignsResource
      * — and schedule the campaign, or start it when it has no future `startAt`.
      * An invalid draft answers `campaign.invalid` with one `errors[]` entry per
      * reason ({@see CampaignException::errors()}).
+     *
+     * A retry with the same `$idempotencyKey` replays the first launch's answer
+     * instead of meeting `campaign.state_conflict` (ADR-0103).
      */
-    public function launch(string $campaignId): CampaignLaunch
+    public function launch(string $campaignId, ?string $idempotencyKey = null): CampaignLaunch
     {
-        return CampaignLaunch::fromArray($this->client->post("/campaigns/{$campaignId}/launch")->data);
+        return CampaignLaunch::fromArray(
+            $this->client->post("/campaigns/{$campaignId}/launch", idempotencyKey: $idempotencyKey)->data,
+        );
     }
 
     public function pause(string $campaignId): Campaign

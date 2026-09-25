@@ -92,6 +92,36 @@ Linqelio::messages()->sendText(
 
 Then even a redeploy or a replay from another process cannot send it twice.
 
+The key is fixed once per call, before the first attempt, so the client's own
+retries (on 429 and 5xx) repeat it rather than doing the work again.
+
+The same holds for the creating operations the platform replays (ADR-0103) —
+`campaigns()->create()` / `launch()`, `groups()->create()` and the participant
+changes, `alerts()->subscribe()`, `contactImports()->upload()` / `start()`,
+`contactExports()->create()`, `analytics()->export()`,
+`contacts()->fillAiProfile()` / `invite()`, `webhooks()->register()`. Each takes
+an optional `idempotencyKey:`; a retry with the same key and the same request
+gets the first answer back and nothing is done twice. The same key with a
+DIFFERENT request is refused (`idempotency.key_reused`), and a retry while the
+first request is still running answers `idempotency.in_progress` — wait and
+send it again unchanged:
+
+```php
+use Linqelio\Laravel\Exceptions\IdempotencyException;
+
+try {
+    Linqelio::campaigns()->launch($campaignId, idempotencyKey: "launch-{$campaignId}");
+} catch (IdempotencyException $e) {
+    if ($e->isInProgress()) {
+        $this->release($e->retryAfter() ?? 1);   // the first launch is still running
+    }
+}
+```
+
+A replayed answer is marked `Idempotent-Replayed: true`; on the raw client
+`Response::replayed()` reads it. The typed wrappers return the same object
+either way — a replay IS the first result.
+
 Prefer the queue for anything triggered by a request — delivery should not be
 able to slow a checkout down or fail it:
 
@@ -188,6 +218,11 @@ Linqelio::messages()->sendTemplate($contactId, $template->toSend(['A-17', 'Olena
 
 Linqelio::channels()->syncTemplates($channelId);   // after a template was approved
 ```
+
+The template alone carries the message: no `content` goes on the wire. The same
+works into a `wa_cloud` conversation — `conversations()->send($id,
+MessageType::Template, [], template: $send)` — where the platform renders it
+from the channel's synced template.
 
 ### Consent
 
@@ -434,7 +469,9 @@ campaigns take per-recipient parameters:
 Linqelio::health()->list();                        // score, rating, explanation
 Linqelio::health()->history($channelId, now()->subWeek());
 
-Linqelio::alerts()->list('active');                // open + acknowledged
+$page = Linqelio::alerts()->list(state: AlertState::Active);   // open + acknowledged
+Linqelio::alerts()->list(state: AlertState::Active, cursor: $page['nextCursor']);   // next page
+Linqelio::alerts()->list(AlertStatus::Resolved, before: now()->subDay());
 Linqelio::alerts()->acknowledge($alertId);
 Linqelio::alerts()->resolve($alertId);
 ```
@@ -492,7 +529,9 @@ Linqelio::analytics()->download($export->id);   // once it is ready
 ```
 
 Numbers are computed in passes: `$overview->lastPassAt` says how fresh they are,
-and `backfill` whether history before the install is still being filled in.
+and `backfillStatus()` (an `AnalyticsBackfillStatus`; `isInProgress()` while
+pending or running) whether history before the install is still being filled
+in — a report over that past undercounts it until the backfill is `Done`.
 
 ## Erasing a person
 
@@ -603,6 +642,11 @@ and scheduled sends), `AlertException`, `TemplateException`,
 and groups). `ValidationException`, `ContactException` and `CampaignException`
 carry `errors()` — field => reason — for `validation.*`,
 `contact.field_invalid` and `campaign.invalid`.
+
+Every exception's `retryAfter()` reads the response's `Retry-After` header, in
+seconds (`PolicyException` prefers the problem's own figure).
+`IdempotencyException` tells `isInProgress()` — retry the same request later —
+from `isKeyReused()` — two different commands shared a key, a bug to fix.
 
 Switch on `$e->errorCode()`, not on HTTP status or message text. The registry is
 additive — codes are never reassigned — so matching one is safe across versions,

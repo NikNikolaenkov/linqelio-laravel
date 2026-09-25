@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Linqelio\Laravel\Resources;
 
+use DateTimeInterface;
 use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Alerts\Alert;
 use Linqelio\Laravel\Data\Alerts\AlertChange;
 use Linqelio\Laravel\Data\Alerts\AlertSubscription;
 use Linqelio\Laravel\Data\Enums\AlertDeliveryChannel;
 use Linqelio\Laravel\Data\Enums\AlertSeverity;
+use Linqelio\Laravel\Data\Enums\AlertState;
 use Linqelio\Laravel\Data\Enums\AlertStatus;
 use Linqelio\Laravel\Data\Enums\AlertType;
 use Linqelio\Laravel\Data\Read;
@@ -26,30 +28,59 @@ final readonly class AlertsResource
     public function __construct(private HttpClient $client) {}
 
     /**
-     * Newest first.
+     * Newest first. Pages like every other list: pass the previous page's
+     * `nextCursor` back as `$cursor`.
      *
-     * @param  AlertStatus|string|null  $status  a status, or `'active'` for open
-     *                                           and acknowledged together
+     * `$state` = {@see AlertState::Active} asks for the alerts still needing
+     * attention (open or acknowledged); `$status` narrows to one status.
+     * Given both, both must hold.
+     *
+     * @param  AlertStatus|string|null  $status  one status. A string is
+     *                                           DEPRECATED: pass the enum, and
+     *                                           `$state: AlertState::Active`
+     *                                           instead of `'active'`
+     * @param  string|null  $cursor  the previous page's `nextCursor` (sent as `since`)
+     * @param  DateTimeInterface|null  $before  only alerts raised strictly before this instant
      * @return array{alerts: array<int, Alert>, nextCursor: ?string}
+     *
+     * @throws \InvalidArgumentException for a status string that is neither an
+     *                                   {@see AlertStatus} nor `'active'`
      */
     public function list(
         AlertStatus|string|null $status = null,
         ?string $channelId = null,
         ?string $cursor = null,
         ?int $limit = null,
+        ?AlertState $state = null,
+        ?DateTimeInterface $before = null,
     ): array {
+        // The deprecated `status=active` becomes `state=active` here, so the
+        // wire only ever carries the standard forms (issue #140).
+        if ($status === 'active') {
+            $status = null;
+            $state ??= AlertState::Active;
+        }
+
+        if (is_string($status)) {
+            $status = AlertStatus::tryFrom($status) ?? throw new \InvalidArgumentException(
+                "Unknown alert status '{$status}': pass an AlertStatus, or \$state for active/all."
+            );
+        }
+
         $response = $this->client->get('/alerts', Read::compact([
-            'status' => $status instanceof AlertStatus ? $status->value : $status,
+            'status' => $status?->value,
+            'state' => $state?->value,
             'channelId' => $channelId,
-            // `cursor` on the wire, and the next one comes back as a top-level
-            // `nextCursor` rather than under `pageInfo` like everywhere else.
-            'cursor' => $cursor,
+            'since' => $cursor,
+            'before' => Read::timestamp($before),
             'limit' => $limit,
         ]));
 
         return [
             'alerts' => array_map(Alert::fromArray(...), $response->items()),
-            'nextCursor' => Read::stringOrNull($response->data, 'nextCursor') ?? $response->nextCursor(),
+            // `pageInfo.nextCursor`; the deprecated top-level `nextCursor` only
+            // for a platform older than issue #140.
+            'nextCursor' => $response->nextCursor() ?? Read::stringOrNull($response->data, 'nextCursor'),
         ];
     }
 
@@ -88,6 +119,9 @@ final readonly class AlertsResource
      * target and delivery channel — a second answers
      * `alert.subscription_conflict`.
      *
+     * A retry with the same `$idempotencyKey` replays the first answer rather
+     * than meeting that conflict (ADR-0103).
+     *
      * @param  array<int, AlertType>  $ruleTypes  empty = every type
      * @param  array<int, string>  $channelIds  empty = every channel
      */
@@ -99,6 +133,7 @@ final readonly class AlertsResource
         array $ruleTypes = [],
         array $channelIds = [],
         ?bool $enabled = null,
+        ?string $idempotencyKey = null,
     ): AlertSubscription {
         $response = $this->client->post('/alert-subscriptions', Read::compact([
             'channel' => $channel->value,
@@ -108,7 +143,7 @@ final readonly class AlertsResource
             'ruleTypes' => $ruleTypes === [] ? null : self::types($ruleTypes),
             'channelIds' => $channelIds === [] ? null : array_values($channelIds),
             'enabled' => $enabled,
-        ]));
+        ]), idempotencyKey: $idempotencyKey);
 
         return AlertSubscription::fromArray($response->data);
     }

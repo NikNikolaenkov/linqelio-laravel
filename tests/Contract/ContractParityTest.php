@@ -13,6 +13,7 @@ use Linqelio\Laravel\Data\Campaigns\CampaignTemplateParam;
 use Linqelio\Laravel\Data\Campaigns\CampaignWindow;
 use Linqelio\Laravel\Data\Enums\AlertDeliveryChannel;
 use Linqelio\Laravel\Data\Enums\AlertSeverity;
+use Linqelio\Laravel\Data\Enums\AlertState;
 use Linqelio\Laravel\Data\Enums\AlertStatus;
 use Linqelio\Laravel\Data\Enums\AlertType;
 use Linqelio\Laravel\Data\Enums\AnalyticsBreakdownBy;
@@ -571,6 +572,20 @@ function contractErrorCodes(): array
     return is_array($enum) ? array_values(array_map(strval(...), $enum)) : [];
 }
 
+/**
+ * Operations the platform replays under an Idempotency-Key (ADR-0103): marked
+ * `x-idempotency: replay` in the contract.
+ *
+ * @return array<int, string>
+ */
+function contractReplayOperations(): array
+{
+    return array_keys(array_filter(
+        contractOperationNodes(),
+        static fn (array $node): bool => ($node['op']['x-idempotency'] ?? null) === 'replay',
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Driving the package
 // ---------------------------------------------------------------------------
@@ -642,7 +657,7 @@ function contractDrivers(): array
             'call' => fn () => Linqelio::contacts()->update('c-1', ['custom' => ['tier' => 'gold']], version: 3),
         ],
         'createContactInvite' => [
-            'call' => fn (): array => Linqelio::contacts()->invite('c-1', 'ch-1'),
+            'call' => fn (): array => Linqelio::contacts()->invite('c-1', 'ch-1', idempotencyKey: 'k-1'),
         ],
         'eraseContact' => [
             'call' => fn () => Linqelio::contacts()->erase('c-1'),
@@ -662,6 +677,7 @@ function contractDrivers(): array
                 'https://app.test/linqelio/webhook',
                 ['message.inbound'],
                 'secret://webhooks/app',
+                idempotencyKey: 'k-1',
             ),
         ],
         'updateWebhook' => [
@@ -749,7 +765,7 @@ function contractDrivers(): array
             'call' => fn () => Linqelio::contacts()->aiProfile('c-1'),
         ],
         'fillContactAiProfile' => [
-            'call' => fn () => Linqelio::contacts()->fillAiProfile('c-1'),
+            'call' => fn () => Linqelio::contacts()->fillAiProfile('c-1', idempotencyKey: 'k-1'),
         ],
 
         'sendConversationMessage' => [
@@ -788,19 +804,19 @@ function contractDrivers(): array
         ],
 
         'createGroup' => [
-            'call' => fn () => Linqelio::groups()->create('ch-1', 'Team', ['c-1', 'c-2']),
+            'call' => fn () => Linqelio::groups()->create('ch-1', 'Team', ['c-1', 'c-2'], idempotencyKey: 'k-1'),
         ],
         'addGroupParticipants' => [
-            'call' => fn () => Linqelio::groups()->addParticipants('cv-1', ['c-3']),
+            'call' => fn () => Linqelio::groups()->addParticipants('cv-1', ['c-3'], idempotencyKey: 'k-1'),
         ],
         'removeGroupParticipants' => [
-            'call' => fn () => Linqelio::groups()->removeParticipants('cv-1', ['380500000000']),
+            'call' => fn () => Linqelio::groups()->removeParticipants('cv-1', ['380500000000'], idempotencyKey: 'k-1'),
         ],
         'updateGroup' => [
             'call' => fn () => Linqelio::groups()->rename('cv-1', 'New name'),
         ],
         'leaveGroup' => [
-            'call' => fn () => Linqelio::groups()->leave('cv-1'),
+            'call' => fn () => Linqelio::groups()->leave('cv-1', idempotencyKey: 'k-1'),
         ],
         'listChannelIgnoredGroups' => [
             'call' => fn (): array => Linqelio::groups()->ignored('ch-1')->groups,
@@ -808,7 +824,7 @@ function contractDrivers(): array
         ],
 
         'createCampaign' => [
-            'call' => fn () => Linqelio::campaigns()->create(contractCampaignInput()),
+            'call' => fn () => Linqelio::campaigns()->create(contractCampaignInput(), idempotencyKey: 'k-1'),
         ],
         'listCampaigns' => [
             'call' => fn (): array => Linqelio::campaigns()->list(CampaignStatus::Running, 'cur-2', 25)['campaigns'],
@@ -833,7 +849,7 @@ function contractDrivers(): array
             'call' => fn () => Linqelio::campaigns()->previewAudience(['ch-1'], contractAudience()),
         ],
         'launchCampaign' => [
-            'call' => fn () => Linqelio::campaigns()->launch('cmp-1'),
+            'call' => fn () => Linqelio::campaigns()->launch('cmp-1', idempotencyKey: 'k-1'),
         ],
         'pauseCampaign' => [
             'call' => fn () => Linqelio::campaigns()->pause('cmp-1'),
@@ -902,7 +918,14 @@ function contractDrivers(): array
         ],
 
         'listAlerts' => [
-            'call' => fn (): array => Linqelio::alerts()->list(AlertStatus::Open, 'ch-1', 'cur-2', 25)['alerts'],
+            'call' => fn (): array => Linqelio::alerts()->list(
+                AlertStatus::Open,
+                'ch-1',
+                'cur-2',
+                25,
+                AlertState::Active,
+                new DateTimeImmutable('2026-09-25T00:00:00+00:00'),
+            )['alerts'],
             'paged' => true,
         ],
         'getAlert' => [
@@ -927,6 +950,7 @@ function contractDrivers(): array
                 ruleTypes: [AlertType::ChannelDisconnected],
                 channelIds: ['ch-1'],
                 enabled: true,
+                idempotencyKey: 'k-1',
             ),
         ],
         'updateAlertSubscription' => [
@@ -943,13 +967,13 @@ function contractDrivers(): array
         ],
 
         'uploadContactImport' => [
-            'call' => fn () => Linqelio::contactImports()->upload("phone\n380500000000\n", 'customers.csv'),
+            'call' => fn () => Linqelio::contactImports()->upload("phone\n380500000000\n", 'customers.csv', idempotencyKey: 'k-1'),
         ],
         'previewContactImport' => [
             'call' => fn () => Linqelio::contactImports()->preview('job-1', contractMapping(), 20),
         ],
         'startContactImport' => [
-            'call' => fn () => Linqelio::contactImports()->start('job-1', contractMapping()),
+            'call' => fn () => Linqelio::contactImports()->start('job-1', contractMapping(), idempotencyKey: 'k-1'),
         ],
         'cancelContactImport' => [
             'call' => fn () => Linqelio::contactImports()->cancel('job-1'),
@@ -970,7 +994,7 @@ function contractDrivers(): array
                 channelIds: ['ch-1'],
                 fields: ['tier' => 'gold'],
                 status: ContactStatus::Active,
-            )),
+            ), idempotencyKey: 'k-1'),
         ],
         'listContactExports' => [
             'call' => fn (): array => Linqelio::contactExports()->list(),
@@ -1015,7 +1039,7 @@ function contractDrivers(): array
                 granularity: AnalyticsGranularity::Week,
                 by: AnalyticsBreakdownBy::Channel,
                 campaignId: 'cmp-1',
-            )),
+            ), idempotencyKey: 'k-1'),
         ],
         'listAnalyticsExports' => [
             'call' => fn (): array => Linqelio::analytics()->exports(),
@@ -1280,3 +1304,23 @@ it('reads each page out of the field the contract names', function (string $oper
         $pageField ?? '?',
     ));
 })->with(fn (): array => array_keys(array_filter(contractDrivers(), fn (array $d): bool => isset($d['paged']))));
+
+// ---------------------------------------------------------------------------
+// Idempotency (ADR-0103)
+// ---------------------------------------------------------------------------
+
+// Every operation the platform replays under a key must let the caller pin that
+// key: the generated one is only good for the transport's own retries, and a
+// retry from another process — a queue re-run, a redeploy — needs a key the
+// caller owns. The drivers pass 'k-1'; anything else on the wire means the
+// wrapper dropped or replaced it.
+it('lets the caller pin the Idempotency-Key on every replayable operation it covers', function (string $operationId): void {
+    $request = driveOperation($operationId)['request'];
+
+    expect($request->header('Idempotency-Key'))->toBe(['k-1'], sprintf(
+        '%s (%s) is `x-idempotency: replay` in the contract, but the wrapper did not send the caller\'s key. '.
+        'Add a ?string $idempotencyKey argument and pass it to the client.',
+        Contract::COVERED[$operationId],
+        $operationId,
+    ));
+})->with(fn (): array => array_values(array_intersect(contractReplayOperations(), array_keys(Contract::COVERED))));

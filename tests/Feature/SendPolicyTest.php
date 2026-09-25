@@ -94,15 +94,42 @@ it('confirms "no warnings" with an empty list, and leaves the field out of an un
         ->and($bodies[1])->not->toHaveKey('acknowledgedWarnings');
 });
 
-it('sends a template with an object for content', function (): void {
+it('sends a template without content — the template carries the message (issue #140)', function (): void {
     Http::fake(['*' => Http::response(['id' => '01A', 'type' => 'template'], 202)]);
 
     Linqelio::messages()->sendTemplate('c-1', new SendTemplate('order_update', 'uk', ['A-17']), idempotencyKey: 'order-17');
 
     Http::assertSent(fn (Request $r): bool => $r->header('Idempotency-Key')[0] === 'order-17'
-        && str_contains($r->body(), '"content":{}')
+        && ! str_contains($r->body(), '"content"')
         && $r['template'] === ['name' => 'order_update', 'language' => 'uk', 'params' => ['A-17']]
         && $r['type'] === 'template');
+});
+
+it('leaves content out of every template body: contact and conversation, send and check', function (): void {
+    Http::fake(['*' => Http::response(['id' => '01A', 'type' => 'template', 'verdict' => 'allow'], 202)]);
+
+    $template = new SendTemplate('order_update', 'uk', ['A-17']);
+
+    Linqelio::messages()->check('c-1', MessageType::Template, [], template: $template);
+    Linqelio::conversations()->send('cv-1', MessageType::Template, [], template: $template);
+    Linqelio::conversations()->check('cv-1', MessageType::Template, [], template: $template);
+
+    $bodies = Http::recorded()->map(fn (array $pair): array => $pair[0]->data())->all();
+
+    expect($bodies)->toHaveCount(3);
+    foreach ($bodies as $body) {
+        expect($body)->not->toHaveKey('content')
+            ->and($body['type'])->toBe('template')
+            ->and($body['template']['name'])->toBe('order_update');
+    }
+});
+
+it('sends an empty content as `[]`, which the platform reads as `{}`', function (): void {
+    Http::fake(['*' => Http::response(['id' => '01A', 'type' => 'text'], 202)]);
+
+    Linqelio::messages()->send('c-1', MessageType::Text, []);
+
+    Http::assertSent(fn (Request $r): bool => str_contains($r->body(), '"content":[]'));
 });
 
 it('reads the unacknowledged warnings off a confirmation refusal', function (): void {

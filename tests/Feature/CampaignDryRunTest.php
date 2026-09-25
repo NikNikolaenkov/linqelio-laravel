@@ -87,3 +87,11 @@ it('refuses a launch without a fresh dry run as a CampaignException', function (
             ->and($e->status())->toBe(409);
     }
 });
+
+it('previews an empty audience as `[]`, which the platform reads as `{}` (issue #140)', function (): void {
+    Http::fake(['*' => Http::response(['audience' => ['matched' => 0]])]);
+
+    Linqelio::campaigns()->previewAudience(['ch-1'], new CampaignAudience);
+
+    Http::assertSent(fn (Request $r): bool => str_contains($r->body(), '"audience":[]'));
+});
