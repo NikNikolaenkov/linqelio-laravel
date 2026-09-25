@@ -263,6 +263,8 @@ final class Contract
         // Round 9 (ADR-0069, ADR-0089, ADR-0090).
         'streamEvents' => 'realtime SSE for the console/session (ADR-0069); a server-side host has no use for it yet',
         'streamEmbedEvents' => 'widget-side realtime stream, embed token',
+        // UI round 2: the contacts table's extra columns (status, tags, last activity).
+        'listContactDigests' => 'console contacts table columns — a host keeps its own view of its customers',
         // Contact merge (ADR-0090): deciding that two contacts are one person is
         // a human judgement over both records, made in the console's merge
         // review — the platform itself never merges on a guess, and the undo is
