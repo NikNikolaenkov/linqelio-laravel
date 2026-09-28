@@ -265,6 +265,8 @@ final class Contract
         'streamEmbedEvents' => 'widget-side realtime stream, embed token',
         // UI round 2: the contacts table's extra columns (status, tags, last activity).
         'listContactDigests' => 'console contacts table columns — a host keeps its own view of its customers',
+        // The machine-readable contract of the running version (the console's API reference page reads it).
+        'getApiContract' => 'the contract document itself — tooling reads it, not an SDK method',
         // Contact merge (ADR-0090): deciding that two contacts are one person is
         // a human judgement over both records, made in the console's merge
         // review — the platform itself never merges on a guess, and the undo is
