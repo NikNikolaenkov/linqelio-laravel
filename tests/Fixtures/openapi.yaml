@@ -6908,13 +6908,24 @@ paths:
     post:
       operationId: sendConversationMessage
       x-permission: 'messages:send'
-      summary: Send a message into a conversation (direct or group)
+      summary: Send a message into a conversation (direct, group or comments)
       # ADR-0062 (group conversations); ADR-0002 §5 (Idempotency-Key);
-      # issue #140, ADR-0092 amended 2026-09-25 (template sends).
+      # issue #140, ADR-0092 amended 2026-09-25 (template sends);
+      # ADR-0108 (#188): public comment replies.
       description: >-
         Queues an outbound message into this conversation, on its own channel
         and chat. For a group (`conversationKind: group`) the message goes to
         the whole group. This SENDS A MESSAGE TO REAL PEOPLE.
+
+
+        Into the comments of a post (`conversationKind: comments`) it is a
+        PUBLIC reply everyone who sees the post can read: with `replyTo` set to
+        a comment's `providerMsgId` it answers that comment (an answer to a
+        reply joins the reply's thread), without `replyTo` it comments on the
+        post itself. Text only (`type: text`, else 422
+        `message.type_unsupported`); Meta's 24-hour messaging window and a
+        contact's consent do not apply. To answer a commenter in their inbox
+        instead, use `sendPrivateReply`.
 
 
         Use it to reply in a thread you already have (from
@@ -12335,6 +12346,400 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # --- BEGIN M4 comments (paths; issue #188, ADR-0108) -------------------------
+  # Moderation is a quick synchronous call to Meta with the channel's own
+  # token; hide/unhide is everyday work of whoever answers the channel
+  # (messages:send), delete cannot be undone (channels:manage, as removing
+  # group members).
+  /messages/{id}/comment/hide:
+    post:
+      operationId: hideComment
+      x-permission: 'messages:send'
+      summary: Hide a comment from the public
+      description: >-
+        Hides a comment on the channel's own Facebook Page post or Instagram
+        media: it stays visible to its author and their friends, everyone else
+        stops seeing it. The author is not told. Use it for spam, offensive
+        text or a competitor's link that should not be deleted outright;
+        `unhideComment` shows it again.
+
+
+        The message must be a comment of a comments conversation, not the
+        channel's own and not a mention on another account's media — else
+        422 `meta.comment_action_unavailable`. Hiding a hidden comment changes
+        nothing. The change reaches the messenger before the answer, is
+        announced with the `message.updated` event, and shows in the
+        comment's `comment.hidden`. A disconnected channel is 409
+        `channel.not_connected`; the messenger's refusal is 502
+        `provider.upstream_error`.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/CommentMessageId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - message.not_found
+        - channel.not_connected
+        - meta.comment_action_unavailable
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The comment is hidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentActionResult'
+              example:
+                messageId: 01J9Z3K4M5N6P7Q8R9S0T1C0M1
+                conversationId: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                comment:
+                  hidden: true
+                  deleted: false
+                  edited: false
+                  own: false
+                  isMention: false
+                  answeredPrivately: false
+                  privateReplyAvailableUntil: '2026-10-02T09:10:00Z'
+                  commentedAt: '2026-09-25T09:10:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /messages/{id}/comment/unhide:
+    post:
+      operationId: unhideComment
+      x-permission: 'messages:send'
+      summary: Show a hidden comment again
+      description: >-
+        Makes a comment hidden with `hideComment` (or on the messenger)
+        visible to everyone again. Showing a visible comment changes nothing.
+        The same requirements and errors as `hideComment`: a comment of the
+        channel's own post that is not its own, a connected channel. The
+        change is announced with the `message.updated` event.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/CommentMessageId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - message.not_found
+        - channel.not_connected
+        - meta.comment_action_unavailable
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The comment is visible again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentActionResult'
+              example:
+                messageId: 01J9Z3K4M5N6P7Q8R9S0T1C0M1
+                conversationId: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                comment:
+                  hidden: false
+                  deleted: false
+                  edited: false
+                  own: false
+                  isMention: false
+                  answeredPrivately: false
+                  commentedAt: '2026-09-25T09:10:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /messages/{id}/comment:
+    delete:
+      operationId: deleteComment
+      x-permission: 'channels:manage'
+      summary: Delete a comment on the messenger
+      description: >-
+        Deletes a comment from the channel's Facebook Page post or Instagram
+        media for everyone. It cannot be undone — prefer `hideComment` when
+        the comment may be needed later. On Instagram only comments on the
+        account's own media can be deleted; the channel's own replies can be
+        deleted too.
+
+
+        The comment's text is removed from Linqelio as well; the message stays
+        in the conversation marked `comment.deleted`, and the change is
+        announced with the `message.updated` event. Deleting a deleted
+        comment is 422 `meta.comment_action_unavailable`, as is a message that
+        is not a comment or a mention on another account's media. A
+        disconnected channel is 409 `channel.not_connected`; the messenger's
+        refusal is 502 `provider.upstream_error`.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/CommentMessageId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - message.not_found
+        - channel.not_connected
+        - meta.comment_action_unavailable
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The comment is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentActionResult'
+              example:
+                messageId: 01J9Z3K4M5N6P7Q8R9S0T1C0M1
+                conversationId: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                comment:
+                  hidden: false
+                  deleted: true
+                  edited: false
+                  own: false
+                  isMention: false
+                  answeredPrivately: false
+                  commentedAt: '2026-09-25T09:10:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # The one private reply Meta allows per comment, within 7 days of it: a
+  # synchronous call (the reply's recipient id is only known from Meta's
+  # answer), claimed in the database first so two operators cannot both send.
+  /messages/{id}/comment/private-reply:
+    post:
+      operationId: sendPrivateReply
+      x-permission: 'messages:send'
+      x-idempotency: replay
+      summary: Answer a commenter privately, in their inbox
+      description: >-
+        Sends ONE private message to the author of a comment — into their
+        Messenger (Facebook Page) or Instagram Direct inbox, in answer to the
+        comment. This SENDS A MESSAGE TO A REAL PERSON. It lands in the
+        commenter's direct conversation (created when there is none) and is
+        answered with that conversation's id; the comment is marked
+        `comment.answeredPrivately` and the change announced with the
+        `message.updated` event.
+
+
+        Meta allows exactly one private reply per comment, within 7 days of
+        it (`comment.privateReplyAvailableUntil`); after that, or for the
+        channel's own comment, a mention, or a deleted comment, the answer is
+        422 `meta.private_reply_unavailable` and nothing is sent — answer
+        publicly with `sendConversationMessage` instead. Once the person
+        writes back, the usual 24-hour messaging window of the direct
+        conversation applies. Two requests for the same comment at once:
+        one sends, the other is 422. Send an `Idempotency-Key` to make a
+        retry after a lost answer safe (the first answer is replayed). A
+        disconnected channel is 409 `channel.not_connected`; a transient
+        failure of the messenger is 502 `provider.upstream_error` or 503
+        `provider.unavailable`, and the private reply stays available.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - messages
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+        - $ref: '#/components/parameters/CommentMessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrivateReplyRequest'
+            example:
+              text: Hello, Oksana! The bouquet from the photo is 1200 UAH — shall we reserve one for you?
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - message.not_found
+        - message.too_large
+        - channel.not_connected
+        - meta.comment_action_unavailable
+        - meta.private_reply_unavailable
+        - provider.upstream_error
+        - provider.unavailable
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '201':
+          description: The private reply was sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateReplyResult'
+              example:
+                messageId: 01J9Z3K4M5N6P7Q8R9S0T1P0R1
+                conversationId: 4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b
+                contactId: 9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                comment:
+                  messageId: 01J9Z3K4M5N6P7Q8R9S0T1C0M1
+                  conversationId: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                  comment:
+                    hidden: false
+                    deleted: false
+                    edited: false
+                    own: false
+                    isMention: false
+                    answeredPrivately: true
+                    privateReplyConversationId: 4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b
+                    commentedAt: '2026-09-25T09:10:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /conversations/{id}/post/thumbnail:
+    get:
+      operationId: getConversationPostThumbnail
+      x-permission: 'channels:read'
+      summary: Download the thumbnail of a comments conversation's post
+      description: >-
+        Streams the picture of the post a comments conversation is about (a
+        Facebook Page post's image, an Instagram media's photo or video
+        cover), kept by Linqelio when the first comment arrived — Instagram's
+        own links expire. It is the `post.thumbnailUrl` that conversation
+        lists and feeds show.
+
+
+        Authorization is the conversation's own visibility: a conversation of
+        another cabinet, of a channel outside the caller's scope, a
+        conversation that is not about a post, or a post without a kept
+        picture is 404 `conversation.not_found`. The response may be cached
+        privately for an hour.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Returns raw image bytes, not JSON; an agent reads the post's link and
+          caption from `listConversations` or `listConversationMessages`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - conversation.not_found
+        # A malformed (non-uuid) conversation id.
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The thumbnail's bytes.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  # --- END M4 comments (paths) -------------------------------------------------
+
   /conversations:
     get:
       operationId: listConversations
@@ -12342,17 +12747,19 @@ paths:
       summary: List the cabinet's conversations, most recently active first
       description: >-
         Returns the dialog list: one row per conversation — a thread with one
-        contact, or a group chat, on one channel — with the contact's name,
+        contact, a group chat, or the comments of one post of a Facebook Page
+        or an Instagram account — on one channel, with the contact's name,
         the channel kind and a preview of the newest message, most recently
         active first. A person who writes on two channels has two
-        conversations but is one contact.
+        conversations but is one contact. A comments conversation carries its
+        `post` (link, caption excerpt, thumbnail).
 
 
         Use it to find the conversation to read (`listConversationMessages`)
         or to reply into (`sendConversationMessage`). To read everything
         exchanged with one person across channels, use `listContactMessages`
-        instead. Filter by `channelId`, by `conversationKind` (`direct` or
-        `group`) and by `status`.
+        instead. Filter by `channelId`, by `conversationKind` (`direct`,
+        `group` or `comments`) and by `status`.
 
 
         Pass `pageInfo.nextCursor` as `since` to get the next page; it is
@@ -12391,9 +12798,11 @@ paths:
         - name: conversationKind
           in: query
           required: false
+          # comments: ADR-0108 (#188).
           description: >-
             Only conversations of this kind: `direct` (one-to-one with a
-            contact) or `group` (a group chat). Omitted: both.
+            contact), `group` (a group chat) or `comments` (the comments of a
+            post). Omitted: every kind.
           schema:
             $ref: '#/components/schemas/ConversationKind'
         - $ref: '#/components/parameters/Cursor'
@@ -12440,6 +12849,24 @@ paths:
                     conversationKind: group
                     subject: Pickup point Kyiv
                     participantCount: 14
+                  - id: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                    channelId: 2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f
+                    channelType: instagram
+                    chatId: post:17900000000000077
+                    status: open
+                    lastMessageAt: '2026-09-25T09:10:00Z'
+                    lastMessageText: How much is this bouquet?
+                    lastMessageDirection: inbound
+                    lastMessageType: text
+                    conversationKind: comments
+                    post:
+                      objectId: '17900000000000077'
+                      permalink: https://www.instagram.com/p/Cfake0077/
+                      caption: The new peony collection is in the studio!
+                      mediaType: IMAGE
+                      thumbnailUrl: /v1/conversations/8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a/post/thumbnail
+                      postedAt: '2026-09-24T09:30:00Z'
+                      isMention: false
                 pageInfo:
                   nextCursor: eyJ0IjoiMjAyNi0wOS0yNVQwOTo0MDowMFoifQ
         '400':
@@ -12461,6 +12888,13 @@ paths:
         media message, a `media.url` to download it through the platform. In a
         group conversation each message names its author (`senderName`, and
         `senderContactId` when the author is a contact).
+
+
+        In the comments of a post (`conversationKind: comments`) every message
+        is a comment: `senderName` is its author, `replyTo` the comment it
+        answers (build the threads from it), `comment` its state — hidden,
+        deleted, edited, a mention, answered privately and until when a
+        private reply is possible — and `post` describes the post.
 
 
         Use it to read a thread found with `listConversations`. To read
@@ -12512,27 +12946,82 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConversationFeed'
-              example:
-                conversationId: 3f6a1c2e-8d4b-4e5f-9a0b-1c2d3e4f5a6b
-                channelType: wa_web
-                contactId: 9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
-                status: open
-                conversationKind: direct
-                messages:
-                  - id: 01J9Z3K4M5N6P7Q8R9S0T1V2W4
-                    providerMsgId: 3EB0C767D26A1B2C3D4E
-                    direction: inbound
-                    type: text
-                    text: Is the order ready?
-                    author: 380501234567@s.whatsapp.net
-                    ts: '2026-09-25T10:14:00Z'
-                    status: delivered
-                  - id: 01J9Z3K4M5N6P7Q8R9S0T1V2W3
-                    direction: outbound
-                    type: text
-                    text: Good afternoon! Your order is ready for pickup.
-                    ts: '2026-09-25T10:15:00Z'
-                    status: sent
+              # The comments of an Instagram post: ADR-0108.
+              examples:
+                direct:
+                  summary: A direct conversation
+                  value:
+                    conversationId: 3f6a1c2e-8d4b-4e5f-9a0b-1c2d3e4f5a6b
+                    channelType: wa_web
+                    contactId: 9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                    status: open
+                    conversationKind: direct
+                    messages:
+                      - id: 01J9Z3K4M5N6P7Q8R9S0T1V2W4
+                        providerMsgId: 3EB0C767D26A1B2C3D4E
+                        direction: inbound
+                        type: text
+                        text: Is the order ready?
+                        author: 380501234567@s.whatsapp.net
+                        ts: '2026-09-25T10:14:00Z'
+                        status: delivered
+                      - id: 01J9Z3K4M5N6P7Q8R9S0T1V2W3
+                        direction: outbound
+                        type: text
+                        text: Good afternoon! Your order is ready for pickup.
+                        ts: '2026-09-25T10:15:00Z'
+                        status: sent
+                comments:
+                  summary: The comments of an Instagram post
+                  value:
+                    conversationId: 8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a
+                    channelType: instagram
+                    contactId: ''
+                    status: open
+                    conversationKind: comments
+                    post:
+                      objectId: '17900000000000077'
+                      permalink: https://www.instagram.com/p/Cfake0077/
+                      caption: The new peony collection is in the studio!
+                      mediaType: IMAGE
+                      thumbnailUrl: /v1/conversations/8d9e0f1a-2b3c-4d5e-8f6a-7b8c9d0e1f2a/post/thumbnail
+                      postedAt: '2026-09-24T09:30:00Z'
+                      isMention: false
+                    messages:
+                      - id: 01J9Z3K4M5N6P7Q8R9S0T1C0M1
+                        providerMsgId: '17800000000000101'
+                        direction: inbound
+                        type: text
+                        text: How much is this bouquet?
+                        author: '1300000000000078'
+                        senderName: '@oksana.k'
+                        ts: '2026-09-25T09:10:00Z'
+                        status: delivered
+                        comment:
+                          hidden: false
+                          deleted: false
+                          edited: false
+                          own: false
+                          isMention: false
+                          answeredPrivately: false
+                          privateReplyAvailableUntil: '2026-10-02T09:10:00Z'
+                          commentedAt: '2026-09-25T09:10:00Z'
+                      - id: 01J9Z3K4M5N6P7Q8R9S0T1C0M2
+                        providerMsgId: '17800000000000102'
+                        direction: outbound
+                        type: text
+                        text: '@oksana.k 1200 UAH, we sent the details to your Direct'
+                        ts: '2026-09-25T09:12:00Z'
+                        status: sent
+                        replyTo: '17800000000000101'
+                        comment:
+                          hidden: false
+                          deleted: false
+                          edited: false
+                          own: true
+                          isMention: false
+                          answeredPrivately: false
+                          commentedAt: '2026-09-25T09:12:00Z'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -19201,6 +19690,18 @@ components:
         type: string
         format: uuid # issue #119: a malformed id is a 400 before any store/driver call
 
+    # M4 comments (issue #188, ADR-0108).
+    CommentMessageId:
+      name: id
+      in: path
+      required: true
+      description: >-
+        The message id of the comment (its `id` in `listConversationMessages`,
+        a ULID such as `01J9Z3K4M5N6P7Q8R9S0T1C0M1`) — not the messenger's
+        comment id.
+      schema:
+        type: string
+
     CabinetPathId:
       name: id
       in: path
@@ -19784,6 +20285,14 @@ components:
         - `meta.account_connected_elsewhere` — (in a `completeMetaConnect`
           item) the Page or Instagram account is a channel of another
           cabinet. Delete it there first.
+        - `meta.comment_action_unavailable` — (422) the message is not a
+          comment, or the action cannot apply to it: the channel's own
+          comment cannot be hidden, a mention on another account's media
+          cannot be moderated, a deleted comment cannot be changed.
+        - `meta.private_reply_unavailable` — (422) the comment's one private
+          reply was sent already, the 7 days after the comment are over, it
+          is the channel's own comment or a mention, or the messenger refused
+          it for good. Answer publicly with `sendConversationMessage`.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -20196,6 +20705,15 @@ components:
         - meta.grant_invalid
         - meta.account_connected_elsewhere
         # --- END M1 ---------------------------------------------------------------
+        # --- BEGIN M4 comments (issue #188, ADR-0108) -----------------------------
+        #   comment_action_unavailable (422): hide / unhide / delete / private
+        #     reply on a message that is not a comment, or that the action
+        #     cannot touch (the channel's own comment, a mention, deleted).
+        #   private_reply_unavailable (422): the one private reply is used, the
+        #     7 days are over, or Meta refused it for good.
+        - meta.comment_action_unavailable
+        - meta.private_reply_unavailable
+        # --- END M4 ---------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -20611,6 +21129,9 @@ components:
         participantCount:
           type: integer
           description: A group's current participants (those who left are not counted).
+        # ADR-0108 (#188): the post of a comments conversation — additive.
+        post:
+          $ref: '#/components/schemas/ConversationPost'
       required:
         - id
         - channelId
@@ -20637,18 +21158,23 @@ components:
     # `member` would otherwise collide with other enums' generated constants.
     ConversationKind:
       type: string
-      # ADR-0062 (group conversations).
+      # ADR-0062 (group conversations); ADR-0108 (comments, #188).
       description: >
         `direct` — a one-to-one conversation with a contact; `group` — a group
-        chat. A group is never a contact: it has no `contactId`, its
-        messages name their author (`senderName`), and a send into it goes
-        through sendConversationMessage.
+        chat; `comments` — the public comments of one post of a Facebook Page
+        (`fb_page`) or of one media of an Instagram account (`instagram`),
+        with the post under `post`. A group and a comments conversation are
+        never a contact: they have no `contactId`, their messages name their
+        author (`senderName`), and a send into them goes through
+        sendConversationMessage (into comments: a public reply).
       enum:
         - direct
         - group
+        - comments
       x-enum-varnames:
         - ConversationKindDirect
         - ConversationKindGroup
+        - ConversationKindComments
 
     ParticipantRole:
       type: string
@@ -22661,11 +23187,177 @@ components:
         senderContactId:
           type: string
           description: The contact of that participant, when they are one.
+        # ADR-0108 (#188): threads and comment state — additive.
+        replyTo:
+          type: string
+          description: >-
+            The `providerMsgId` of the message this one answers — in a
+            comments conversation, the comment it replies to. Absent when it
+            answers nothing.
+        comment:
+          $ref: '#/components/schemas/CommentInfo'
       required:
         - id
         - direction
         - type
         - ts
+
+    # BEGIN M4 comments schemas (issue #188, ADR-0108)
+    ConversationPost:
+      type: object
+      description: >-
+        The post a comments conversation is about: a Facebook Page post or an
+        Instagram media. Its details are read from the messenger with the
+        first comment; until then only `objectId` is known.
+      properties:
+        objectId:
+          type: string
+          description: >-
+            The post's id on the messenger: `<page-id>_<post-id>` for a
+            Facebook Page post, the media id on Instagram. The conversation's
+            `chatId` is `post:` followed by it.
+        permalink:
+          type: string
+          description: The post's public link on Facebook or Instagram.
+        caption:
+          type: string
+          description: The beginning of the post's text (at most 280 characters, cut with "…").
+        mediaType:
+          type: string
+          description: >-
+            What the post is, as the messenger names it: on Instagram `IMAGE`,
+            `VIDEO` or `CAROUSEL_ALBUM`; on Facebook the post's status type,
+            e.g. `added_photos`.
+        thumbnailUrl:
+          type: string
+          description: >-
+            Where to download the post's thumbnail through the API
+            (`getConversationPostThumbnail`, same credentials). Absent when no
+            picture was kept.
+        postedAt:
+          type: string
+          format: date-time
+          description: When the post was published (UTC).
+        isMention:
+          type: boolean
+          description: >-
+            The media belongs to another Instagram account that @-mentioned
+            the channel's account. Its comments cannot be hidden or deleted,
+            and no private reply is possible.
+      required:
+        - objectId
+
+    CommentInfo:
+      type: object
+      description: >-
+        The state of a comment — a message of a comments conversation. Its
+        text is the message's `text`; its author is `senderName`.
+      properties:
+        hidden:
+          type: boolean
+          description: >-
+            Hidden from the public: only its author and their friends see it
+            (`hideComment`, or hidden on the messenger).
+        deleted:
+          type: boolean
+          description: >-
+            Deleted by its author or with `deleteComment`; the text is gone.
+        edited:
+          type: boolean
+          description: The author changed the text after writing it; `text` is the new one.
+        editedAt:
+          type: string
+          format: date-time
+          description: When it was last edited (UTC).
+        own:
+          type: boolean
+          description: >-
+            Written by the channel's own Page or account — a public reply sent
+            from Linqelio or from the messenger's own tools.
+        isMention:
+          type: boolean
+          description: >-
+            An Instagram mention: someone @-mentioned the channel's account in
+            this comment, or in the caption of their media.
+        answeredPrivately:
+          type: boolean
+          description: The one private reply to this comment was sent (`sendPrivateReply`).
+        privateReplyConversationId:
+          type: string
+          description: The direct conversation the private reply went into, while it exists.
+        privateReplyAvailableUntil:
+          type: string
+          format: date-time
+          description: >-
+            Until when `sendPrivateReply` can still answer this comment (7
+            days after it was written, UTC). Absent when it cannot: answered
+            already, the channel's own comment, a mention, deleted, or older
+            than 7 days.
+        commentedAt:
+          type: string
+          format: date-time
+          description: When the comment was written (UTC).
+      required:
+        - hidden
+        - deleted
+        - edited
+        - own
+        - isMention
+        - answeredPrivately
+
+    CommentActionResult:
+      type: object
+      description: >-
+        A comment after `hideComment`, `unhideComment` or `deleteComment`.
+      properties:
+        messageId:
+          type: string
+          description: The comment's message id.
+        conversationId:
+          type: string
+          description: The comments conversation it is in.
+        comment:
+          $ref: '#/components/schemas/CommentInfo'
+      required:
+        - messageId
+        - comment
+
+    PrivateReplyRequest:
+      type: object
+      description: The text of a private reply to a comment.
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: >-
+            The message the commenter receives in their inbox (Messenger or
+            Instagram Direct), 1–1000 characters.
+      required:
+        - text
+
+    PrivateReplyResult:
+      type: object
+      description: >-
+        A private reply that was sent: the message in the commenter's direct
+        conversation, and the comment it answered.
+      properties:
+        messageId:
+          type: string
+          description: The sent message's id (a direct message, not a comment).
+        conversationId:
+          type: string
+          description: The commenter's direct conversation the message is in.
+        contactId:
+          type: string
+          description: The commenter's contact, when there is one.
+        comment:
+          $ref: '#/components/schemas/CommentActionResult'
+      required:
+        - messageId
+        - conversationId
+        - comment
+    # END M4 comments schemas
 
     UploadedMedia:
       type: object
@@ -22785,6 +23477,9 @@ components:
         subject:
           type: string
           description: A group's name as the channel last reported it.
+        # ADR-0108 (#188): the post of a comments conversation — additive.
+        post:
+          $ref: '#/components/schemas/ConversationPost'
       required:
         - conversationId
         - contactId
@@ -22828,7 +23523,9 @@ components:
             The event types delivered to this endpoint. An empty list means
             every event type. Delivered types: `message.inbound` (a message
             arrived), `message.status` (an outbound message became sent,
-            delivered, read or failed), `channel.status` (a channel's status
+            delivered, read or failed), `message.updated` (a comment was
+            edited, hidden, shown again, deleted or answered privately —
+            `data.change` says which), `channel.status` (a channel's status
             changed), `channel.health_changed` (a channel's health rating
             changed), `alert.raised`, `alert.resolved` and `settings.updated`
             (a settings section got a new version).
@@ -25895,7 +26592,11 @@ components:
         payload exactly as outbound webhooks receive it — identifiers only,
         never message content or a pairing QR code; read the details through
         the API. Each type goes only to callers who may see it:
-        `message.inbound`, `message.status`, `channel.status`,
+        `message.inbound`, `message.status`, `message.updated` (a comment
+        edited, hidden, shown again, deleted or answered privately; `data`
+        carries `messageId`, `change` — `edited`, `hidden`, `unhidden`,
+        `deleted`, `answered_privately` — `channelId` and `chatId`),
+        `channel.status`,
         `channel.health_changed` and `compliance.notice` — `channels:read` on
         the channel; `channel.qr` — `channels:manage` on the channel
         (`data.stage` says what changed; the QR itself is read with

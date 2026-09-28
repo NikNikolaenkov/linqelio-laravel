@@ -187,6 +187,10 @@ enum ErrorCode: string
     case MetaGrantInvalid = 'meta.grant_invalid';
     /** That Page or Instagram account is already a channel of another cabinet. */
     case MetaAccountConnectedElsewhere = 'meta.account_connected_elsewhere';
+    /** The comment action cannot be done on this comment (422): deleted, your own, a mention, or not allowed by Meta. */
+    case MetaCommentActionUnavailable = 'meta.comment_action_unavailable';
+    /** The one private reply to this comment was already sent, or its 7 days have passed (422). */
+    case MetaPrivateReplyUnavailable = 'meta.private_reply_unavailable';
 
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
