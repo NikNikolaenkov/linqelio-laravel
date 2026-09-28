@@ -180,3 +180,17 @@ it('creates a row for a status it has never seen before', function (): void {
         ->and($row->direction)->toBe('outbound')
         ->and($row->chat_id)->toBe('380500000000@s.whatsapp.net');
 });
+
+// message.updated (a comment edited, hidden, deleted or answered privately)
+// also carries messageId; it must not be mistaken for a new inbound message.
+it('ignores a message event it does not model instead of treating it as inbound', function (): void {
+    Event::fake([MessageReceived::class, MessageStatusChanged::class]);
+
+    (new ProcessWebhook([
+        'messageId' => '01UP', 'kind' => 'instagram', 'channelId' => 'ch-1',
+        'change' => 'hidden', 'occurredAt' => now()->toIso8601String(),
+    ], 'message.updated'))->handle();
+
+    Event::assertNotDispatched(MessageReceived::class);
+    Event::assertNotDispatched(MessageStatusChanged::class);
+});

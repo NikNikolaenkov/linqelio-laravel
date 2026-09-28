@@ -273,6 +273,12 @@ final class Contract
         'startMetaConnect' => 'a person logs in to Facebook/Instagram in the browser — not an SDK flow',
         'getMetaConnectGrant' => 'the account picker after a browser login — console only',
         'completeMetaConnect' => 'the account picker after a browser login — console only',
+        // Comments of Instagram and Facebook Page posts are moderated in the console's Dialogs for now.
+        'hideComment' => 'comment moderation in the console — not an SDK method yet',
+        'unhideComment' => 'comment moderation in the console — not an SDK method yet',
+        'deleteComment' => 'comment moderation in the console — not an SDK method yet',
+        'sendPrivateReply' => 'a private reply to a comment from the console — not an SDK method yet',
+        'getConversationPostThumbnail' => 'the post picture the console shows — a binary, not an SDK method',
         // Contact merge (ADR-0090): deciding that two contacts are one person is
         // a human judgement over both records, made in the console's merge
         // review — the platform itself never merges on a guess, and the undo is

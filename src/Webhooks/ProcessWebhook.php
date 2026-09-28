@@ -51,7 +51,10 @@ final class ProcessWebhook implements ShouldQueue
 
         match ($this->eventType()) {
             'message.status' => $this->handleStatus(),
-            default => $this->handleInbound(),
+            'message.inbound' => $this->handleInbound(),
+            // A newer event this package does not model yet (e.g. message.updated
+            // for an edited or hidden comment) is not an inbound message.
+            default => null,
         };
     }
 
