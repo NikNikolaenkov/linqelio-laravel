@@ -180,6 +180,14 @@ enum ErrorCode: string
     case BitrixCrmContactUnaddressable = 'bitrix.crm_contact_unaddressable';
     case BitrixCrmLinkedElsewhere = 'bitrix.crm_linked_elsewhere';
 
+    // Meta channels: connecting Facebook Pages and Instagram accounts by logging in.
+    /** The platform has no Meta app configured yet (409); an operator must set it up. */
+    case MetaAppNotConfigured = 'meta.app_not_configured';
+    /** The login result is unknown, expired, used or belongs to someone else (404). */
+    case MetaGrantInvalid = 'meta.grant_invalid';
+    /** That Page or Instagram account is already a channel of another cabinet. */
+    case MetaAccountConnectedElsewhere = 'meta.account_connected_elsewhere';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 

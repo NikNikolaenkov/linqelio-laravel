@@ -267,6 +267,12 @@ final class Contract
         'listContactDigests' => 'console contacts table columns — a host keeps its own view of its customers',
         // The machine-readable contract of the running version (the console's API reference page reads it).
         'getApiContract' => 'the contract document itself — tooling reads it, not an SDK method',
+        // Meta channels: the platform operator sets the Meta app; a person connects Pages and Instagram accounts by logging in to Meta in the console.
+        'getMetaAppSettings' => 'platform operator Meta app settings — console only',
+        'updateMetaAppSettings' => 'platform operator Meta app settings — console only',
+        'startMetaConnect' => 'a person logs in to Facebook/Instagram in the browser — not an SDK flow',
+        'getMetaConnectGrant' => 'the account picker after a browser login — console only',
+        'completeMetaConnect' => 'the account picker after a browser login — console only',
         // Contact merge (ADR-0090): deciding that two contacts are one person is
         // a human judgement over both records, made in the console's merge
         // review — the platform itself never merges on a guess, and the undo is

@@ -92,8 +92,9 @@ info:
     - **Channel** — one connected messenger account or bot: a WhatsApp number
       linked by QR code (`wa_web`), a WhatsApp Business Cloud API number
       (`wa_cloud`), a Telegram account (`tg_client`), a Telegram bot
-      (`tg_bot`) or a Viber bot (`viber_bot`). What a channel can do depends on
-      its kind; `listChannels` reports each channel's capabilities.
+      (`tg_bot`), a Viber bot (`viber_bot`), a Facebook Page (`fb_page`) or an
+      Instagram professional account (`instagram`). What a channel can do
+      depends on its kind; `listChannels` reports each channel's capabilities.
     - **Contact** — a person the cabinet talks to. **Identity** — one of the
       contact's addresses on a channel (a phone number, a Telegram user, a
       Viber user id). One contact may have several identities.
@@ -525,7 +526,9 @@ paths:
 
         Kinds: a WhatsApp Web account paired by QR (`wa_web`), a WhatsApp
         Business API number (`wa_cloud`), a Telegram account paired by QR
-        (`tg_client`), a Telegram bot (`tg_bot`) and a Viber bot (`viber_bot`).
+        (`tg_client`), a Telegram bot (`tg_bot`), a Viber bot (`viber_bot`), a
+        Facebook Page (`fb_page`) and an Instagram professional account
+        (`instagram`).
 
 
         Use it to find a channel id for `sendContactMessage` (`channelId`),
@@ -611,6 +614,12 @@ paths:
           `setChannelCredentials` (and for `wa_cloud` first
           `updateChannelSettings` with the phone number id), then
           `connectChannel` for `viber_bot` to register its webhook.
+
+        A Facebook Page (`fb_page`) or an Instagram account (`instagram`) is
+        not created here: the person logs in with Facebook or Instagram
+        (`startMetaConnect`) and the channels are created when they pick their
+        Pages or account (`completeMetaConnect`). Asking for one of these kinds
+        here is refused with 400 `validation.invalid_request`.
 
         Accepts an optional `Idempotency-Key`. With a key, repeating the same
         request returns the channel the first call created (201) instead of
@@ -802,6 +811,9 @@ paths:
         - Telegram bot (`tg_bot`) and WhatsApp Business API (`wa_cloud`): no
           provider call; answers the stored state (they connect through
           `setChannelCredentials`).
+        - Facebook Page (`fb_page`) and Instagram (`instagram`): no provider
+          call; answers the stored state. They connect, and reconnect, by
+          logging in with Facebook or Instagram (`startMetaConnect`).
 
         Safe to repeat. Needs a person to scan the QR for the QR kinds, so an
         agent can start it but cannot finish it alone.
@@ -881,7 +893,10 @@ paths:
         `passwordRequired: true`, send the account's two-step verification
         password as `token`: it finishes the login and is not stored. A
         WhatsApp Web account (`wa_web`) has no token — it pairs through
-        `connectChannel`.
+        `connectChannel`. A Facebook Page (`fb_page`) or Instagram account
+        (`instagram`) takes no token either — the platform obtains and renews
+        it after a login with Facebook or Instagram (`startMetaConnect`) — and
+        a token sent for one is refused with 400.
       x-mcp:
         expose: false
         readOnly: false
@@ -1093,14 +1108,16 @@ paths:
         WhatsApp Web account (`wa_web`) is logged out of WhatsApp (the linked
         device disappears from the phone), a Telegram account (`tg_client`)
         session is discarded, and a token channel (`tg_bot`, `viber_bot`,
-        `wa_cloud`) forgets its stored token. From then on the channel neither
-        sends nor receives; messages sent to it meanwhile are not taken in.
+        `wa_cloud`, `fb_page`, `instagram`) forgets its stored token. From then
+        on the channel neither sends nor receives; messages sent to it
+        meanwhile are not taken in.
 
 
         The channel, its conversations and its history are kept. To use it
         again, connect it anew: `connectChannel` (a new QR scan for the QR
         kinds) or `setChannelCredentials` (the token again for the token
-        kinds). To remove the channel with its history, use `deleteChannel`.
+        kinds), or `startMetaConnect` for a Facebook Page or an Instagram
+        account. To remove the channel with its history, use `deleteChannel`.
 
 
         Idempotent: disconnecting a disconnected channel answers the same.
@@ -2445,6 +2462,420 @@ paths:
   # security log. A person's grant is checked on every request, so a revocation
   # takes effect on the next one. A human operator must have passed the second
   # factor in the session (ADR-0049 §4).
+  # --- BEGIN M1 Meta channels (issue #185, ADR-0107): the platform's Meta app
+  # and the connect flow of fb_page / instagram (paths) -----------------------
+  /platform/meta-app:
+    get:
+      operationId: getMetaAppSettings
+      x-permission: 'platform:admin'
+      summary: Get the platform's Meta app settings (platform operator)
+      # ADR-0107 §2: one Meta app for the whole platform.
+      description: >-
+        Returns the settings of the platform's one Meta app — the app through
+        which every cabinet connects Facebook Pages (`fb_page`) and Instagram
+        accounts (`instagram`): its app id, the Facebook Login for Business
+        configuration id, the Instagram app id and the Graph API version. The
+        app secrets are never returned; `appSecretSet` and
+        `instagramAppSecretSet` say whether they are stored.
+
+
+        Also returns the webhook verify token the platform generated
+        (`verifyToken`) and every address to enter in the Meta app dashboard
+        (`urls`): the OAuth redirect URI, the webhook callback, the deauthorize
+        and the data-deletion callbacks. Paste the verify token into the
+        dashboard's webhook settings. `configured` is true once everything the
+        connect flow needs is stored; until then `startMetaConnect` answers 409
+        `meta.app_not_configured`.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): the configuration of
+          the platform's own Meta app, not any cabinet's data.
+      tags:
+        - platform
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The Meta app settings (secrets omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAppSettings'
+              example:
+                configured: true
+                appId: '100000000000001'
+                configId: '300000000000003'
+                instagramAppId: '200000000000002'
+                graphVersion: v26.0
+                appSecretSet: true
+                instagramAppSecretSet: true
+                verifyToken: 3f9c2a7e5b1d4c6a8e0f2b4d6a8c0e1f3a5b7c9d1e3f5a7b
+                urls:
+                  oauthRedirect: https://messages.example.com/oauth/meta/callback
+                  webhook: https://messages.example.com/webhooks/meta
+                  deauthorize: https://messages.example.com/meta/deauthorize
+                  dataDeletion: https://messages.example.com/meta/data-deletion
+                updatedAt: '2026-09-25T10:15:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: updateMetaAppSettings
+      x-permission: 'platform:admin'
+      summary: Set the platform's Meta app settings (platform operator)
+      description: >-
+        Stores the ids of the platform's Meta app (`appId`, `configId`,
+        `instagramAppId`, all digits as the Meta dashboard shows them) and,
+        optionally, its secrets. Every call replaces the ids; a secret that is
+        absent or empty keeps the stored one, so an operator can change the
+        ids without re-entering the secrets. Secrets are write-only: they go
+        to the secret store and no operation returns them.
+
+
+        The first call generates the webhook verify token and the key the
+        login state is signed with; `rotateVerifyToken: true` generates a new
+        verify token (enter it in the Meta dashboard at once — until then Meta
+        cannot re-verify the webhook). `graphVersion` pins the Graph API
+        version (`v26.0` when omitted). Answers the settings as
+        `getMetaAppSettings` does. Recorded in the platform's security log.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): carries the Meta app's
+          secrets, which must not pass through an agent's context.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - provider.unavailable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MetaAppSettingsUpdate'
+            example:
+              appId: '100000000000001'
+              configId: '300000000000003'
+              instagramAppId: '200000000000002'
+              appSecret: example-app-secret-not-real
+              instagramAppSecret: example-instagram-secret-not-real
+      responses:
+        '200':
+          description: The stored settings (secrets omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaAppSettings'
+              example:
+                configured: true
+                appId: '100000000000001'
+                configId: '300000000000003'
+                instagramAppId: '200000000000002'
+                graphVersion: v26.0
+                appSecretSet: true
+                instagramAppSecretSet: true
+                verifyToken: 3f9c2a7e5b1d4c6a8e0f2b4d6a8c0e1f3a5b7c9d1e3f5a7b
+                urls:
+                  oauthRedirect: https://messages.example.com/oauth/meta/callback
+                  webhook: https://messages.example.com/webhooks/meta
+                  deauthorize: https://messages.example.com/meta/deauthorize
+                  dataDeletion: https://messages.example.com/meta/data-deletion
+                updatedAt: '2026-09-25T10:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /meta-connect:
+    post:
+      operationId: startMetaConnect
+      x-permission: 'channels:manage'
+      summary: Start connecting a Facebook Page or an Instagram account
+      # ADR-0107 §3: the signed, single-use state.
+      description: >-
+        Starts the login that connects a Facebook Page (`fb_page`) or an
+        Instagram professional account (`instagram`) to the cabinet, and
+        answers the Meta address to open in the person's browser
+        (`authorizeUrl`). Nobody types a token: the person logs in with
+        Facebook (and ticks their Pages) or with Instagram, and Meta sends the
+        browser back to the platform, which then opens the console at
+        `/c/<cabinet>/channels?metaGrant=<grantId>` — or with
+        `metaError=<reason>` when the login was refused or failed
+        (`access_denied`, `state_invalid`, `exchange_failed`,
+        `not_configured`, `no_accounts`). Read the found accounts with
+        `getMetaConnectGrant` and create the channels with
+        `completeMetaConnect`.
+
+
+        The address is valid for 10 minutes and works once. The same flow
+        reconnects a channel whose state is `reconnect_required`: pick the
+        same Page or account and the existing channel gets the new access
+        instead of a duplicate. Answers 409 `meta.app_not_configured` while the
+        platform's Meta app is not set up.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Finishes only in a person's browser (a Facebook or Instagram login);
+          an agent cannot complete it.
+      tags:
+        - channels
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+        - meta.app_not_configured
+        - provider.unavailable
+        - tenancy.suspended
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartMetaConnectRequest'
+            example:
+              kind: fb_page
+      responses:
+        '201':
+          description: The login to open in the person's browser.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaConnectStart'
+              example:
+                kind: fb_page
+                authorizeUrl: https://www.facebook.com/v26.0/dialog/oauth?client_id=100000000000001&config_id=300000000000003&redirect_uri=https%3A%2F%2Fmessages.example.com%2Foauth%2Fmeta%2Fcallback&response_type=code&state=v1.eyJjIjoiNWExYyJ9.c2lnbmF0dXJl
+                expiresAt: '2026-09-25T10:25:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /meta-connect/grants/{grantId}:
+    get:
+      operationId: getMetaConnectGrant
+      x-permission: 'channels:manage'
+      summary: List the accounts a Facebook or Instagram login found
+      description: >-
+        Returns what the login started by `startMetaConnect` found — the
+        Facebook Pages the person manages, or their Instagram account — for
+        the person to pick from: names, pictures, `@username`, whether the
+        person may answer messages on the Page (`canMessage`), whether the
+        account is already a channel of this cabinet (`channelId`: picking it
+        reconnects that channel) or of another cabinet (`connectedElsewhere`:
+        it cannot be picked).
+
+
+        `grantId` comes from the console address the login returned to
+        (`metaGrant=<grantId>`). A grant lives 30 minutes, belongs to the
+        person who logged in, and is used up by `completeMetaConnect`; anything
+        else answers 404 `meta.grant_invalid` — start again.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Part of the browser login of a Facebook Page or Instagram account;
+          exists only for the person who just logged in.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/MetaGrantId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+        - meta.grant_invalid
+      responses:
+        '200':
+          description: The accounts found by the login.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaConnectGrant'
+              example:
+                id: 6b2d8f4a-1c3e-4a5b-9d7f-0e2a4c6b8d1f
+                kind: fb_page
+                expiresAt: '2026-09-25T10:45:00Z'
+                candidates:
+                  - id: '102000000000001'
+                    name: Kvity Olena
+                    pictureUrl: https://scontent.example.com/102000000000001.jpg
+                    canMessage: true
+                    linkedInstagram:
+                      id: '17841400000000001'
+                      username: olena.flowers
+                    connectedElsewhere: false
+                  - id: '102000000000002'
+                    name: Olena Studio
+                    canMessage: true
+                    channelId: 7a1d4c2e-5b6f-4a70-8c9d-0e1f2a3b4c5d
+                    connectedElsewhere: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /meta-connect/grants/{grantId}/complete:
+    post:
+      operationId: completeMetaConnect
+      x-permission: 'channels:manage'
+      summary: Connect the Pages or the Instagram account the person picked
+      # ADR-0107 §3: create or reconnect, subscribe, audit; single use.
+      description: >-
+        Creates a channel for every picked account (`candidateIds`, from
+        `getMetaConnectGrant`), stores its access for the platform to use and
+        renew, and subscribes it to Meta's events (messages, reactions, read
+        receipts, comments; for Instagram also mentions). A picked account
+        that is already a channel of this cabinet is reconnected instead: the
+        same channel gets the new access and its state returns to `active`.
+        Each item of the answer says what happened to one account: `created`,
+        `reconnected`, or `failed` with an error code —
+        `meta.account_connected_elsewhere` (the account is a channel of another
+        cabinet), `tenancy.quota_exceeded` (the plan allows no more channels of
+        this kind), `provider.unavailable` (the platform could not store the
+        access; try again with a new login).
+
+
+        When Meta does not confirm the event subscription, the channel is
+        still connected with `subscribed: false`, and the platform retries the
+        subscription in the background. Sending through these channels is not
+        available yet: they receive only.
+
+
+        Uses the grant up: a second call, or a call after 30 minutes, answers
+        404 `meta.grant_invalid`. Each channel created counts against the plan
+        (`channels.fb_page`, `channels.instagram`). Recorded in the audit
+        trail.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Part of the browser login of a Facebook Page or Instagram account;
+          the person who logged in picks the accounts.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/MetaGrantId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+        - meta.grant_invalid
+        - meta.app_not_configured
+        - tenancy.suspended
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteMetaConnectRequest'
+            example:
+              candidateIds:
+                - '102000000000001'
+                - '102000000000002'
+      responses:
+        '200':
+          description: What happened to each picked account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaConnectResult'
+              example:
+                items:
+                  - candidateId: '102000000000001'
+                    outcome: created
+                    subscribed: true
+                    channel:
+                      id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                      kind: fb_page
+                      label: Kvity Olena
+                      state: active
+                      capabilities:
+                        text: false
+                        media: false
+                        templates: false
+                        buttons: false
+                        groups: false
+                        presence: false
+                        deepLinkInvite: false
+                        delivery: webhook
+                      settings:
+                        metaPageId: '102000000000001'
+                  - candidateId: '102000000000002'
+                    outcome: failed
+                    error: meta.account_connected_elsewhere
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # --- END M1 Meta channels (paths) --------------------------------------------
+
   /platform/operators:
     get:
       operationId: listPlatformOperators
@@ -2780,7 +3211,8 @@ paths:
         background: reconnected where the provider keeps the session (WhatsApp
         Web `wa_web`, Telegram client `tg_client`, Telegram bot `tg_bot`), with
         nothing to do for the webhook kinds (Viber bot `viber_bot`, WhatsApp
-        Cloud `wa_cloud`). A `wa_web` channel whose session the provider no
+        Cloud `wa_cloud`, Facebook Page `fb_page`, Instagram `instagram`). A
+        `wa_web` channel whose session the provider no
         longer has is left disconnected, to be paired again, and says so in
         the cabinet's audit trail.
 
@@ -10640,10 +11072,12 @@ paths:
 
 
         The answer carries what the composer shows: the 24-hour window of a
-        WhatsApp Business (`wa_cloud`) conversation (a `service_window` finding
-        with `params.closesAt` while it is open; a deny with
-        `policy.service_window_closed` and `params.hint = template` once it is
-        closed), the contact's consent (`consent` finding), the channel's
+        WhatsApp Business (`wa_cloud`), Facebook Messenger (`fb_page`) or
+        Instagram (`instagram`) conversation (a `service_window` finding with
+        `params.closesAt` while it is open, and `params.humanAgent = true` in
+        the 7 days a person may still reply on Messenger / Instagram; a deny
+        with `policy.service_window_closed` and `params.hint` — `template`,
+        `person_reply` or `wait` — once it is closed), the contact's consent (`consent` finding), the channel's
         limits (`meters`: `window.day`, `window.hour`, `rate.burst`, ...) and
         whether the send would be refused and why. Send the `warningKeys` back
         in `acknowledgedWarnings` once the operator confirms them. The answer
@@ -15969,6 +16403,8 @@ paths:
                       channels.tg_client: -1
                       channels.tg_bot: -1
                       channels.viber_bot: -1
+                      channels.fb_page: -1
+                      channels.instagram: -1
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -18859,6 +19295,18 @@ components:
         type: string
         format: uuid
 
+    # ADR-0107 §3: the grant of a finished Meta login.
+    MetaGrantId:
+      name: grantId
+      in: path
+      required: true
+      description: >-
+        The grant id the login returned to the console with (`metaGrant` in
+        the address), a UUID.
+      schema:
+        type: string
+        format: uuid
+
     Cursor:
       name: since
       in: query
@@ -19167,7 +19615,11 @@ components:
           the month's messages are used.
         - `policy.service_window_closed` — (403) WhatsApp Cloud allows free-form
           messages only within 24 hours of the contact's last message. Send an
-          approved template instead.
+          approved template instead. On Facebook Messenger (`fb_page`) and
+          Instagram (`instagram`), after those 24 hours only a reply a person
+          writes (not an API key or a campaign) can be sent, until 7 days after
+          the contact's last message; `params.hint` is `person_reply` then, and
+          `wait` when nothing can go until the contact writes again.
         - `policy.groups_disabled` — (403) group chats are switched off on
           this channel. Enable them in the channel settings first.
 
@@ -19320,6 +19772,18 @@ components:
           reached on the chosen channel (no usable phone or username).
         - `bitrix.crm_linked_elsewhere` — (409) the CRM record is already
           linked to a contact outside the operator's channels.
+
+        **Facebook Pages and Instagram**
+
+        - `meta.app_not_configured` — (409) the platform's Meta app is not set
+          up yet, so nothing can connect with Facebook or Instagram. A
+          platform operator saves it with `updateMetaAppSettings`.
+        - `meta.grant_invalid` — (404) the login's grant is unknown, expired
+          (30 minutes), already used, or another person's. Start again with
+          `startMetaConnect`.
+        - `meta.account_connected_elsewhere` — (in a `completeMetaConnect`
+          item) the Page or Instagram account is a channel of another
+          cabinet. Delete it there first.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -19531,6 +19995,8 @@ components:
         #     hours, or who never wrote: outside WhatsApp's customer-service
         #     window only an approved template can be sent. Waiting does not
         #     help; a template does (the finding's params carry hint=template).
+        #     fb_page / instagram (issue #186): no templates; a person's reply
+        #     goes until 7 days (HUMAN_AGENT), hint=person_reply | wait.
         #   template.not_found (422): the send names a template (name +
         #     language) the channel's last sync did not list.
         #   template.not_approved (409): the template exists but Meta has not
@@ -19719,6 +20185,17 @@ components:
         #     the first request's answer is replayed once it has finished.
         - idempotency.in_progress
         # --- END R14-A ------------------------------------------------------------
+        # --- BEGIN M1 Meta channels (issue #185, ADR-0107) ------------------------
+        #   app_not_configured (409): startMetaConnect / completeMetaConnect while
+        #     the platform's Meta app lacks what the kind needs.
+        #   grant_invalid (404): getMetaConnectGrant / completeMetaConnect on a
+        #     grant that is unknown, expired, used or another person's.
+        #   account_connected_elsewhere: a completeMetaConnect item whose account
+        #     is live in another cabinet (never an HTTP status of its own).
+        - meta.app_not_configured
+        - meta.grant_invalid
+        - meta.account_connected_elsewhere
+        # --- END M1 ---------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -19914,13 +20391,19 @@ components:
         number linked like WhatsApp Web, by scanning a QR code; `wa_cloud` — a
         WhatsApp Business number on Meta's Cloud API (templates, 24-hour
         service window); `tg_client` — a Telegram user account; `tg_bot` — a
-        Telegram bot; `viber_bot` — a Viber bot. New kinds may be added.
+        Telegram bot; `viber_bot` — a Viber bot; `fb_page` — a Facebook Page
+        (Messenger conversations and the Page's comments); `instagram` — an
+        Instagram professional account (Direct, comments and mentions). The
+        last two connect by logging in with Facebook or Instagram. New kinds
+        may be added.
       enum:
         - wa_web
         - wa_cloud
         - tg_client
         - tg_bot
         - viber_bot
+        - fb_page
+        - instagram
 
     Direction:
       type: string
@@ -20349,7 +20832,11 @@ components:
         renders the content itself ({"text": <the filled template>, "template":
         {...}}). `template` is refused with any other type. A free-form message
         to a wa_cloud contact outside the 24-hour customer-service window is
-        refused with `policy.service_window_closed`; a template is not.
+        refused with `policy.service_window_closed`; a template is not. On
+        Facebook Messenger (`fb_page`) and Instagram (`instagram`) a send with
+        an API key must come within those 24 hours; a person signed in to the
+        console may still reply for up to 7 days after the contact's last
+        message.
 
 
         Exactly one of `content` / `template` carries the message: every type but `template` requires
@@ -20358,6 +20845,18 @@ components:
         refuses a non-empty `content` (422 validation.invalid_request, field
         `content`, reason `not_allowed_with_template`). `content: {}` with a
         template stays valid, as before.
+
+
+        On Instagram (`instagram`), `text` takes at most 1000 bytes, a file's
+        `caption` arrives as a separate text message right after the file, and
+        `type: interactive` takes exactly one of: `{"text": "...",
+        "quickReplies": [{"title": "...", "payload": "..."}]}` — up to 13
+        quick-reply buttons with titles of up to 20 characters (a tap comes
+        back as an inbound message with the payload in `meta.quickReplyPayload`);
+        `{"reaction": {}}` — a heart on the message named by `replyTo`
+        (`{"reaction": {"remove": true}}` takes it back); `{"sticker":
+        "heart"}` — the heart sticker. A message Instagram can never accept is
+        marked `failed` instead of being retried.
       properties:
         type:
           $ref: '#/components/schemas/MsgType'
@@ -20970,7 +21469,8 @@ components:
           type: boolean
           description: >-
             Can show interactive buttons (for a Telegram bot, the keyboard
-            that asks a person to share their phone number).
+            that asks a person to share their phone number; for Instagram,
+            quick replies).
         groups:
           type: boolean
           description: >-
@@ -20991,7 +21491,8 @@ components:
             How inbound messages reach the platform: `stream` — over a
             persistent session the platform holds (WhatsApp Web, Telegram
             account); `webhook` — the provider pushes them to the platform
-            (WhatsApp Business API, Viber bot); `poll` — the platform asks the
+            (WhatsApp Business API, Viber bot, Facebook Page, Instagram);
+            `poll` — the platform asks the
             provider for them at short intervals (Telegram bot).
           enum:
             - stream
@@ -21006,6 +21507,334 @@ components:
         - presence
         - deepLinkInvite
         - delivery
+
+    # --- BEGIN M1 Meta channels (issue #185, ADR-0107): schemas ----------------
+    MetaAppSettings:
+      type: object
+      description: >-
+        The platform's Meta app as `getMetaAppSettings` returns it: its ids,
+        the Graph API version, whether its secrets are stored, the webhook
+        verify token and the addresses to enter in the Meta app dashboard.
+        Secrets are never included.
+      properties:
+        configured:
+          type: boolean
+          description: >-
+            true when the connect flow can run: the platform knows its public
+            address (`urls` is present), the app id and secret are stored and,
+            for Facebook Pages, the Login for Business configuration id; for
+            Instagram accounts, the Instagram app id and secret. false until
+            then, and `startMetaConnect` answers 409 `meta.app_not_configured`.
+        appId:
+          type: string
+          description: The Meta app id (App settings → Basic). Absent until set.
+        configId:
+          type: string
+          description: >-
+            The Facebook Login for Business configuration id the Facebook login
+            uses (Facebook Login for Business → Configurations). Absent until
+            set.
+        instagramAppId:
+          type: string
+          description: >-
+            The Instagram app id of the app (Instagram → API setup with
+            Instagram login). Absent until set.
+        graphVersion:
+          type: string
+          description: The Graph API version every call to Meta uses, e.g. `v26.0`.
+        appSecretSet:
+          type: boolean
+          description: Whether the app secret is stored (its value is never returned).
+        instagramAppSecretSet:
+          type: boolean
+          description: Whether the Instagram app secret is stored (its value is never returned).
+        verifyToken:
+          type: string
+          description: >-
+            The webhook verify token the platform generated. Enter it, with the
+            `urls.webhook` callback, in the Meta dashboard's webhook settings
+            for Page and Instagram. Absent until the settings were first saved.
+        urls:
+          $ref: '#/components/schemas/MetaAppUrls'
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the settings were last saved (UTC). Absent until then.
+      required:
+        - configured
+        - graphVersion
+        - appSecretSet
+        - instagramAppSecretSet
+
+    MetaAppUrls:
+      type: object
+      description: >-
+        The platform's addresses to enter in the Meta app dashboard. Absent
+        when the platform does not know its public address (`PUBLIC_BASE_URL`).
+      properties:
+        oauthRedirect:
+          type: string
+          description: >-
+            The OAuth redirect URI of Facebook Login for Business and of the
+            Instagram business login.
+        webhook:
+          type: string
+          description: The webhook callback URL for the Page and Instagram objects.
+        deauthorize:
+          type: string
+          description: The deauthorize callback URL.
+        dataDeletion:
+          type: string
+          description: The data-deletion request callback URL.
+      required:
+        - oauthRedirect
+        - webhook
+        - deauthorize
+        - dataDeletion
+
+    MetaAppSettingsUpdate:
+      type: object
+      description: >-
+        The body of `updateMetaAppSettings`. The ids replace the stored ones;
+        a secret that is absent or empty keeps the stored one.
+      properties:
+        appId:
+          type: string
+          description: The Meta app id, digits only.
+          pattern: '^[0-9]{1,32}$'
+        configId:
+          type: string
+          description: >-
+            The Facebook Login for Business configuration id, digits only.
+            Needed to connect Facebook Pages.
+          pattern: '^[0-9]{1,32}$'
+        instagramAppId:
+          type: string
+          description: >-
+            The Instagram app id, digits only. Needed to connect Instagram
+            accounts.
+          pattern: '^[0-9]{1,32}$'
+        graphVersion:
+          type: string
+          description: The Graph API version to call, e.g. `v26.0`. Defaults to `v26.0`.
+          pattern: '^v[0-9]{1,3}\.[0-9]{1,2}$'
+        appSecret:
+          type: string
+          writeOnly: true
+          description: The app secret (write-only). Absent or empty keeps the stored one.
+          maxLength: 256
+        instagramAppSecret:
+          type: string
+          writeOnly: true
+          description: The Instagram app secret (write-only). Absent or empty keeps the stored one.
+          maxLength: 256
+        rotateVerifyToken:
+          type: boolean
+          description: >-
+            true generates a new webhook verify token. Enter it in the Meta
+            dashboard right away. Defaults to false.
+      required:
+        - appId
+      additionalProperties: false
+
+    MetaConnectKind:
+      type: string
+      description: >-
+        What to connect: `fb_page` — Facebook Pages (Messenger and the Page's
+        comments), after a login with Facebook; `instagram` — an Instagram
+        professional account (Direct, comments and mentions), after a login
+        with Instagram.
+      enum:
+        - fb_page
+        - instagram
+      # Named apart from ChannelKind's constants of the same values.
+      x-enum-varnames:
+        - MetaConnectFbPage
+        - MetaConnectInstagram
+
+    StartMetaConnectRequest:
+      type: object
+      description: The body of `startMetaConnect`.
+      properties:
+        kind:
+          $ref: '#/components/schemas/MetaConnectKind'
+      required:
+        - kind
+      additionalProperties: false
+
+    MetaConnectStart:
+      type: object
+      description: A started login, as `startMetaConnect` answers it.
+      properties:
+        kind:
+          $ref: '#/components/schemas/MetaConnectKind'
+        authorizeUrl:
+          type: string
+          description: >-
+            The Facebook or Instagram login page to open in the person's
+            browser (a full-page navigation, not a frame). Works once.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the login stops being accepted (UTC), 10 minutes from now.
+      required:
+        - kind
+        - authorizeUrl
+        - expiresAt
+
+    MetaConnectGrant:
+      type: object
+      description: >-
+        The accounts a finished login found, waiting for the person to pick
+        (`getMetaConnectGrant`).
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The grant id (`metaGrant` in the console address).
+        kind:
+          $ref: '#/components/schemas/MetaConnectKind'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the grant expires (UTC), 30 minutes after the login.
+        candidates:
+          type: array
+          description: >-
+            The Facebook Pages the person manages (`fb_page`), or their one
+            Instagram account (`instagram`). Empty when the login found none.
+          items:
+            $ref: '#/components/schemas/MetaConnectCandidate'
+      required:
+        - id
+        - kind
+        - expiresAt
+        - candidates
+
+    MetaConnectCandidate:
+      type: object
+      description: One account a login found.
+      properties:
+        id:
+          type: string
+          description: >-
+            The account's id in Meta: the Page id or the Instagram professional
+            account id. Pass it in `candidateIds` of `completeMetaConnect`.
+        name:
+          type: string
+          description: The Page's name, or the Instagram account's name.
+        username:
+          type: string
+          description: The Instagram `@username` (without the @). Absent for a Page.
+        pictureUrl:
+          type: string
+          description: >-
+            The Page's or account's picture, as a Meta CDN address that expires
+            after a while. Absent when Meta gave none.
+        canMessage:
+          type: boolean
+          description: >-
+            Whether the person who logged in may answer the Page's messages. A
+            Page where they cannot connects, but its messages cannot be
+            answered until an administrator of the Page grants the task.
+        linkedInstagram:
+          $ref: '#/components/schemas/MetaLinkedInstagram'
+        channelId:
+          type: string
+          format: uuid
+          description: >-
+            The channel of this cabinet this account already is. Picking it
+            reconnects that channel. Absent when it is not a channel here.
+        connectedElsewhere:
+          type: boolean
+          description: >-
+            true when the account is a channel of another cabinet: it cannot
+            be picked until it is deleted there.
+      required:
+        - id
+        - canMessage
+        - connectedElsewhere
+
+    MetaLinkedInstagram:
+      type: object
+      description: >-
+        The Instagram account linked to a Facebook Page, for information: it
+        connects on its own, with `startMetaConnect` and `kind: instagram`.
+      properties:
+        id:
+          type: string
+          description: The Instagram professional account id.
+        username:
+          type: string
+          description: The Instagram `@username` (without the @).
+      required:
+        - id
+
+    CompleteMetaConnectRequest:
+      type: object
+      description: The body of `completeMetaConnect`.
+      properties:
+        candidateIds:
+          type: array
+          description: The ids of the picked accounts (`MetaConnectCandidate.id`).
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[0-9]{1,32}$'
+      required:
+        - candidateIds
+      additionalProperties: false
+
+    MetaConnectResult:
+      type: object
+      description: What `completeMetaConnect` did with each picked account.
+      properties:
+        items:
+          type: array
+          description: One item per picked account, in the order they were picked.
+          items:
+            $ref: '#/components/schemas/MetaConnectOutcome'
+      required:
+        - items
+
+    MetaConnectOutcome:
+      type: object
+      description: What happened to one picked account.
+      properties:
+        candidateId:
+          type: string
+          description: The account's id in Meta (`MetaConnectCandidate.id`).
+        outcome:
+          type: string
+          description: >-
+            `created` — a new channel; `reconnected` — an existing channel of
+            this cabinet got the new access; `failed` — nothing changed for
+            this account, `error` says why.
+          enum:
+            - created
+            - reconnected
+            - failed
+          # Named apart from MsgStatus's `failed`.
+          x-enum-varnames:
+            - MetaConnectCreated
+            - MetaConnectReconnected
+            - MetaConnectFailed
+        channel:
+          $ref: '#/components/schemas/Channel'
+        subscribed:
+          type: boolean
+          description: >-
+            Whether Meta confirmed the event subscription. false: the channel
+            is connected, and the platform retries the subscription in the
+            background. Absent when the outcome is `failed`.
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+      required:
+        - candidateId
+        - outcome
+    # --- END M1 Meta channels (schemas) -------------------------------------------
 
     # ADR-0011: settings are readable, credentials never are.
     ChannelSettings:
@@ -21039,6 +21868,21 @@ components:
         # R10-A (#65, ADR-0062 §4): the channel's group switch (wa_web; tg_client since R13-B).
         groups:
           $ref: '#/components/schemas/ChannelGroupSettings'
+        # ADR-0107 §4: set by the Meta login, never by an operator.
+        metaPageId:
+          type: string
+          readOnly: true
+          description: >
+            fb_page only, read-only. The id of the Facebook Page this channel
+            is, set when the Page was connected by logging in with Facebook.
+            Ignored when sent to updateChannelSettings.
+        instagramUserId:
+          type: string
+          readOnly: true
+          description: >
+            instagram only, read-only. The id of the Instagram professional
+            account this channel is, set when it was connected by logging in
+            with Instagram. Ignored when sent to updateChannelSettings.
       additionalProperties: false
 
     Channel:
@@ -21068,8 +21912,12 @@ components:
             The LAST OBSERVED connection state, as stored, not asked of the
             provider: `active` — the channel was connected (paired, or its
             token was set) when last seen; `disconnected` — it was created and
-            never connected, or was disconnected. Other values may appear and
-            mean "not known to be connected". Note that this is not the
+            never connected, or was disconnected; `reconnect_required` — a
+            Facebook Page or Instagram channel whose access Meta withdrew (the
+            password changed, the app was removed, the person lost their role
+            on the Page): it neither sends nor receives until somebody logs in
+            with Facebook or Instagram again (`startMetaConnect`). Other values
+            may appear and mean "not known to be connected". Note that this is not the
             `connected` / `pairing` / `disconnected` vocabulary of
             `getChannelStatus`.
 
@@ -21529,11 +22377,14 @@ components:
         `pairing` — a QR login is in progress and waits for the account owner
         to scan the QR (or, for a Telegram account, for the two-step
         verification password); `connected` — the channel can send and
-        receive.
+        receive; `reconnect_required` — a Facebook Page or Instagram channel
+        whose access Meta withdrew: log in with Facebook or Instagram again
+        (`startMetaConnect` with this channel's kind) to bring it back.
       enum:
         - disconnected
         - pairing
         - connected
+        - reconnect_required
 
     # ADR-0013: channel.pairing_required.
     ChannelStatus:
@@ -23977,7 +24828,8 @@ components:
         who are members of (or invited to) any of its cabinets or the
         organization itself; `channels.<kind>` — connected channels of one
         kind (`channels.wa_web`, `channels.wa_cloud`, `channels.tg_client`,
-        `channels.tg_bot`, `channels.viber_bot`); `messages.month` — outbound
+        `channels.tg_bot`, `channels.viber_bot`, `channels.fb_page`,
+        `channels.instagram`); `messages.month` — outbound
         messages accepted this calendar month (UTC); `ai.tokens.month` — AI
         tokens used this calendar month (UTC); `retention.days` — how long
         data is kept, a term rather than a consumption. An unknown metric or a
@@ -29796,8 +30648,9 @@ components:
             `no_consent` — no consent to be written to on the channel;
             `opted_out` — consent was revoked; `service_window_closed` — a
             free-form message to a WhatsApp Business Cloud contact outside
-            WhatsApp's 24-hour window; `dialog_frozen` — the conversation is
-            frozen.
+            WhatsApp's 24-hour window, or any message to a Facebook Messenger
+            or Instagram contact who has not written in the last 24 hours;
+            `dialog_frozen` — the conversation is frozen.
         code:
           type: string
           description: >-
