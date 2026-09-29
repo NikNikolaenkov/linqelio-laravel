@@ -279,6 +279,11 @@ final class Contract
         'deleteComment' => 'comment moderation in the console — not an SDK method yet',
         'sendPrivateReply' => 'a private reply to a comment from the console — not an SDK method yet',
         'getConversationPostThumbnail' => 'the post picture the console shows — a binary, not an SDK method',
+        // Cabinet API keys: a person issues, rotates and revokes credentials in the console; an SDK holds one key and never mints others.
+        'listApiKeys' => 'credential management in the console — not an SDK concern',
+        'createApiKey' => 'credential management in the console — not an SDK concern',
+        'rotateApiKey' => 'credential management in the console — not an SDK concern',
+        'revokeApiKey' => 'credential management in the console — not an SDK concern',
         // Contact merge (ADR-0090): deciding that two contacts are one person is
         // a human judgement over both records, made in the console's merge
         // review — the platform itself never merges on a guess, and the undo is

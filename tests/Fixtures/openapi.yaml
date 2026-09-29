@@ -109,8 +109,9 @@ info:
 
     ## Quick start
 
-    1. Get a client API key for your cabinet from the Linqelio team (keys are
-       issued with `issueCabinetKey`; the secret is shown once).
+    1. Get a client API key for your cabinet: an administrator creates one in
+       the console (Developers → API keys) or with `createApiKey`, granting
+       only the scopes the integration needs. The secret is shown once.
     2. `GET /v1/channels` with `Authorization: Bearer <key>` — the connected
        channels and their state.
     3. `GET /v1/contacts?q=380501234567` — find the contact by phone, or
@@ -427,6 +428,13 @@ tags:
       operators. `issueCabinetKey` mints a client key (its secret is shown
       once), `rotateCabinetKey` replaces one with an overlap period, and
       `revokeCabinetKey` withdraws it.
+  - name: api-keys
+    description: >-
+      The cabinet's own client API keys, managed by its administrators with
+      `keys:manage`. `listApiKeys` shows them, `createApiKey` mints one with
+      only the scopes it needs (its secret is shown once), `rotateApiKey`
+      replaces one with an overlap period and `revokeApiKey` withdraws it.
+      Not available as MCP tools: an agent never manages credentials.
   - name: access-pool
     description: >-
       The pool of provider credentials per channel kind, with
@@ -1522,7 +1530,10 @@ paths:
         for temporary access. An unknown scope answers 400
         `validation.invalid_request` naming the scopes it did not understand.
         To replace an existing key without an outage use `rotateCabinetKey`
-        instead of issue-then-revoke.
+        instead of issue-then-revoke. Cabinet administrators create their own
+        keys with `createApiKey`; this operation is for the platform
+        operators, and the only way to grant `platform:admin`, `secrets:read`
+        or `keys:manage`.
 
 
         Not idempotent: each call creates another working key, so do not retry
@@ -1596,12 +1607,14 @@ paths:
 
 
         The replacement's bearer token is shown in this response only, once.
-        Send `scopes`, `label` and `expiresAt` explicitly: when omitted the
-        replacement gets `*`, no label and no expiry, not the old key's values.
-        A `graceUntil` that is not in the future answers 400
+        The replacement keeps the old key's scopes, label and expiry unless
+        the body says otherwise, so a rotation never widens a key by omission;
+        an old key whose expiry has passed needs a new `expiresAt`. A
+        `graceUntil` that is not in the future answers 400
         `keyring.rotation_overlap_required` (use `revokeCabinetKey` to cut a
-        key off at once). A revoked, already retiring or unknown key answers
-        404 `tenancy.cabinet_not_found`.
+        key off at once). An unknown cabinet answers 404
+        `tenancy.cabinet_not_found`; a revoked, already retiring or unknown
+        key answers 404 `keyring.key_not_found`.
 
 
         Not idempotent: a retry after success finds the old key already
@@ -1639,6 +1652,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.cabinet_not_found
+        # issue #180: the key, not the cabinet, is what was not found.
+        - keyring.key_not_found
         - keyring.rotation_overlap_required
       responses:
         '201':
@@ -1675,8 +1690,9 @@ paths:
 
         Use it when a token leaked or an integration is retired. To replace a
         key that is still in use without an outage, use `rotateCabinetKey`
-        instead. A key that is unknown or already revoked answers 404
-        `tenancy.cabinet_not_found`, so a repeated call has no further effect.
+        instead. An unknown cabinet answers 404 `tenancy.cabinet_not_found`; a
+        key that is unknown or already revoked answers 404
+        `keyring.key_not_found`, so a repeated call has no further effect.
         Needs the `platform:admin` scope.
       x-mcp:
         expose: false
@@ -1700,6 +1716,8 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.cabinet_not_found
+        # issue #180: the key, not the cabinet, is what was not found.
+        - keyring.key_not_found
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
       responses:
@@ -1707,6 +1725,296 @@ paths:
           description: The key was revoked.
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================================================
+  # api keys — the cabinet's own client keys, managed by its administrators
+  # (ADR-0110, issue #196). Not the platform surface above: these act in the
+  # caller's cabinet only, under keys:manage and the key-grant ceiling
+  # (internal/authz/keygrant.go).
+  # ===========================================================================
+  /api-keys:
+    get:
+      operationId: listApiKeys
+      x-permission: 'keys:manage'
+      summary: List the cabinet's API keys
+      description: >-
+        Returns the metadata of every client key of the caller's cabinet,
+        newest first: its `kid`, label, scopes, status, when it was created
+        and by whom, its expiry and, during a rotation, the end of its grace
+        period. Secrets are never returned; a lost secret cannot be recovered,
+        only replaced with `rotateApiKey`.
+
+
+        Use it to find the key an integration holds (by `label`) before
+        rotating or revoking it. Revoked keys stay in the list with
+        `revokedAt`. The list is not paginated. Keys issued by the Linqelio
+        team with scopes a cabinet cannot grant (`platform:admin`,
+        `secrets:read`, `keys:manage`) are listed too, but only the Linqelio
+        team can rotate or revoke them.
+      # An agent has no use for the cabinet's credential list, and the
+      # operations it would lead to are not tools either (see createApiKey).
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Credential management is a person's decision in the console: an
+          agent must not mint, rotate or revoke keys, so it has no use for the
+          list either.
+      tags:
+        - api-keys
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The cabinet's keys, newest first (secrets are never returned).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyList'
+              example:
+                items:
+                  - kid: k-9f3a1c2e
+                    status: active
+                    scopes: ['channels:read', 'messages:send']
+                    label: support assistant (MCP)
+                    createdAt: '2026-09-25T10:15:00Z'
+                    createdBy:
+                      type: account
+                      id: 01J9Z3K4M5N6P7Q8R9S0T1V2W3
+                      name: Olena Kovalenko
+                  - kid: k-1b7d4e60
+                    status: revoked
+                    scopes: ['*']
+                    label: old crm sync
+                    createdAt: '2026-03-02T08:00:00Z'
+                    revokedAt: '2026-09-20T12:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createApiKey
+      x-permission: 'keys:manage'
+      summary: Create an API key for the cabinet
+      # ADR-0005: the secret is stored only as an argon2id hash. ADR-0110: the
+      # grant ceiling. No x-idempotency on purpose: the replay layer stores the
+      # answer, and this answer is a secret the platform must never keep.
+      description: >-
+        Creates a client key for the caller's cabinet and returns its full
+        bearer token (`<cabinetId>.<kid>.<secret>`). The token is shown in
+        this response only, once: the platform keeps just a one-way hash of
+        the secret, so store it right away.
+
+
+        Give the key only what its holder needs: `scopes` lists the
+        permissions it gets (`*` is everything inside the cabinet), `label`
+        names the holder, and `expiresAt` ends temporary access. You can only
+        grant scopes you hold yourself — a scope you do not hold answers 403
+        `keyring.scope_not_grantable` naming it — and `*` only when you hold
+        every permission it stands for. `platform:admin`, `secrets:read` and
+        `keys:manage` are never grantable here. An unknown scope, an empty
+        label or an `expiresAt` that is not in the future answers 400
+        `validation.invalid_request`.
+
+
+        Not idempotent: each call creates another working key, so do not retry
+        blindly — check `listApiKeys` first. Refused with 403
+        `tenancy.suspended` while the organization is suspended. The creation
+        is written to the cabinet's audit trail (without the secret).
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          An agent must not mint credentials: the response carries a secret,
+          and a key is access a person should decide to hand out.
+      tags:
+        - api-keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+            example:
+              label: support assistant (MCP)
+              scopes: ['channels:read', 'messages:send']
+              expiresAt: '2027-09-25T00:00:00Z'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - keyring.scope_not_grantable
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The new key; `bearerToken` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedApiKey'
+              example:
+                kid: k-9f3a1c2e
+                cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                bearerToken: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.k-9f3a1c2e.EXAMPLE-SECRET-NOT-REAL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api-keys/{kid}/rotate:
+    post:
+      operationId: rotateApiKey
+      x-permission: 'keys:manage'
+      summary: Rotate one of the cabinet's API keys with an overlap period
+      description: >-
+        Creates a replacement for the key `kid` and moves the old key to
+        `retiring` instead of cutting it off. Both keys work until
+        `graceUntil` (default: 24 hours from now), so the holder swaps tokens
+        at its own pace and the old key stops on its own. Use it instead of
+        `createApiKey` followed by `revokeApiKey`, which breaks the holder in
+        the moment between the two calls.
+
+
+        The replacement keeps the old key's scopes, label and expiry unless
+        the body says otherwise, so a rotation never widens a key by
+        omission. The replacement's bearer token is shown in this response
+        only, once. The same grant rules as `createApiKey` apply to the
+        replacement's scopes, and to the key being rotated: a key carrying a
+        scope you do not hold answers 403 `keyring.scope_not_grantable`.
+
+
+        A revoked, already retiring or unknown key answers 404
+        `keyring.key_not_found`. A `graceUntil` that is not in the future
+        answers 400 `keyring.rotation_overlap_required` (use `revokeApiKey`
+        to cut a key off at once); an old key whose expiry has passed needs
+        a new `expiresAt`. Not idempotent: a retry after success finds the old
+        key already retiring and answers 404. Refused with 403
+        `tenancy.suspended` while the organization is suspended.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          An agent must not mint credentials: the response carries a new
+          secret, and replacing a key is a person's decision.
+      tags:
+        - api-keys
+      parameters:
+        - $ref: '#/components/parameters/KeyKid'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateApiKeyRequest'
+            example:
+              graceUntil: '2026-09-27T10:15:00Z'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - keyring.key_not_found
+        - keyring.scope_not_grantable
+        - keyring.rotation_overlap_required
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The replacement key; `bearerToken` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedApiKey'
+              example:
+                kid: k-c4e81a07
+                cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                bearerToken: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.k-c4e81a07.EXAMPLE-SECRET-NOT-REAL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api-keys/{kid}:
+    delete:
+      operationId: revokeApiKey
+      x-permission: 'keys:manage'
+      x-suspension: allowed
+      x-suspension-reason: >
+        Cuts access: a suspended organization must still be able to withdraw a leaked or unwanted key; nothing is created (ADR-0080 §3).
+      summary: Revoke one of the cabinet's API keys
+      description: >-
+        Revokes the key `kid` at once: the next request made with it is
+        refused with 401, and realtime streams opened with it are closed. The
+        key stays in `listApiKeys` with status `revoked` and `revokedAt`.
+        Revocation cannot be undone, and a revoked key cannot be rotated;
+        create a new key if access is needed again.
+
+
+        Use it when a token leaked or an integration is retired; to replace a
+        key that is still in use without an outage, use `rotateApiKey`
+        instead. It works while the organization is suspended, because it only
+        takes access away. A key that is unknown or already revoked answers
+        404 `keyring.key_not_found`, so a repeated call has no further effect.
+        A key carrying a scope you do not hold (for example one issued by the
+        Linqelio team) answers 403 `keyring.scope_not_grantable`.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: >-
+          An agent must not revoke credentials: it cuts off an integration's
+          access at once and cannot be undone.
+      tags:
+        - api-keys
+      parameters:
+        - $ref: '#/components/parameters/KeyKid'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - keyring.key_not_found
+        - keyring.scope_not_grantable
+      responses:
+        '204':
+          description: The key was revoked.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -20017,8 +20325,8 @@ components:
 
         **Cabinet, organization and plan**
 
-        - `tenancy.cabinet_not_found` — (404) the cabinet, or the cabinet's
-          API key, named in the path does not exist.
+        - `tenancy.cabinet_not_found` — (404) the cabinet named in the path
+          does not exist.
         - `tenancy.cross_cabinet_denied` — (403) the session names a cabinet
           the person is not a member of, or names none while they belong to
           several. Send a correct `X-Linqelio-Cabinet` header.
@@ -20033,6 +20341,14 @@ components:
           Linqelio team resumes it.
         - `keyring.rotation_overlap_required` — (400) a key rotation's grace
           period must end in the future. Pass a later `graceUntil` or omit it.
+        - `keyring.key_not_found` — (404) no key with that `kid` in the
+          cabinet that can still be rotated or revoked: it is unknown, already
+          revoked or, for a rotation, already retiring. Read the key list again.
+        - `keyring.scope_not_grantable` — (403) the key would get, or already
+          carries, a scope the caller does not hold — or one never granted
+          through the cabinet's own keys (`platform:admin`, `secrets:read`,
+          `keys:manage`). The detail names the scopes. Ask for fewer scopes,
+          or ask someone who holds them.
         - `platform.last_operator` — (409) revoking the only active platform
           operator is refused. Grant another operator first.
         - `platform.account_not_found` — (404) no account with that email or
@@ -20717,6 +21033,13 @@ components:
         - meta.comment_action_unavailable
         - meta.private_reply_unavailable
         # --- END M4 ---------------------------------------------------------------
+        # --- BEGIN keys (issues #180, #196, ADR-0110) ----------------------------
+        #   key_not_found (404): a key, not a cabinet, was not found — rotate and
+        #     revoke used to answer tenancy.cabinet_not_found for it.
+        #   scope_not_grantable (403): the key-grant ceiling.
+        - keyring.key_not_found
+        - keyring.scope_not_grantable
+        # --- END keys -------------------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -22647,8 +22970,8 @@ components:
       type: object
       # ADR-0005: the secret is stored only as a hash and never returned.
       description: >-
-        The metadata of one client key, as `listCabinetKeys` returns it. The
-        secret is never returned.
+        The metadata of one client key, as `listApiKeys` and `listCabinetKeys`
+        return it. The secret is never returned.
       properties:
         kid:
           type: string
@@ -22660,7 +22983,7 @@ components:
           description: >-
             `active` — the key works; `next` — the key works and is staged as
             the successor of another key; `retiring` — the key still works
-            until `graceUntil`, then stops (set by `rotateCabinetKey`);
+            until `graceUntil`, then stops (set by a rotation);
             `revoked` — the key no longer works.
         scopes:
           type: array
@@ -22681,6 +23004,8 @@ components:
           type: string
           format: date-time
           description: When the key was issued (UTC, RFC 3339).
+        createdBy:
+          $ref: '#/components/schemas/ApiKeyCreator'
         revokedAt:
           type: string
           format: date-time
@@ -22701,9 +23026,38 @@ components:
         - kid
         - status
 
+    ApiKeyCreator:
+      type: object
+      # ADR-0110: recorded from the audit actor of the issuing request.
+      description: >-
+        Who created a key, as `listApiKeys` shows it. Absent for keys created
+        before this was recorded.
+      properties:
+        type:
+          type: string
+          enum: [account, api_key]
+          description: >-
+            `account` — a person, in the console or through the API with a
+            session; `api_key` — a client key (for a key the Linqelio team
+            issued, one of theirs).
+        id:
+          type: string
+          description: >-
+            The person's account id, or the creating key's `kid`.
+        name:
+          type: string
+          description: >-
+            For a person: their display name, or their email when they have
+            none. For a key: its `kid`. May change when the person renames
+            themselves.
+      required:
+        - type
+        - id
+        - name
+
     ApiKeyList:
       type: object
-      description: The keys returned by `listCabinetKeys`, newest first. Not paginated.
+      description: The keys returned by `listApiKeys` or `listCabinetKeys`, newest first. Not paginated.
       properties:
         items:
           description: The cabinet's keys, revoked ones included.
@@ -22736,16 +23090,18 @@ components:
 
             A scope is one of: `*` (everything inside this cabinet — the
             cabinet_admin permission set, which does NOT include
-            `platform:admin` or `billing:manage`), `platform:admin` (the
+            `platform:admin`, `billing:manage` or `keys:manage`),
+            `platform:admin` (the
             cross-tenant operator surface: /cabinets, the keyring, dead
             letters), `secrets:read` (disclosure of the access pool's
-            credentialsRef), or the exact name of a permission —
+            credentialsRef), `keys:manage` (managing the cabinet's own keys;
+            not implied by `*`), or the exact name of a permission —
             `channels:read`, `channels:manage`, `messages:send`,
             `contacts:write`, `contacts:export`, `campaigns:manage`,
             `policy:manage`, `team:manage`, `ai:manage`, `compliance:read`,
             `compliance:manage`, `compliance:review`, `analytics:read`,
             `audit:read`,
-            `settings:manage`, `billing:manage`.
+            `settings:manage`, `billing:manage`, `keys:manage`.
 
             ANYTHING ELSE IS REFUSED with `validation.invalid_request`. An
             unrecognised scope grants nothing, so a key carrying one would
@@ -22791,18 +23147,67 @@ components:
           type: array
           items:
             type: string
+          # issue #180: the default used to be ["*"], silently widening a
+          # narrow key on every rotation that did not repeat its scopes.
           description: >
-            Scopes for the replacement. Defaults to the outgoing key's. Same
-            vocabulary and the same refusal as `IssueApiKeyRequest.scopes`: a
-            rotation mints a key, so it is the same door.
+            Scopes for the replacement. Omitted or empty, the replacement gets
+            exactly the outgoing key's scopes, so a rotation never widens a key.
+            Same vocabulary and the same refusal as `IssueApiKeyRequest.scopes`:
+            a rotation mints a key, so it is the same door. On `rotateApiKey`
+            the grant rules of `createApiKey` apply as well.
         label:
           type: string
-          description: Label for the replacement. Defaults to the outgoing key's.
+          description: >-
+            Label for the replacement. Omitted, it is the outgoing key's label.
         expiresAt:
           type: string
           format: date-time
-          description: Expiry for the replacement. Omitted, it does not expire.
+          description: >-
+            Expiry for the replacement (UTC, RFC 3339). Omitted, it is the
+            outgoing key's expiry: none when the outgoing key never expires.
+            When the outgoing key has already expired, pass a new one — the
+            call answers 400 `validation.invalid_request` otherwise.
       required: []
+
+    CreateApiKeyRequest:
+      type: object
+      # ADR-0110: the grant ceiling lives in internal/authz/keygrant.go.
+      description: >-
+        The key to create with `createApiKey`: who holds it, what it may do
+        and, optionally, when it stops working.
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Who holds this key, for example `support assistant (MCP)` or
+            `crm sync`. Shown in `listApiKeys` so the key can be found again
+            before rotating or revoking it. Not a secret.
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: string
+          description: >-
+            What the key may do: permission names such as `channels:read` and
+            `messages:send`, or `*` for everything inside the cabinet (all
+            cabinet permissions except `keys:manage` and `billing:manage`). The
+            vocabulary is that of `IssueApiKeyRequest.scopes`. You can grant
+            only scopes you hold yourself, `*` only when you hold all of
+            them, and never `platform:admin`, `secrets:read` or
+            `keys:manage`.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            When the key stops working (UTC, RFC 3339); must be in the future.
+            Omitted, the key does not expire — prefer an expiry for temporary
+            access.
+      required:
+        - label
+        - scopes
 
     IssuedApiKey:
       type: object

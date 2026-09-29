@@ -192,6 +192,12 @@ enum ErrorCode: string
     /** The one private reply to this comment was already sent, or its 7 days have passed (422). */
     case MetaPrivateReplyUnavailable = 'meta.private_reply_unavailable';
 
+    // Cabinet API keys managed by the cabinet itself.
+    /** No such key in this cabinet (404), or it was already revoked. */
+    case KeyringKeyNotFound = 'keyring.key_not_found';
+    /** The key would get a scope its issuer does not hold, or one never grantable here (403). */
+    case KeyringScopeNotGrantable = 'keyring.scope_not_grantable';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 
