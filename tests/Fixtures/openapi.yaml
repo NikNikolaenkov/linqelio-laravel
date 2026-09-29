@@ -4723,6 +4723,7 @@ paths:
         readOnly: false
         destructive: true
         idempotent: true
+        preflight: dryRunCampaign
       tags:
         - campaigns
       x-error-codes:
@@ -6960,6 +6961,7 @@ paths:
         readOnly: false
         destructive: true
         idempotent: true
+        preflight: checkConversationSendPolicy
       tags:
         - conversations
       parameters:
@@ -13868,6 +13870,7 @@ paths:
         readOnly: false
         destructive: true
         idempotent: true
+        preflight: checkSendPolicy
       tags:
         - messages
       parameters:
