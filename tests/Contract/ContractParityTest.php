@@ -347,6 +347,15 @@ final class Contract
         'markAgentConversationRead' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
         'createAgentConversationSession' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
         'listAgentChannelHealth' => 'Bitrix24 contact centre (ADR-0100) — operator-token surface of the embed widget',
+        // Creatio host (ADR-0111): the instance is registered in the console and the
+        // operator signs in through the widget's OAuth popup. Neither is an
+        // application call made with a cabinet key.
+        'listCreatioInstallations' => 'Creatio host surface (ADR-0111) — called by the console',
+        'registerCreatioInstallation' => 'Creatio host surface (ADR-0111) — called by the console',
+        'disableCreatioInstallation' => 'Creatio host surface (ADR-0111) — called by the console',
+        'authorizeCreatioAgent' => 'Creatio host surface (ADR-0111) — browser redirect of the widget sign-in popup',
+        'creatioAgentCallback' => 'Creatio host surface (ADR-0111) — browser redirect of the widget sign-in popup',
+        'createCreatioAgentSession' => 'Creatio host surface (ADR-0111) — operator-token surface of the embed widget',
 
         // Human platform operators (ADR-0075): platform:admin, which client
         // keys are not given — same reasoning as the cabinet operations above.

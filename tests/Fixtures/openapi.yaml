@@ -395,6 +395,12 @@ tags:
       lines connector, the CRM mapping and the operator widget. Start with
       `listBitrixPortals`; a portal is linked with `createBitrixPairing` and
       the code entered in the Bitrix24 application.
+  - name: creatio
+    description: >-
+      The Creatio integration: registering a Creatio instance (an OAuth client
+      of its identity service) with the cabinet, and the operator widget's
+      sign-in inside Creatio. Start with `listCreatioInstallations`; an
+      instance is registered with `registerCreatioInstallation`.
   - name: team
     description: >-
       The people of a cabinet: members, their roles and channel assignments,
@@ -4153,6 +4159,392 @@ paths:
           $ref: '#/components/responses/Forbidden'
   # ===========================================================================
   # END R10-F Bitrix24 application skeleton (paths)
+  # ===========================================================================
+
+  # ===========================================================================
+  # BEGIN Creatio host (ADR-0111) — paths
+  # ===========================================================================
+  # A Creatio instance is registered by a cabinet administrator with the
+  # client credentials of an OAuth client of the instance's identity service.
+  # The operator's widget inside Creatio then signs in with the Authorization
+  # Code flow (authorize -> callback in a popup) and exchanges the result for
+  # an operator token (`createCreatioAgentSession`), the same token the
+  # Bitrix24 widget gets (ADR-0055).
+  /creatio/installations:
+    get:
+      operationId: listCreatioInstallations
+      x-permission: 'settings:manage'
+      summary: List the Creatio instances registered with the cabinet
+      description: >-
+        Returns the Creatio instances registered with this cabinet, active
+        first, then disabled ones kept as history. Not paginated. No secret is
+        ever returned.
+
+
+        Use it to get the `installationId` that the widget's sign-in takes.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - creatio
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+      responses:
+        '200':
+          description: The cabinet's Creatio instances.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatioInstallationList'
+              example:
+                items:
+                  - id: 3c1d9a52-7e4b-4f08-b1a6-0d2e5f7a8b9c
+                    instanceUrl: https://example.creatio.com
+                    identityUrl: https://example-is.creatio.com
+                    status: active
+                    createdAt: '2026-10-02T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: registerCreatioInstallation
+      x-permission: 'settings:manage'
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      summary: Register a Creatio instance with the cabinet
+      description: >-
+        Registers a Creatio instance: its address and the `clientId` and
+        `clientSecret` of an OAuth client that the cabinet's administrator
+        created in the instance's identity service (the redirect URI is the
+        callback of `creatioAgentCallback`). `identityUrl` is the address of
+        the identity service when it is not the instance's own.
+
+
+        The client secret goes straight to the secret store and is never
+        returned. A cabinet has one active Creatio instance: registering a
+        second one answers 409 `creatio.installation_exists`. Recorded in the
+        audit trail, without the secret.
+      x-mcp:
+        expose: false
+        reason: >-
+          Setup flow that needs an administrator in Creatio (creating the OAuth
+          client), and it takes an OAuth client secret.
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - creatio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatioInstallationRequest'
+            example:
+              instanceUrl: https://example.creatio.com
+              identityUrl: https://example-is.creatio.com
+              clientId: ExampleClientIdNotReal
+              clientSecret: ExampleClientSecretNotReal0123456789
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - idempotency.key_reused
+        - idempotency.in_progress
+        - creatio.installation_exists
+      responses:
+        '201':
+          description: The registered instance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatioInstallation'
+              example:
+                id: 3c1d9a52-7e4b-4f08-b1a6-0d2e5f7a8b9c
+                instanceUrl: https://example.creatio.com
+                identityUrl: https://example-is.creatio.com
+                status: active
+                createdAt: '2026-10-02T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /creatio/installations/{installationId}:
+    parameters:
+      - $ref: '#/components/parameters/CreatioInstallationId'
+    delete:
+      operationId: disableCreatioInstallation
+      x-permission: 'settings:manage'
+      x-suspension: allowed
+      x-suspension-reason: >
+        Disabling an instance cuts a host system's access to the cabinet and drops the secret we hold for it; a suspended organization must still be able to take access away (ADR-0080 §3).
+      summary: Disable a Creatio instance
+      description: >-
+        Stops the operator sign-in from the instance, drops its client
+        secret from the secret store and ends all operator grants of that
+        installation; the installation is kept as `disabled`.
+        Idempotent: disabling an instance that is already disabled answers 204.
+        An id that names no instance of this cabinet answers 404
+        `creatio.installation_not_found`. Recorded in the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - creatio
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - creatio.installation_not_found
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The instance is disabled.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /embed/agent/creatio/authorize:
+    get:
+      operationId: authorizeCreatioAgent
+      x-permission: none
+      x-permission-reason: >
+        The first leg of the operator's sign-in inside Creatio (ADR-0111): the browser has no Linqelio credential yet. It only redirects to the instance's identity service with a signed `state`; it reveals nothing and changes nothing.
+      summary: Start the Creatio sign-in — redirect to the instance's identity service
+      description: >-
+        Opened by the widget in a popup. Looks the installation up and
+        answers 302 to the instance's identity service (Authorization Code
+        flow) with a signed, short-lived `state` bound to the installation.
+        An unknown or disabled installation is 404
+        `creatio.installation_not_found`.
+      x-mcp:
+        expose: false
+        reason: A browser redirect of the widget's sign-in popup, not an operation for an agent.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - creatio
+      security: []
+      parameters:
+        - name: installationId
+          in: query
+          required: true
+          description: The Creatio installation to sign in to.
+          schema:
+            type: string
+            format: uuid
+      x-error-codes:
+        - validation.invalid_request
+        - creatio.installation_not_found
+      responses:
+        '302':
+          description: Redirect to the identity service's authorization endpoint.
+          headers:
+            Location:
+              description: The identity service's authorization URL, with the signed `state`.
+              schema:
+                type: string
+                format: uri
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /embed/agent/creatio/callback:
+    get:
+      operationId: creatioAgentCallback
+      x-permission: none
+      x-permission-reason: >
+        The identity service's redirect back to us (ADR-0111): authenticated by the signed `state` issued by `authorizeCreatioAgent`, which binds it to the installation; the authorization `code` is redeemed with the installation's own client credentials.
+      summary: Finish the Creatio sign-in — hand the result to the widget
+      description: >-
+        The redirect URI of the instance's OAuth client. Verifies `state`
+        (signature, age, installation), redeems `code` at the identity
+        service, and answers a small HTML page that passes the result to the
+        widget that opened the popup and closes itself. A `state` that is
+        missing, forged or expired is 400 `creatio.state_invalid`. An
+        unknown or disabled installation is 404 `creatio.installation_not_found`;
+        an authorization code the identity service refuses is 401
+        `creatio.auth_invalid`.
+      x-mcp:
+        expose: false
+        reason: A browser redirect target of the widget's sign-in popup, not an operation for an agent.
+        readOnly: true
+        destructive: false
+        idempotent: false
+      tags:
+        - creatio
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: The authorization code from the identity service.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - name: state
+          in: query
+          required: true
+          description: The signed state issued by `authorizeCreatioAgent`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+      x-error-codes:
+        - validation.invalid_request
+        - creatio.state_invalid
+        - creatio.installation_not_found
+        - creatio.auth_invalid
+        - provider.unavailable
+      responses:
+        '200':
+          description: An HTML page that passes the result to the opener and closes the popup.
+          content:
+            text/html:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /embed/agent/creatio/session:
+    post:
+      operationId: createCreatioAgentSession
+      x-permission: none
+      x-permission-reason: >
+        The Creatio operator's auto-login (ADR-0049 §5, ADR-0055 §2, ADR-0111): there is no Linqelio credential inside the host's page. The caller presents an opaque handle produced by the sign-in popup; it refers to the grant held by Linqelio and is neither a Creatio token nor a user identifier. The operator identity always comes from Creatio's own response to the server; rights come from the linked account's Principal, not from the host.
+      summary: Log a Creatio user in to the Linqelio widget
+      description: >-
+        Sent by the widget after the sign-in popup finished, with the
+        installation and the opaque `handle` produced by the sign-in popup. The
+        handle refers to the grant held by Linqelio; keep it in memory only
+        and send it again to renew the agent token. It is not a Creatio token
+        and not a user identifier: the operator identity always comes from
+        Creatio's response, which the server asks for with the stored grant.
+        The Creatio user is mapped to a Linqelio
+        account: an existing link, else an account with the same e-mail that
+        is a member of the installation's cabinet. Nobody is ever created: an
+        unknown user gets 403 `creatio.user_not_linked` ("ask your
+        administrator to invite you").
+
+
+        An account with an administrative role (org_owner, org_admin,
+        cabinet_admin) is never linked by e-mail alone. For it the answer is
+        202 with a one-time `linkCode`, which that person confirms from their
+        own console session; the next call then logs them in.
+
+
+        The result is an operator token, bounded by the person's channels and
+        capabilities, with a short lifetime. Hold it in the widget's memory
+        only, and renew it the same way. It is not a console session. An
+        unknown or disabled installation answers 404
+        `creatio.installation_not_found`; an identity the instance does not
+        confirm, 401 `creatio.auth_invalid`. Recorded in the security log
+        (`auth.federated`).
+      x-mcp:
+        expose: false
+        reason: Login flow of the widget inside Creatio, authenticated by the Creatio user's own identity.
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - creatio
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatioAgentSessionRequest'
+            example:
+              installationId: 3c1d9a52-7e4b-4f08-b1a6-0d2e5f7a8b9c
+              handle: example-handle-not-real
+      x-error-codes:
+        - validation.invalid_request
+        - auth.origin_rejected
+        - creatio.installation_not_found
+        - creatio.auth_invalid
+        - creatio.user_not_linked
+        - provider.unavailable
+      responses:
+        '200':
+          description: The operator token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatioAgentSession'
+              example:
+                token: eyJhbGciOiJFZERTQSJ9.example-operator-token.not-real
+                expiresAt: '2026-10-02T10:30:00Z'
+                cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                accountId: 2d3e4f50-6172-4c8d-9e0f-1a2b3c4d5e6f
+                displayName: Olena Kovalenko
+                cap: [contact:read, message:read, message:send, conversation:list]
+                channelScoped: true
+                channelIds: [8e9f0a1b-2c3d-4e5f-a6b7-c8d9e0f1a2b3]
+                installationId: 3c1d9a52-7e4b-4f08-b1a6-0d2e5f7a8b9c
+                instanceUrl: https://example.creatio.com
+        '202':
+          description: The account must confirm the link from the console first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixUserLinkPending'
+              example:
+                linkCode: H4TWN-8JKDE
+                expiresAt: '2026-10-02T10:25:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # ===========================================================================
+  # END Creatio host — paths
   # ===========================================================================
 
   # ===========================================================================
@@ -20106,7 +20498,14 @@ components:
       schema:
         type: string
         format: uuid
-
+    CreatioInstallationId:
+      name: installationId
+      in: path
+      required: true
+      description: The Creatio installation id (`id` of `listCreatioInstallations`).
+      schema:
+        type: string
+        format: uuid
     # ADR-0107 §3: the grant of a finished Meta login.
     MetaGrantId:
       name: grantId
@@ -20593,6 +20992,20 @@ components:
         - `bitrix.crm_linked_elsewhere` — (409) the CRM record is already
           linked to a contact outside the operator's channels.
 
+        **Creatio**
+
+        - `creatio.installation_not_found` — (404) no such active Creatio
+          installation in the cabinet.
+        - `creatio.auth_invalid` — (401) the Creatio identity service or
+          instance did not confirm the user. Sign in again.
+        - `creatio.installation_exists` — (409) the cabinet already has an
+          active Creatio installation. Disable it before registering another.
+        - `creatio.user_not_linked` — (403) the Creatio user has no active
+          account in the installation's cabinet. Ask an administrator to
+          invite them.
+        - `creatio.state_invalid` — (400) the sign-in `state` is missing,
+          forged or expired. Start the sign-in again.
+
         **Facebook Pages and Instagram**
 
         - `meta.app_not_configured` — (409) the platform's Meta app is not set
@@ -20816,6 +21229,11 @@ components:
         - bitrix.user_not_linked
         - bitrix.portal_not_found
         - bitrix.link_code_invalid
+        - creatio.installation_not_found
+        - creatio.installation_exists
+        - creatio.auth_invalid
+        - creatio.user_not_linked
+        - creatio.state_invalid
         # --- END R10-F ------------------------------------------------------------
         # --- BEGIN R10-C (issue #69, ADR-0092): message templates ----------------
         #   policy.service_window_closed (403): a FREE-FORM message (text,
@@ -27729,6 +28147,137 @@ components:
           type: string
           format: date-time
           description: When the code stops working (10 minutes after issue), UTC.
+    CreatioInstallationRequest:
+      type: object
+      description: The instance and its OAuth client, sent to `registerCreatioInstallation`.
+      required: [instanceUrl, clientId, clientSecret]
+      properties:
+        instanceUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: The address of the Creatio instance.
+        identityUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: The address of the instance's identity service; defaults to a derivation of `instanceUrl` when absent.
+        clientId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: The OAuth client id created in the identity service.
+        clientSecret:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: The OAuth client secret. Stored in the secret store only; never returned.
+    CreatioInstallation:
+      type: object
+      description: A Creatio instance registered with a cabinet. Never carries a secret.
+      required: [id, instanceUrl, identityUrl, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The installation id — the `installationId` of the other Creatio operations.
+        instanceUrl:
+          type: string
+          format: uri
+          description: The address of the Creatio instance.
+        identityUrl:
+          type: string
+          format: uri
+          description: The address of the instance's identity service.
+        status:
+          type: string
+          description: >-
+            `active` (the instance can be signed in to) or `disabled`
+            (switched off by `disableCreatioInstallation`). Not a closed enum
+            in the contract: an enum named like this one renames existing
+            generated constants (oapi-codegen resolves the shared value
+            `active` by order), so clients should treat unknown values as
+            disabled.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the instance was registered, UTC.
+    CreatioInstallationList:
+      type: object
+      description: The cabinet's Creatio instances, returned by `listCreatioInstallations`.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Active first, then disabled. Not paginated.
+          items:
+            $ref: '#/components/schemas/CreatioInstallation'
+    CreatioAgentSessionRequest:
+      type: object
+      description: What the widget sends to `createCreatioAgentSession`.
+      required: [installationId, handle]
+      properties:
+        installationId:
+          type: string
+          format: uuid
+          description: The Creatio installation the user signed in to.
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: >-
+            An opaque handle produced by the sign-in popup. It refers to the
+            grant held by Linqelio; keep it in memory only and send it again
+            to renew the agent token. It is not a Creatio token and not a
+            user identifier: the operator identity always comes from Creatio's
+            response.
+    CreatioAgentSession:
+      type: object
+      description: >
+        The operator token for the widget inside Creatio, and who it was
+        issued to. Returned by `createCreatioAgentSession`. Hold it in memory only.
+      required: [token, expiresAt, cabinetId, accountId, displayName, cap, channelScoped, installationId, instanceUrl]
+      properties:
+        token:
+          type: string
+          description: The operator token, sent as a bearer token by the widget's calls. Not a console session.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the token stops working, UTC; get a new one the same way before then.
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet the token acts in.
+        accountId:
+          type: string
+          format: uuid
+          description: The Linqelio account the Creatio user was mapped to.
+        displayName:
+          type: string
+          description: The account's display name, for the widget's header.
+        cap:
+          type: array
+          items:
+            type: string
+          description: The capabilities the token carries (computed from the person's rights).
+        channelScoped:
+          type: boolean
+          description: Whether the token is limited to channelIds.
+        channelIds:
+          type: array
+          description: The channels the token is limited to; present only when `channelScoped` is true.
+          items:
+            type: string
+            format: uuid
+        installationId:
+          type: string
+          format: uuid
+          description: The installation the user logged in from.
+        instanceUrl:
+          type: string
+          format: uri
+          description: The address of the Creatio instance.
     BitrixUserLinkConfirmRequest:
       type: object
       description: The one-time link code, sent to `confirmBitrixUserLink`.
