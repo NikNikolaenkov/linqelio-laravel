@@ -77,6 +77,11 @@ enum ErrorCode: string
     case BitrixUserNotLinked = 'bitrix.user_not_linked';
     case BitrixPortalNotFound = 'bitrix.portal_not_found';
     case BitrixLinkCodeInvalid = 'bitrix.link_code_invalid';
+    case CreatioInstallationNotFound = 'creatio.installation_not_found';
+    case CreatioInstallationExists = 'creatio.installation_exists';
+    case CreatioAuthInvalid = 'creatio.auth_invalid';
+    case CreatioUserNotLinked = 'creatio.user_not_linked';
+    case CreatioStateInvalid = 'creatio.state_invalid';
     case PolicyServiceWindowClosed = 'policy.service_window_closed';
     case TemplateNotFound = 'template.not_found';
     case TemplateNotApproved = 'template.not_approved';
