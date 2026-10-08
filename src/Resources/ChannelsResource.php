@@ -92,6 +92,28 @@ final readonly class ChannelsResource
     }
 
     /**
+     * The other way into a WhatsApp Web channel: a code the account's owner
+     * types on the phone (WhatsApp → Linked devices → Link a device → Link with
+     * phone number instead) in place of scanning the QR. `$phone` is that
+     * account's number with its country code; the code comes back as
+     * `pairingCode`.
+     *
+     * Starts the login when none is running, like {@see self::connect()} — poll
+     * {@see self::status()} until it leaves `pairing`. A code is short-lived
+     * (two minutes at most), and a channel gets one per 20 seconds: sooner is
+     * `policy.rate_limited`. `channel.not_connected` means the login is still
+     * starting — ask again in a few seconds. A channel that is already
+     * connected answers `connected` and no code; any other kind is
+     * `channel.capability_unsupported`.
+     *
+     * @return array<string, mixed>
+     */
+    public function pairingCode(string $id, string $phone): array
+    {
+        return $this->client->post("/channels/{$id}/pairing-code", ['phone' => $phone])->data;
+    }
+
+    /**
      * Hand a channel its provider credentials — a bot token, or the 2FA password
      * a Telegram login is waiting on.
      *

@@ -9,6 +9,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Linking WhatsApp Web by a code**: `channels()->pairingCode($id, $phone)`
+  returns the `pairingCode` the account's owner types on the phone instead of
+  scanning the QR. One code per channel per 20 seconds (`policy.rate_limited`
+  sooner).
 - **Check → confirm → send** (#9, ADR-0082). `messages()->check()` asks send
   policy about a message without sending it and returns a `SendPolicyCheck` —
   verdict, every finding, the current limits, and the `warningKeys` to

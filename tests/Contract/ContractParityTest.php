@@ -60,6 +60,7 @@ final class Contract
         'listChannels' => 'channels()->list()',
         'createChannel' => 'channels()->create()',
         'connectChannel' => 'channels()->connect()',
+        'requestChannelPairingCode' => 'channels()->pairingCode()',
         'disconnectChannel' => 'channels()->disconnect()',
         'getChannelStatus' => 'channels()->status()',
         'setChannelCredentials' => 'channels()->setCredentials()',
@@ -642,6 +643,9 @@ function contractDrivers(): array
         ],
         'connectChannel' => [
             'call' => fn (): array => Linqelio::channels()->connect('ch-1'),
+        ],
+        'requestChannelPairingCode' => [
+            'call' => fn (): array => Linqelio::channels()->pairingCode('ch-1', '+380501234567'),
         ],
         'disconnectChannel' => [
             'call' => fn (): array => Linqelio::channels()->disconnect('ch-1'),
