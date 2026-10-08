@@ -880,6 +880,90 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /channels/{id}/pairing-code:
+    post:
+      operationId: requestChannelPairingCode
+      x-permission: 'channels:manage'
+      summary: Get a code to link a WhatsApp Web channel by phone number
+      description: >-
+        The alternative to scanning the QR of a WhatsApp Web channel
+        (`wa_web`): answers `pairing` with a `pairingCode` of eight characters.
+        The owner of the account enters it on the phone — WhatsApp → Linked
+        devices → Link a device → Link with phone number instead. `phone` is
+        the number of that WhatsApp account, with its country code.
+
+
+        Starts the channel's login when none is in progress, as `connectChannel`
+        does. Poll `getChannelStatus` until `connected`. A code is short-lived
+        (two minutes at most, sometimes less); when it stops working, ask for a
+        new one — each call issues a new code, and no more often than once in
+        20 seconds per channel (429 `policy.rate_limited` with `Retry-After`
+        otherwise). A channel that is already connected answers `connected`
+        and no code. While the login is still
+        starting the call answers 409 `channel.not_connected`: repeat it in a
+        few seconds.
+
+
+        Other kinds have no such code and answer 409
+        `channel.capability_unsupported`. Needs a person to enter the code, so
+        an agent can start it but cannot finish it alone.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelPairingCodeRequest'
+            example:
+              phone: '+380501234567'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - policy.rate_limited
+        # issue #119: a malformed (non-uuid) path id; also a phone that is not a number.
+        - validation.invalid_request
+        # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The pairing status with the code to enter on the phone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelStatus'
+              example:
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                state: pairing
+                pairingCode: K7QX-M3PZ
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
   /channels/{id}/credentials:
     put:
       operationId: setChannelCredentials
@@ -23660,6 +23744,22 @@ components:
           minimum: 1
           maximum: 500
 
+    ChannelPairingCodeRequest:
+      type: object
+      description: Whose WhatsApp account a pairing code is asked for (`requestChannelPairingCode`).
+      properties:
+        phone:
+          type: string
+          description: >
+            The phone number of the WhatsApp account being linked, with its
+            country code. A leading `+`, spaces, dashes and brackets are
+            ignored; 7 to 15 digits must remain.
+          minLength: 7
+          maxLength: 32
+      required:
+        - phone
+      additionalProperties: false
+
     SyncResult:
       type: object
       description: Outcome of an address-book import (`syncChannel`).
@@ -23743,9 +23843,10 @@ components:
       type: object
       description: >
         Live connection/pairing status of a channel, answered by
-        `getChannelStatus`, `connectChannel` and `disconnectChannel`. While
-        `state=pairing` a QR channel (wa_web, tg_client) carries the `qr`
-        payload (and optionally a `pairingCode`) to show to the account owner.
+        `getChannelStatus`, `connectChannel`, `requestChannelPairingCode` and
+        `disconnectChannel`. While `state=pairing` a QR channel (wa_web,
+        tg_client) carries the `qr` payload to show to the account owner;
+        `requestChannelPairingCode` answers a `pairingCode` instead.
         For tg_client, `passwordRequired=true` means the QR was scanned but the
         account's two-step verification password must be submitted via
         setChannelCredentials to finish the login.
@@ -23762,7 +23863,10 @@ components:
             as a QR image). Absent unless state=pairing for a QR channel.
         pairingCode:
           type: string
-          description: Alternative short pairing code (phone-number pairing). Optional.
+          description: >
+            The code to enter on the phone instead of scanning the QR (wa_web,
+            linking by phone number). Present only in the answer of
+            `requestChannelPairingCode`.
         expiresAt:
           type: string
           format: date-time
