@@ -14020,7 +14020,7 @@ paths:
         has ice breakers configured.
 
 
-        Use it to move or extend a contact to a bot channel: create the link,
+        Use it to move or extend a contact to a channel: create the link,
         then send it to the person over a channel that already reaches them
         (for example with `sendContactMessage`). This call itself sends
         nothing. The link expires after 24 hours (`expiresAt`).
@@ -14029,8 +14029,11 @@ paths:
         Errors: 404 `contact.not_found` for an unknown contact or one outside
         the caller's channel scope; 404 `channel.not_found` for a channel the
         caller does not work; 422 `channel.capability_unsupported` for a
-        channel that cannot be invited this way. Send an `Idempotency-Key` to get the same
-        link back on a retry.
+        channel that cannot be invited this way (its kind has no deep-link
+        opt-in, it is not connected, or its Instagram account has no public
+        username); 503 `provider.unavailable` when the channel's account name
+        cannot be read right now (Instagram) — retry later. Send an
+        `Idempotency-Key` to get the same link back on a retry.
       x-mcp:
         expose: true
         readOnly: false
@@ -14061,6 +14064,8 @@ paths:
         - contact.not_found
         - channel.not_found
         - channel.capability_unsupported
+        # ADR-0115: the Instagram account name could not be read (Graph or secret store).
+        - provider.unavailable
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
         # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
@@ -14089,11 +14094,16 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
-          description: The channel kind has no deep-link opt-in.
+          description: >-
+            The channel cannot be invited by link: its kind has no deep-link
+            opt-in, it is not connected, or its Instagram account has no public
+            username.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /contacts/{id}:
     get:
