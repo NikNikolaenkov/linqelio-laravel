@@ -1043,30 +1043,34 @@ paths:
     post:
       operationId: syncChannel
       x-permission: 'channels:manage'
-      summary: Import a channel's address book and request older messages
+      summary: Import a channel's address book or message history
       # ADR-0008 §2: identities are matched exactly, never fuzzily.
-      # The handler accepts wa_web only today (tg_client is refused as
-      # channel.capability_unsupported although the sync code mentions it).
       description: >-
-        Imports the address book of a connected WhatsApp Web account (`wa_web`)
-        into the cabinet's contacts and, with `history: true`, asks WhatsApp to
-        replay older messages of its chats. Contacts are matched on the exact
-        address on the channel: an existing contact is counted as matched and
-        left as it is, a new address becomes a new contact. Groups, broadcast
-        lists and newsletters are skipped. Nothing is sent to anyone.
+        WhatsApp Web (`wa_web`): imports the account's address book into the
+        cabinet's contacts and, with `history: true`, asks WhatsApp to replay
+        older messages of its chats (`historyCount`, default 100). Contacts are
+        matched on the exact address on the channel: an existing contact is
+        counted as matched and left as it is, a new address becomes a new
+        contact. Groups, broadcast lists and newsletters are skipped.
 
 
-        Replayed messages arrive later, in the background, like any inbound
-        message (a message already stored is not stored twice), so the call
-        returns as soon as the request is made; `historyRequested: false` means
-        the replay request failed even though the import succeeded. Repeating
-        the call is safe: contacts already imported are matched, not
-        duplicated.
+        Telegram account (`tg_client`): starts a background import of the
+        account's existing messages — personal chats and, when groups are on for
+        the channel, groups (never broadcast channels), both directions — for the
+        last `historyDays` days (default 90, max 365) and at most `historyCount`
+        messages per chat (default 200, max 500), from the 200 most recent
+        chats. Attachments are imported as labels like `[photo]` with their
+        caption. The call returns at once with `historyImportId`; follow the run
+        with `getChannelHistoryImport`. While a run is active, the call returns
+        that run instead of starting another.
 
 
-        Other kinds have no address book or history to read and answer 409
-        `channel.capability_unsupported`; a channel that is not connected
-        cannot be read.
+        Either way nothing is sent to anyone, imported messages raise no
+        webhooks, desk notifications or AI replies, and a message already stored
+        is never stored twice, so repeating the call is safe. Other kinds have no
+        address book or history to read and answer 409
+        `channel.capability_unsupported`; a channel that is not connected cannot
+        be read (409 `channel.not_connected`).
       x-mcp:
         expose: true
         readOnly: false
@@ -1084,6 +1088,7 @@ paths:
               $ref: '#/components/schemas/SyncChannelRequest'
             example:
               history: true
+              historyDays: 90
               historyCount: 200
       x-error-codes:
         - auth.invalid_key
@@ -1122,6 +1127,64 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /channels/{id}/history-import:
+    get:
+      operationId: getChannelHistoryImport
+      x-permission: 'channels:read'
+      summary: Get the progress of a channel's history import
+      description: >-
+        Returns the latest history import of a Telegram account channel
+        (`tg_client`) started with `syncChannel`: its state, limits and how many
+        chats and messages it has imported so far. `status` is `pending` (waits
+        for the channel's session, up to half a minute), `running`, `paused`
+        (Telegram asked to slow down; it resumes by itself at `waitUntil`),
+        `done`, `failed` (see `error`; start it again with `syncChannel`) or
+        `none` when the channel never ran one (channels other than a Telegram
+        account always report `none`). Changes nothing.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The channel's latest history import.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelHistoryImport'
+              example:
+                status: running
+                id: 0b8f4f8e-2f5e-4a3c-9a43-5c1d1b7a9e10
+                days: 90
+                perChat: 200
+                dialogsDone: 12
+                messagesImported: 840
+                messagesSkipped: 31
+                createdAt: '2026-10-14T14:05:00Z'
+                startedAt: '2026-10-14T14:05:20Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /channels/{id}/settings:
     put:
@@ -13935,15 +13998,26 @@ paths:
       operationId: createContactInvite
       x-permission: 'contacts:write'
       x-idempotency: replay
-      summary: Create an invite link that connects a contact to a bot channel
-      # ADR-0008 §5 (a redeemed deep-link token binds the bot identity to this contact).
+      summary: Create an invite link that connects a contact to a channel
+      # ADR-0008 §5 (a redeemed deep-link token binds the identity to this contact); ADR-0115 (Messenger and Instagram).
       description: >-
-        Creates a single-use click-to-chat link for a bot channel — a Telegram
-        bot (`tg_bot`) or a Viber bot (`viber_bot`). A bot cannot write to a
-        person first: the person has to start it. When the contact opens the
-        link and starts the bot, their bot identity is added to THIS contact,
-        so the new channel joins the same person instead of creating a new
-        contact.
+        Creates a single-use click-to-chat link for a channel that cannot
+        write to a person first: a Telegram bot (`tg_bot`), a Viber bot
+        (`viber_bot`), a Facebook Page (Messenger, `fb_page`) or an Instagram
+        account (`instagram`). The person has to start the conversation. When
+        the contact opens the link and starts it, their identity on that
+        channel is added to THIS contact, so the new channel joins the same
+        person instead of creating a new contact.
+
+
+        Link formats: `https://t.me/<bot>?start=<token>` (Telegram),
+        Viber's `viber://pa?chatURI=<bot>&context=<token>` form (Viber),
+        `https://m.me/<page-username-or-id>?ref=<token>` (Messenger) and
+        `https://ig.me/m/<username>?ref=<token>` (Instagram). Meta does not
+        guarantee that it passes the `ref` on (for example on some Android
+        clients or in some regions); if the contact does not join, link the
+        identity manually. Instagram passes the `ref` only when the account
+        has ice breakers configured.
 
 
         Use it to move or extend a contact to a bot channel: create the link,
@@ -13955,7 +14029,7 @@ paths:
         Errors: 404 `contact.not_found` for an unknown contact or one outside
         the caller's channel scope; 404 `channel.not_found` for a channel the
         caller does not work; 422 `channel.capability_unsupported` for a
-        channel that is not a bot. Send an `Idempotency-Key` to get the same
+        channel that cannot be invited this way. Send an `Idempotency-Key` to get the same
         link back on a retry.
       x-mcp:
         expose: true
@@ -15823,6 +15897,302 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /auth/oauth/consent:
+    get:
+      operationId: getOAuthConsentRequest
+      x-permission: self
+      x-permission-reason: >
+        Shows the logged-in person what an app connecting to the MCP server asks for, so they can decide. Only a person consents on their own behalf; a client key has no person to consent for.
+      summary: Describe an app's request to connect to the MCP server
+      description: >
+        Opens the sealed authorization request the console received in its
+        address (the `request` query parameter) and describes it for the
+        consent screen: the app's name and the domain that vouches for it,
+        whether it registered itself, the host the browser returns to, the
+        permissions it asks for and when the request expires. Reading it
+        grants nothing; the person answers with `decideOAuthConsent`.
+      x-mcp:
+        expose: false
+        reason: >-
+          Part of a person's own consent to an OAuth client; an agent must
+          never take part in granting access to itself.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: request
+          in: query
+          required: true
+          description: The sealed authorization request, exactly as it arrived in the console's address.
+          schema:
+            type: string
+            maxLength: 8192
+      x-error-codes:
+        - auth.session_invalid
+        - oauth.request_invalid
+        - validation.invalid_request
+      responses:
+        '200':
+          description: What the app asks for.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthConsentRequest'
+              example:
+                clientName: Claude
+                clientId: https://claude.ai/oauth/mcp-oauth-client-metadata
+                clientDomain: claude.ai
+                registered: false
+                redirectDomain: claude.ai
+                redirectMismatch: false
+                requestedScopes: ['channels:read', 'messages:send']
+                expiresAt: '2026-10-14T10:10:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: decideOAuthConsent
+      x-permission: self
+      x-permission-reason: >
+        The person approves or refuses an app's access to one of their cabinets, with at most their own permissions there. Only a person consents; a client key cannot.
+      summary: Approve or refuse an app's access to one cabinet
+      description: >
+        Records the person's answer to an authorization request. Approving
+        names one cabinet the person is a member of and the permissions to
+        give the app — never more than the person holds there, and never key
+        management, platform administration, secrets or the master scope. A
+        person with two-factor authentication must have passed it in this
+        session. The answer is where to send the browser next: back to the app
+        with a one-time code, or with `access_denied`.
+      x-mcp:
+        expose: false
+        reason: >-
+          A person's own consent to an OAuth client; an agent must never grant
+          itself access.
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthConsentDecision'
+            example:
+              request: AbCdEf0123
+              approve: true
+              cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+              scopes: ['channels:read', 'messages:send']
+      x-error-codes:
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.second_factor_required
+        - oauth.request_invalid
+        - tenancy.cross_cabinet_denied
+        - keyring.scope_not_grantable
+        - validation.invalid_request
+      responses:
+        '200':
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthConsentResult'
+              example:
+                redirectUri: https://claude.ai/api/mcp/auth_callback?code=lqo_ac_x&iss=https%3A%2F%2Fmessages.example.com&state=s
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /auth/oauth/grants:
+    get:
+      operationId: listMyOAuthGrants
+      x-permission: self
+      x-permission-reason: >
+        Lists the apps the logged-in person connected, across all their cabinets, so they can see and revoke them. The account is taken from the session.
+      summary: List the apps the logged-in person connected
+      description: >
+        Lists the apps (such as Claude) this person allowed to act for them
+        through the MCP server: for each, the app's name and domain, the
+        cabinet, the permissions given, when it was connected and when it last
+        called the API. Revoked connections are not listed. Newest first.
+      x-mcp:
+        expose: false
+        reason: >-
+          A person's own connected apps; an MCP client acts as such an app and
+          must not manage its own access.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+      responses:
+        '200':
+          description: The person's connected apps, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthGrantList'
+              example:
+                items:
+                  - id: 7b0e8a52-6c1e-4f43-9d55-0f6a2b9c1d3e
+                    clientName: Claude
+                    clientDomain: claude.ai
+                    cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                    accountId: 1f2e3d4c-5b6a-4789-8a9b-0c1d2e3f4a5b
+                    scopes: ['channels:read', 'messages:send']
+                    createdAt: '2026-10-14T10:00:00Z'
+                    lastUsedAt: '2026-10-14T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/oauth/grants/{grantId}:
+    delete:
+      operationId: revokeMyOAuthGrant
+      x-permission: self
+      x-permission-reason: >
+        Disconnects one of the logged-in person's own apps; another person's connection answers 404, the same as an unknown one.
+      summary: Disconnect one of the logged-in person's apps
+      description: >
+        Revokes a connection immediately: the app's access and refresh tokens
+        stop working on its next request, and it must ask for consent again to
+        come back. An unknown, already revoked or another person's connection
+        answers 404.
+      x-mcp:
+        expose: false
+        reason: >-
+          A person's own connected apps; an MCP client must not manage its own
+          access.
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthGrantId'
+      x-error-codes:
+        - auth.session_invalid
+        - auth.origin_rejected
+        - oauth.grant_not_found
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The connection is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /oauth-grants:
+    get:
+      operationId: listCabinetOAuthGrants
+      x-permission: 'team:manage'
+      summary: List the apps connected to this cabinet
+      description: >
+        Lists the apps members connected to this cabinet through the MCP
+        server (such as Claude), with the member who connected each, the
+        permissions given and when it last called the API, so an administrator
+        can see and revoke them. Revoked connections are not listed. Newest
+        first.
+      x-mcp:
+        expose: false
+        reason: >-
+          Access management is a person's decision in the console; an MCP
+          client must not see or manage OAuth connections.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - team
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The cabinet's connected apps, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthGrantList'
+              example:
+                items:
+                  - id: 7b0e8a52-6c1e-4f43-9d55-0f6a2b9c1d3e
+                    clientName: Claude
+                    clientDomain: claude.ai
+                    cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                    accountId: 1f2e3d4c-5b6a-4789-8a9b-0c1d2e3f4a5b
+                    accountEmail: owner@example.com
+                    scopes: ['channels:read', 'messages:send']
+                    createdAt: '2026-10-14T10:00:00Z'
+                    lastUsedAt: '2026-10-14T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /oauth-grants/{grantId}:
+    delete:
+      operationId: revokeCabinetOAuthGrant
+      x-permission: 'team:manage'
+      x-suspension: allowed
+      x-suspension-reason: >-
+        Taking access away must work while the organization is suspended.
+      summary: Disconnect an app from this cabinet
+      description: >
+        Revokes one connection to this cabinet immediately, whoever made it:
+        the app's tokens stop working on its next request. A connection to
+        another cabinet, an unknown or an already revoked one answers 404.
+      x-mcp:
+        expose: false
+        reason: >-
+          Access management is a person's decision in the console; an MCP
+          client must not manage OAuth connections.
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - team
+      parameters:
+        - $ref: '#/components/parameters/OAuthGrantId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - oauth.grant_not_found
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The connection is revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /auth/invites/accept:
     post:
       operationId: acceptInvite
@@ -20368,6 +20738,12 @@ components:
         only as an argon2id hash — a lost key cannot be recovered, only
         replaced. A missing, malformed, revoked or expired key is 401
         `auth.invalid_key`.
+
+        The same header also accepts an OAuth access token (`lqo_at_…`)
+        issued to an MCP client (such as a Claude connector): it acts as the
+        person who consented, with their current role in the consented
+        cabinet narrowed to the permissions they gave. An invalid one is 401
+        `oauth.token_invalid`.
     embedToken:
       type: http
       scheme: bearer
@@ -20506,6 +20882,15 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-f]{64}$'
+
+    OAuthGrantId:
+      name: grantId
+      in: path
+      required: true
+      description: A connected app's id, as listMyOAuthGrants or listCabinetOAuthGrants report it.
+      schema:
+        type: string
+        format: uuid
 
     KeyKid:
       name: kid
@@ -20838,6 +21223,13 @@ components:
           id. Invite the person first.
         - `platform.operator_not_found` — (404) the account is not an active
           platform operator.
+        - `oauth.token_invalid` — (401) the OAuth access token is unknown,
+          expired or revoked, or the person behind it left the cabinet or was
+          blocked. Refresh the token; if that fails, connect the app again.
+        - `oauth.request_invalid` — (400) the authorization request is garbled
+          or older than ten minutes. Start connecting again from the app.
+        - `oauth.grant_not_found` — (404) no such live connected app for this
+          person or cabinet. Read the list again.
 
         **Team**
 
@@ -21138,6 +21530,9 @@ components:
         - embed.field_ownership_denied
         - provider.upstream_error
         - provider.unavailable
+        - oauth.token_invalid
+        - oauth.request_invalid
+        - oauth.grant_not_found
         # --- additive (ADR-0013 §4): appended, never reordered -----------------
         # team.*: membership integrity (ADR-0050 §6, 409). Emitted by
         # internal/authz.CheckMembershipChange through the team API (/team/*).
@@ -22103,32 +22498,37 @@ components:
 
     CreateInviteRequest:
       type: object
-      description: Which bot channel to invite the contact into (`createContactInvite`).
+      description: Which channel to invite the contact into (`createContactInvite`).
       properties:
         channelId:
           type: string
           description: >-
-            The bot channel the contact should be invited into — a Telegram bot
-            (`tg_bot`) or a Viber bot (`viber_bot`) of the cabinet.
+            The channel the contact should be invited into — a Telegram bot
+            (`tg_bot`), a Viber bot (`viber_bot`), a Facebook Page
+            (`fb_page`) or an Instagram account (`instagram`) of the cabinet.
       required:
         - channelId
 
     ContactInvite:
       type: object
-      description: A single-use deep link that opts a contact into a bot channel.
+      description: >-
+        A single-use deep link that opts a contact into a bot, Messenger or
+        Instagram channel.
       properties:
         contactId:
           type: string
-          description: The contact the bot identity will be added to.
+          description: The contact the channel identity will be added to.
         channelId:
           type: string
-          description: The bot channel the link opens.
+          description: The channel the link opens.
         inviteLink:
           type: string
           description: >-
             The click-to-chat link to send to the person, e.g.
-            `https://t.me/<bot>?start=<token>`. It works once; treat it as a
-            secret meant for that person only.
+            `https://t.me/<bot>?start=<token>` (Telegram),
+            `https://m.me/<page>?ref=<token>` (Messenger) or
+            `https://ig.me/m/<username>?ref=<token>` (Instagram). It works
+            once; treat it as a secret meant for that person only.
         expiresAt:
           type: string
           format: date-time
@@ -22838,7 +23238,8 @@ components:
           type: boolean
           description: >-
             Can invite a contact with a click-to-chat link that opts them into
-            the channel (a Telegram bot, a Viber bot).
+            the channel (a Telegram bot, a Viber bot, a Facebook Page, an Instagram
+            account).
         delivery:
           type: string
           description: >-
@@ -23737,12 +24138,21 @@ components:
       properties:
         history:
           type: boolean
-          description: Also ask the source to replay older messages (default false).
+          description: >-
+            wa_web: also ask WhatsApp to replay older messages (default false).
+            tg_client: ignored — a call always starts a history import.
         historyCount:
           type: integer
-          description: How many older messages to request (default 100, max 500).
+          description: >-
+            wa_web: how many older messages to request (default 100).
+            tg_client: at most this many messages per chat (default 200).
           minimum: 1
           maximum: 500
+        historyDays:
+          type: integer
+          description: tg_client only — how many days back to import (default 90).
+          minimum: 1
+          maximum: 365
 
     ChannelPairingCodeRequest:
       type: object
@@ -23776,10 +24186,76 @@ components:
         historyRequested:
           type: boolean
           description: True when a history replay was requested from the source.
+        historyImportId:
+          type: string
+          description: >-
+            tg_client: the history import run this call started or found
+            running; follow it with `getChannelHistoryImport`.
       required:
         - channelId
         - contactsImported
         - contactsMatched
+
+    ChannelHistoryImport:
+      type: object
+      description: A history import run of a tg_client channel (`getChannelHistoryImport`).
+      properties:
+        status:
+          type: string
+          enum: [none, pending, running, paused, done, failed]
+          # Named, or the generator renames MsgStatus's `failed` and others.
+          x-enum-varnames:
+            - ChannelHistoryImportStatusNone
+            - ChannelHistoryImportStatusPending
+            - ChannelHistoryImportStatusRunning
+            - ChannelHistoryImportStatusPaused
+            - ChannelHistoryImportStatusDone
+            - ChannelHistoryImportStatusFailed
+          description: >-
+            Where the run is: `none` — the channel never ran an import (no other
+            field is set); `pending` — waiting for the channel's session to pick
+            it up; `running` — reading chats; `paused` — Telegram asked to slow
+            down, resumes at `waitUntil`; `done` — finished; `failed` — stopped,
+            see `error`.
+        id:
+          type: string
+          description: The run's id, as `syncChannel` returned it.
+        days:
+          type: integer
+          description: How many days back the run reads.
+        perChat:
+          type: integer
+          description: At most this many messages per chat.
+        dialogsDone:
+          type: integer
+          description: Chats imported to the end.
+        messagesImported:
+          type: integer
+          description: Messages stored so far.
+        messagesSkipped:
+          type: integer
+          description: Service and empty messages left out.
+        waitUntil:
+          type: string
+          format: date-time
+          description: While paused — when the run resumes by itself.
+        error:
+          type: string
+          description: Why a failed run stopped.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the run was requested.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the channel's session picked the run up.
+        finishedAt:
+          type: string
+          format: date-time
+          description: When the run ended (`done` or `failed`).
+      required:
+        - status
 
     # ADR-0011: only `secret://` references are kept on the channel.
     SetChannelCredentialsRequest:
@@ -25323,6 +25799,117 @@ components:
             $ref: '#/components/schemas/AuthSessionSummary'
       required:
         - items
+    OAuthConsentRequest:
+      type: object
+      description: An app's request to connect to the MCP server, as the consent screen shows it.
+      required: [clientName, clientId, clientDomain, registered, redirectDomain, redirectMismatch, requestedScopes, expiresAt]
+      properties:
+        clientName:
+          type: string
+          description: The name the app gives itself. Not proof of identity — show it together with clientDomain.
+        clientId:
+          type: string
+          description: The app's identifier — its metadata document URL, or the id it registered under.
+        clientDomain:
+          type: string
+          description: The domain that vouches for the app (its metadata URL's host; for a self-registered app, the host it returns to).
+        registered:
+          type: boolean
+          description: True when the app registered itself on the spot instead of publishing a metadata document; warn the person.
+        redirectDomain:
+          type: string
+          description: The host the browser returns to after the decision.
+        redirectMismatch:
+          type: boolean
+          description: True when the return host differs from clientDomain; warn the person.
+        requestedScopes:
+          type: array
+          items:
+            type: string
+          description: The permissions the app asked for — a hint; the person chooses.
+        expiresAt:
+          type: string
+          format: date-time
+          description: After this moment the request must be started again from the app.
+    OAuthConsentDecision:
+      type: object
+      description: The person's answer to an authorization request.
+      required: [request, approve]
+      properties:
+        request:
+          type: string
+          maxLength: 8192
+          description: The sealed request, exactly as received.
+        approve:
+          type: boolean
+          description: True to give access, false to refuse it.
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet the app will act in. Required to approve.
+        scopes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: The permissions to give. Required to approve; each must be held by the person in that cabinet.
+    OAuthConsentResult:
+      type: object
+      description: Where the console sends the browser after the decision.
+      required: [redirectUri]
+      properties:
+        redirectUri:
+          type: string
+          description: The app's return address carrying the one-time code or the refusal.
+    OAuthGrant:
+      type: object
+      description: One app connected through the MCP server.
+      required: [id, clientName, clientDomain, cabinetId, accountId, scopes, createdAt, lastUsedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The connection's id.
+        clientName:
+          type: string
+          description: The app's name.
+        clientDomain:
+          type: string
+          description: The domain that vouches for the app.
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet it acts in.
+        accountId:
+          type: string
+          format: uuid
+          description: The person it acts for.
+        accountEmail:
+          type: string
+          description: The person's email; in the cabinet list only.
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The permissions given.
+        createdAt:
+          type: string
+          format: date-time
+          description: When it was connected.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: When it last called the API, to five minutes.
+    OAuthGrantList:
+      type: object
+      description: Connected apps, newest first.
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthGrant'
+          description: The connections.
     TokenPasswordRequest:
       type: object
       description: A single-use invite or reset token from the email, and the password the person chose.
