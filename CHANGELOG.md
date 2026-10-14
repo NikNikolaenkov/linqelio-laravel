@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Telegram account history import progress**: `channels()->historyImport($id)`
+  returns a `ChannelHistoryImport` (status `none`, `pending`, `running`,
+  `paused`, `done` or `failed`, limits and counters) for the run `sync()`
+  started on a `tg_client` channel.
+- Error codes `oauth.token_invalid`, `oauth.request_invalid` and
+  `oauth.grant_not_found` (MCP OAuth, Linqelio #210). The OAuth consent and
+  grant operations are session/console-only and deliberately not wrapped.
 - **Linking WhatsApp Web by a code**: `channels()->pairingCode($id, $phone)`
   returns the `pairingCode` the account's owner types on the phone instead of
   scanning the QR. One code per channel per 20 seconds (`policy.rate_limited`

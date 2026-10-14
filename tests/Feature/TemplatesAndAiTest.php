@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Linqelio\Laravel\Data\Enums\AiRunStatus;
+use Linqelio\Laravel\Data\Enums\ChannelHistoryImportStatus;
 use Linqelio\Laravel\Data\Enums\FieldValueSource;
 use Linqelio\Laravel\Exceptions\AiException;
 use Linqelio\Laravel\Exceptions\TemplateException;
@@ -43,6 +44,32 @@ it('syncs templates from Meta on demand', function (): void {
     expect($result->added)->toBe(1)->and($result->total)->toBe(8);
 
     Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && str_ends_with($r->url(), '/channels/ch-1/templates/sync'));
+});
+
+it('reads the progress of a Telegram account history import', function (): void {
+    Http::fake(['*' => Http::response([
+        'status' => 'paused', 'id' => 'imp-1', 'days' => 90, 'perChat' => 200, 'dialogsDone' => 12,
+        'messagesImported' => 840, 'messagesSkipped' => 31, 'waitUntil' => '2026-10-14T14:10:00Z',
+        'createdAt' => '2026-10-14T14:05:00Z', 'startedAt' => '2026-10-14T14:05:20Z',
+    ])]);
+
+    $run = Linqelio::channels()->historyImport('ch-1');
+
+    expect($run->status)->toBe(ChannelHistoryImportStatus::Paused)
+        ->and($run->status->isFinished())->toBeFalse()
+        ->and($run->messagesImported)->toBe(840)
+        ->and($run->waitUntil?->format('H:i'))->toBe('14:10')
+        ->and($run->finishedAt)->toBeNull();
+
+    Http::assertSent(fn (Request $r): bool => $r->method() === 'GET' && str_ends_with($r->url(), '/channels/ch-1/history-import'));
+});
+
+it('reads a channel that never imported as none', function (): void {
+    Http::fake(['*' => Http::response(['status' => 'none'])]);
+
+    $run = Linqelio::channels()->historyImport('ch-1');
+
+    expect($run->status)->toBe(ChannelHistoryImportStatus::None)->and($run->id)->toBeNull();
 });
 
 it('maps a template the channel does not know to a TemplateException', function (): void {

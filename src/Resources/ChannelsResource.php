@@ -7,6 +7,8 @@ namespace Linqelio\Laravel\Resources;
 use Linqelio\Laravel\Client\HttpClient;
 use Linqelio\Laravel\Data\Channel;
 use Linqelio\Laravel\Data\ChannelDeletion;
+use Linqelio\Laravel\Data\ChannelHistoryImport;
+use Linqelio\Laravel\Data\Enums\ChannelHistoryImportStatus;
 use Linqelio\Laravel\Data\Enums\ChannelKind;
 use Linqelio\Laravel\Data\Templates\ChannelTemplates;
 use Linqelio\Laravel\Data\Templates\TemplateSyncResult;
@@ -185,6 +187,19 @@ final readonly class ChannelsResource
     public function sync(string $id, array $options = []): array
     {
         return $this->client->post("/channels/{$id}/sync", $options)->data;
+    }
+
+    /**
+     * Where the history import of a Telegram account channel (`tg_client`)
+     * started with {@see self::sync()} stands: its state, limits and how much it
+     * has imported so far. Changes nothing.
+     *
+     * A channel that never ran one, and any channel other than a Telegram
+     * account, reports {@see ChannelHistoryImportStatus::None}.
+     */
+    public function historyImport(string $id): ChannelHistoryImport
+    {
+        return ChannelHistoryImport::fromArray($this->client->get("/channels/{$id}/history-import")->data);
     }
 
     /**

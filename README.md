@@ -510,6 +510,11 @@ return Linqelio::contactExports()->download($export->id)->toResponse(download: t
 An import needs a `consent` column: it is how a cabinet brings in people it may
 message, and it has to say on whose word.
 
+A Telegram account (`tg_client`) channel imports its own chat history in the
+background: start it with `channels()->sync($id, ['history' => true])` and
+follow it with `channels()->historyImport($id)` until
+`$run->status->isFinished()`.
+
 ## Analytics
 
 ```php
