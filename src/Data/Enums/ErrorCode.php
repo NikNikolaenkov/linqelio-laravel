@@ -82,6 +82,9 @@ enum ErrorCode: string
     case CreatioAuthInvalid = 'creatio.auth_invalid';
     case CreatioUserNotLinked = 'creatio.user_not_linked';
     case CreatioStateInvalid = 'creatio.state_invalid';
+    case OauthTokenInvalid = 'oauth.token_invalid';
+    case OauthRequestInvalid = 'oauth.request_invalid';
+    case OauthGrantNotFound = 'oauth.grant_not_found';
     case PolicyServiceWindowClosed = 'policy.service_window_closed';
     case TemplateNotFound = 'template.not_found';
     case TemplateNotApproved = 'template.not_approved';

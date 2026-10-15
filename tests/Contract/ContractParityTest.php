@@ -66,6 +66,7 @@ final class Contract
         'setChannelCredentials' => 'channels()->setCredentials()',
         'updateChannelSettings' => 'channels()->settings()',
         'syncChannel' => 'channels()->sync()',
+        'getChannelHistoryImport' => 'channels()->historyImport()',
         'deleteChannel' => 'channels()->delete()',
 
         'listContacts' => 'contacts()->list()',
@@ -298,6 +299,16 @@ final class Contract
         'mergeContacts' => 'console merge review (ADR-0090) — an unattended host merge is the guess the design rules out',
         'listContactMerges' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
         'getContactMerge' => 'console merge review (ADR-0090) — a person decides that two contacts are one',
+        // MCP OAuth (Linqelio #210): an app such as Claude connects to the MCP
+        // server with a person's consent. The consent screen and "my apps" list
+        // take the person's session (x-permission self), never a client key; the
+        // cabinet-wide list and revoke are the console's team:manage screen.
+        'getOAuthConsentRequest' => 'human session only — x-permission self; the console consent screen for an MCP app',
+        'decideOAuthConsent' => 'human session only — x-permission self; a person approves an MCP app, a key cannot',
+        'listMyOAuthGrants' => 'human session only — x-permission self; the apps a person connected',
+        'revokeMyOAuthGrant' => 'human session only — x-permission self; a person disconnects their own MCP app',
+        'listCabinetOAuthGrants' => 'console team administration — team:manage, no integration use case yet',
+        'revokeCabinetOAuthGrant' => 'console team administration — team:manage, no integration use case yet',
         'undoContactMerge' => 'console merge review (ADR-0090) — time-boxed undo of a person\'s decision',
 
         // Round 10 (ADR-0062/0063/0064/0065/0092/0093).
@@ -663,6 +674,9 @@ function contractDrivers(): array
             // The options are the caller's, passed through verbatim, so the
             // package makes no claim about this body and the gate checks none.
             'call' => fn (): array => Linqelio::channels()->sync('ch-1'),
+        ],
+        'getChannelHistoryImport' => [
+            'call' => fn () => Linqelio::channels()->historyImport('ch-1'),
         ],
         'deleteChannel' => [
             'call' => fn () => Linqelio::channels()->delete('ch-1'),
