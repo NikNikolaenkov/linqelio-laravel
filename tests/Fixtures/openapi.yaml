@@ -2356,6 +2356,15 @@ paths:
         be edited — register a new subscription and delete the old one.
 
 
+        The platform also sets a subscription to `disabled` by itself when its
+        endpoint has answered `404` or `410` continuously for at least six
+        hours (several deliveries, all dead-lettered with one of those
+        answers, none accepted and none answered otherwise in between). The
+        change is on the audit trail (`webhook.update` by the system) and
+        nothing is delivered until the subscription is set back to `active`
+        here.
+
+
         An id that names no subscription of this cabinet (unknown or another
         cabinet's, indistinguishably) answers 404 `webhook.not_found`; a
         malformed (non-UUID) id answers 400 `validation.invalid_request`.
@@ -14712,6 +14721,21 @@ paths:
         outcome arrives as the `message.status` webhook or realtime event
         (`sent` → `delivered` → `read`, or `failed` with the reason), or read
         it with `getMessage`.
+
+
+        Messages of one channel leave one at a time, in the order they were
+        accepted. A message whose send fails for a passing reason (the
+        messenger is briefly unreachable, a rate limit) is retried after a
+        growing delay, for up to about a quarter of an hour, and messages
+        accepted after it may go out meanwhile — so after such a failure the
+        recipient can see messages in a different order. When the order of a
+        sequence matters, send the next message after the previous one is
+        `sent`. A `failed` reason is a short code: `<channel kind>: <class>`,
+        optionally prefixed `gave up after N attempts: ` — classes `timeout`,
+        `provider_unavailable`, `rate_limited`, `rejected`, `not_connected`,
+        `channel_gone`, `recipient_not_found`, `media_unavailable`,
+        `gave_up`, `unknown` (more may be added); also `channel.not_connected`
+        and `tenancy.suspended`.
 
 
         `Idempotency-Key` is required, so a retry after a timeout never sends
