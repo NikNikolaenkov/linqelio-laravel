@@ -308,6 +308,7 @@ it('carries a redeemed invite through as a raw event, not a message', function (
         'contactId' => '6f1c2a8e-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
         'channelId' => '8c3e9a4b-5d6f-4b82-9cad-4e5f6a7b8c9d',
         'kind' => 'tg_bot',
+        'chatId' => '629076487',
         'conversationId' => null,
         'inviteTokenHash' => hash('sha256', 'lnk_ab'),
         'consentSource' => 'deep_link',

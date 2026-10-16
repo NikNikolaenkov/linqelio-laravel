@@ -14035,8 +14035,10 @@ paths:
         nothing. The link expires after 24 hours (`expiresAt`).
 
 
-        When the person follows the link and the identity is bound, the
-        cabinet gets one `contact.invite_redeemed` event (webhooks and the
+        The link works only in the channel it was made for: opened in
+        another bot or account it binds nothing and stays usable. When the
+        person follows it and the identity is bound, the cabinet gets one
+        `contact.invite_redeemed` event (webhooks and the
         realtime stream, payload `ContactInviteRedeemedEvent`) — also for a
         bot's `/start` and Viber's conversation start, where the person has
         not written anything yet. It carries `inviteTokenHash`, the SHA-256
@@ -31067,7 +31069,8 @@ components:
         the contact (a Telegram bot's `/start`, Viber's conversation start, a
         Messenger or Instagram referral), whether or not they have written
         anything yet. Not sent for a link that is unknown, expired, already
-        used or opened in another channel, nor when the identity already
+        used or opened in another channel (such a link is not used up and
+        still works in its own channel), nor when the identity already
         belongs to another contact. Webhook deliveries are at-least-once:
         deduplicate on `X-Linqelio-Delivery` or on `inviteTokenHash`.
       properties:
@@ -31084,11 +31087,21 @@ components:
           format: uuid
         kind:
           $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The person's id on the channel that was just bound to the
+            contact — the Telegram user id, Viber user id, Messenger PSID or
+            Instagram-scoped id. A direct conversation with them has this
+            `chatId`, the same value `message.inbound` and `message.status`
+            carry. Use it to tell this account from other accounts the
+            contact may have on the same channel.
+          type: string
         conversationId:
           description: >-
-            The contact's existing direct conversation on this channel, or
-            null when there is none yet — redeeming an invite does not
-            create one; the first message either way does. Always present.
+            The direct conversation with THIS account (`chatId`) on this
+            channel, or null when there is none yet — redeeming an invite
+            does not create one; the first message either way does. Never
+            a conversation with another account of the contact.
           type: string
           format: uuid
           nullable: true
@@ -31111,6 +31124,8 @@ components:
         - contactId
         - channelId
         - kind
+        - chatId
+        - conversationId
         - inviteTokenHash
         - consentSource
         - occurredAt
