@@ -13912,7 +13912,12 @@ paths:
         you may already have, use `listContacts` with `q`. When `providerId`
         is omitted it is the phone number's digits (no `+`), else the username
         (without `@`); one of `phone`, `username`, `providerId` is required
-        (400 `validation.invalid_request`).
+        (400 `validation.invalid_request`). Two kinds key a phone differently:
+        on WhatsApp Web (`wa_web`) it is the number's WhatsApp address
+        `<digits>@s.whatsapp.net` — the address replies come from — and a
+        `providerId` of digits only is read the same way; a contact already
+        holding the number as bare digits is still matched. On a Telegram
+        account (`tg_client`) it is `+<digits>`.
 
 
         `name` becomes the display name of a NEW contact and is kept as a
@@ -14718,6 +14723,20 @@ paths:
         `createScheduledSend`. To see first whether send policy would allow it
         (limits, consent, quiet hours, the WhatsApp 24-hour window), call
         `checkSendPolicy` with the same body.
+
+
+        The message goes into the conversation of the person's real chat on
+        the channel. A WhatsApp Web (`wa_web`) address given as a phone
+        number is sent to the number's WhatsApp address
+        `<digits>@s.whatsapp.net` — the `chatId` their replies carry — so it
+        joins the conversation already open with them. On a Telegram account
+        (`tg_client`) a `+<digits>` phone is sent to the person's numeric
+        Telegram id when the platform already knows it; otherwise it is
+        resolved while sending, and the `+<digits>` conversation is then
+        renamed to the numeric id, or folded into the conversation that
+        already has it — announced by one `conversation.rekeyed` event
+        (payload `ConversationRekeyedEvent`). The `chatId` in the response
+        is the address the message was queued for.
 
 
         The channel: by default the channel of the contact's most recent
@@ -15956,7 +15975,11 @@ paths:
         consent screen: the app's name and the domain that vouches for it,
         whether it registered itself, the host the browser returns to, the
         permissions it asks for and when the request expires. Reading it
-        grants nothing; the person answers with `decideOAuthConsent`.
+        grants nothing; the person answers with `decideOAuthConsent`. When a
+        pre-registered integration asks to install itself in a cabinet
+        (scope `integration:install`), the answer carries an `install` object
+        and approving issues that integration a cabinet API key instead of an
+        MCP connection.
       x-mcp:
         expose: false
         reason: >-
@@ -16014,7 +16037,14 @@ paths:
         management, platform administration, secrets or the master scope. A
         person with two-factor authentication must have passed it in this
         session. The answer is where to send the browser next: back to the app
-        with a one-time code, or with `access_denied`.
+        with a one-time code, or with `access_denied`. For an install request
+        (`install` present in `getOAuthConsentRequest`) `scopes` is omitted or
+        exactly `["integration:install"]`, and the person must hold
+        `keys:manage` in the chosen cabinet (otherwise 403
+        `auth.forbidden_scope`) and some permission that can go on the key
+        (otherwise 403 `keyring.scope_not_grantable`): the integration then
+        receives a cabinet API key, within the person's own key-grant ceiling,
+        when it exchanges the code.
       x-mcp:
         expose: false
         reason: >-
@@ -16045,6 +16075,7 @@ paths:
         - oauth.request_invalid
         - tenancy.cross_cabinet_denied
         - keyring.scope_not_grantable
+        - auth.forbidden_scope
         - validation.invalid_request
       responses:
         '200':
@@ -22609,7 +22640,9 @@ components:
           type: string
           description: >-
             The messenger's own id of the person (e.g. a Telegram user id).
-            Defaults to the digits of `phone`, else `username`.
+            Defaults to the digits of `phone`, else `username` — for
+            `wa_web` the number's address `<digits>@s.whatsapp.net`, for
+            `tg_client` `+<digits>`.
         name:
           type: string
           description: Display name for the new contact. Ignored when a contact already matched.
@@ -24977,7 +25010,10 @@ components:
             arrived), `message.status` (an outbound message became sent,
             delivered, read or failed), `message.updated` (a comment was
             edited, hidden, shown again, deleted or answered privately —
-            `data.change` says which), `channel.status` (a channel's status
+            `data.change` says which), `conversation.rekeyed` (a
+            conversation's `chatId` changed, or a second conversation of the
+            same chat was folded into it; payload
+            `ConversationRekeyedEvent`), `channel.status` (a channel's status
             changed), `channel.health_changed` (a channel's health rating
             changed), `alert.raised`, `alert.resolved`, `settings.updated`
             (a settings section got a new version) and
@@ -25876,11 +25912,43 @@ components:
           type: array
           items:
             type: string
-          description: The permissions the app asked for — a hint; the person chooses.
+          description: The permissions the app asked for — a hint; the person chooses. For an install request, exactly `["integration:install"]`.
         expiresAt:
           type: string
           format: date-time
           description: After this moment the request must be started again from the app.
+        install:
+          $ref: '#/components/schemas/OAuthConsentInstall'
+    OAuthConsentInstall:
+      type: object
+      description: >
+        Present only when a pre-registered integration (a confidential client
+        configured on the instance, never a self-registered or metadata-URL
+        app) asks to install itself in a cabinet with the scope
+        `integration:install`. Approving does not connect an app to the MCP
+        server: when the integration exchanges the one-time code it receives a
+        cabinet API key, listed with the cabinet's other keys
+        (`listApiKeys`) and revoked like them (`revokeApiKey`). The consent
+        screen shows no permission checkboxes for it: the person picks the
+        cabinet and approves or refuses.
+      required: [requiredPermission, keyLabel, starPermissions]
+      properties:
+        requiredPermission:
+          type: string
+          description: The permission the person must hold in the chosen cabinet to approve — always `keys:manage`. Without it approving answers 403 `auth.forbidden_scope`.
+        keyLabel:
+          type: string
+          maxLength: 100
+          description: The label the issued key will carry, `<clientName> (OAuth, <the person's email>)`, cut to 100 characters.
+        starPermissions:
+          type: array
+          items:
+            type: string
+          description: >
+            The permissions behind the key scope `*`, in canonical order. The
+            key gets `["*"]` when the person holds all of them in the chosen
+            cabinet, otherwise exactly the ones of them the person holds. It
+            never gets key management, platform administration or secrets.
     OAuthConsentDecision:
       type: object
       description: The person's answer to an authorization request.
@@ -25902,7 +25970,11 @@ components:
           maxItems: 20
           items:
             type: string
-          description: The permissions to give. Required to approve; each must be held by the person in that cabinet.
+          description: >
+            The permissions to give. Required to approve; each must be held by
+            the person in that cabinet. For an install request omit it or send
+            exactly `["integration:install"]`: the key's scopes follow from
+            the person's own permissions (see `OAuthConsentInstall`).
     OAuthConsentResult:
       type: object
       description: Where the console sends the browser after the decision.
@@ -25960,6 +26032,78 @@ components:
           items:
             $ref: '#/components/schemas/OAuthGrant'
           description: The connections.
+    OAuthTokenResponse:
+      type: object
+      description: >
+        The answer of the OAuth token endpoint `POST /oauth/token` (outside
+        the /v1 API: the endpoint follows RFC 6749, its errors are RFC 6749
+        §5.2 JSON `{"error", "error_description"}`). Public MCP clients
+        (`token_endpoint_auth_method` `none`) authenticate with PKCE alone and
+        always receive a `refresh_token`. A pre-registered integration client
+        is confidential: it authenticates with its secret, either
+        `client_secret_post` (form fields `client_id`, `client_secret`) or
+        `client_secret_basic` (HTTP Basic with the form-urlencoded id and
+        secret), and a wrong or missing secret answers 401 `invalid_client`.
+        An integration client asks only for `integration:install`; its code
+        exchange answers with `api_key` and WITHOUT `refresh_token`. The
+        `access_token` of an install is inert (it opens neither the MCP server
+        nor the API): `api_key.secret` is the credential to keep. A code is
+        single-use: a second exchange answers `invalid_grant` and issues no
+        second key; when the person who approved no longer holds
+        `keys:manage` in the cabinet, the exchange answers `invalid_grant`
+        and issues no key.
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+          description: The access token (`lqo_at_…`), valid for `expires_in` seconds.
+        token_type:
+          type: string
+          enum: [Bearer]
+          description: Always `Bearer`.
+        expires_in:
+          type: integer
+          description: The access token's lifetime in seconds.
+        refresh_token:
+          type: string
+          description: The refresh token (`lqo_rt_…`), single-use and rotated on every refresh. Absent for `integration:install`.
+        scope:
+          type: string
+          description: The granted scopes, space-separated; `integration:install` for an install.
+        api_key:
+          $ref: '#/components/schemas/OAuthInstalledApiKey'
+    OAuthInstalledApiKey:
+      type: object
+      description: >
+        The cabinet API key an `integration:install` exchange issues — the
+        same kind of key `createApiKey` mints, shown this once. It appears in
+        `listApiKeys` under `label` and is revoked with `revokeApiKey`.
+      required: [cabinetId, kid, secret, scopes, label]
+      properties:
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet the key acts in (the one the person chose on the consent screen).
+        kid:
+          type: string
+          description: The key's id (`k-` and 8 hex characters).
+        secret:
+          type: string
+          description: 'The full bearer token `<cabinetId>.<kid>.<secret>` — the same string `createApiKey` returns as `bearerToken`. Send it as `Authorization: Bearer …`.'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The key's scopes — `["*"]` when the person who approved holds every permission `*` stands for, otherwise the ones of them they hold.
+        label:
+          type: string
+          description: '`<client name> (OAuth, <email of the person who approved>)`, at most 100 characters.'
+      example:
+        cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+        kid: k-1a2b3c4d
+        secret: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.k-1a2b3c4d.0123456789abcdef0123456789abcdef0123456789abcdef
+        scopes: ['*']
+        label: SGSB2B (OAuth, admin@example.com)
     TokenPasswordRequest:
       type: object
       description: A single-use invite or reset token from the email, and the password the person chose.
@@ -28163,6 +28307,7 @@ components:
         edited, hidden, shown again, deleted or answered privately; `data`
         carries `messageId`, `change` — `edited`, `hidden`, `unhidden`,
         `deleted`, `answered_privately` — `channelId` and `chatId`),
+        `conversation.rekeyed` (payload `ConversationRekeyedEvent`),
         `channel.status`,
         `channel.health_changed`, `compliance.notice` and
         `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`) —
@@ -31057,6 +31202,80 @@ components:
         - params
         - raisedAt
     # END R10-E schemas
+
+    # ADR-0120: one conversation per real chat — a re-keyed or folded
+    # conversation is announced, identifiers only.
+    ConversationRekeyedEvent:
+      type: object
+      description: >
+        The payload of the `conversation.rekeyed` event — in outbound webhook
+        deliveries and on the realtime stream (RealtimeEvent.data). Sent once
+        when a direct conversation turns out to have been opened under an
+        address that is not the person's real chat id: a message sent to a
+        `tg_client` contact by `+<digits>` phone resolved to their numeric
+        Telegram id. Either the conversation is renamed to the real chat id
+        (`mergedConversationId` null; `conversationId` is unchanged), or the
+        real chat already had a conversation and the other one was folded
+        into it: its messages now belong to `conversationId`, and
+        `mergedConversationId` no longer exists. Re-key whatever you keep
+        by the old chat id or the merged conversation id to `chatId` and
+        `conversationId`. Webhook deliveries are at-least-once: deduplicate
+        on `X-Linqelio-Delivery`.
+      properties:
+        conversationId:
+          description: >-
+            The conversation of the chat from now on — the one renamed, or
+            the one the other was folded into.
+          type: string
+          format: uuid
+        channelId:
+          description: >-
+            The channel of the conversation.
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The conversation's chat id from now on: the person's real id on
+            the channel, the same value `message.inbound` and
+            `message.status` carry.
+          type: string
+        previousChatId:
+          description: >-
+            The address the conversation was opened under (e.g.
+            `+380501234567`); no conversation has it any more.
+          type: string
+        mergedConversationId:
+          description: >-
+            The conversation folded into `conversationId` and removed, or
+            null when the conversation was only renamed.
+          type: string
+          format: uuid
+          nullable: true
+        contactId:
+          description: >-
+            The contact of `conversationId`, or null when it has none. The
+            contact the message was sent to may differ (a separate contact
+            created for the phone number); joining the two is a contact
+            merge (`mergeContacts`).
+          type: string
+          format: uuid
+          nullable: true
+        occurredAt:
+          description: >-
+            When the conversation was re-keyed (UTC, RFC 3339).
+          type: string
+          format: date-time
+      required:
+        - conversationId
+        - channelId
+        - kind
+        - chatId
+        - previousChatId
+        - mergedConversationId
+        - contactId
+        - occurredAt
 
     # ADR-0117: a redeemed invite (createContactInvite) — identifiers only.
     ContactInviteRedeemedEvent:

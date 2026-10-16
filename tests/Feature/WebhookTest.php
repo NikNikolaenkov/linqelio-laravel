@@ -321,3 +321,29 @@ it('carries a redeemed invite through as a raw event, not a message', function (
     Event::assertNotDispatched(MessageReceived::class);
     expect(LinqelioMessage::query()->count())->toBe(0);
 });
+
+// conversation.rekeyed (Linqelio ADR-0120): a conversation opened under a
+// `+<digits>` address was renamed to, or folded into, the person's real chat.
+// Identifiers only, no messageId — it reaches listeners as the raw
+// WebhookReceived and is never mistaken for a message.
+it('carries a re-keyed conversation through as a raw event, not a message', function (): void {
+    Event::fake([WebhookReceived::class, MessageReceived::class]);
+    Queue::fake();
+
+    $rekeyed = [
+        'conversationId' => '1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6',
+        'channelId' => '8c3e9a4b-5d6f-4b82-9cad-4e5f6a7b8c9d',
+        'kind' => 'tg_client',
+        'chatId' => '629076487',
+        'previousChatId' => '+380501234567',
+        'mergedConversationId' => null,
+        'contactId' => '6f1c2a8e-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
+        'occurredAt' => now()->toIso8601String(),
+    ];
+    deliver($this, $rekeyed)->assertStatus(202);
+    Event::assertDispatched(WebhookReceived::class);
+
+    (new ProcessWebhook($rekeyed, 'conversation.rekeyed'))->handle();
+    Event::assertNotDispatched(MessageReceived::class);
+    expect(LinqelioMessage::query()->count())->toBe(0);
+});
