@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's ADR-0120 amendment: a `tg_client`
+  send by phone is keyed by the numeric id only from a Telegram-confirmed,
+  same-channel mapping; `conversation.rekeyed` documents that a fold keeps a
+  freeze and moves findings, read markers and desk/CRM links, and that
+  `previousChatId` / `mergedConversationId` are tombstones (deliveries are
+  at-least-once and unordered). No payload or operation change.
 - Contract fixture synced with Linqelio's `conversation.rekeyed` webhook
   event (ADR-0120, payload `ConversationRekeyedEvent`): a conversation opened
   by a send to a phone got the chat's real id (`chatId`, was
