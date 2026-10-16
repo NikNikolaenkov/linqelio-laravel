@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's `contact.invite_redeemed` webhook
+  event (ADR-0117, payload `ContactInviteRedeemedEvent`): sent once when a
+  person follows a `contacts()->invite()` link, with `contactId`, `channelId`,
+  `kind`, `conversationId` (or null), `inviteTokenHash` (SHA-256 of the link's
+  token) and `occurredAt`. It reaches listeners as `WebhookReceived`; the
+  package does not model it as a message.
 - **Telegram account history import progress**: `channels()->historyImport($id)`
   returns a `ChannelHistoryImport` (status `none`, `pending`, `running`,
   `paused`, `done` or `failed`, limits and counters) for the run `sync()`
