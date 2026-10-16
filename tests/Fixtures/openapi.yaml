@@ -14050,14 +14050,17 @@ paths:
         When the person already has a contact of their own in this cabinet
         for that channel identity (they wrote to the bot before following
         the link): if that contact was only created from their messages and
-        nobody has worked with it (no host refs, no edits, no phone number,
-        no other kind of channel), it is merged into the invited contact —
+        nobody has worked with it (nobody answered them, no host refs, no
+        desk mapping, no edits, no phone number, no other kind of channel),
+        it is merged into the invited contact —
         their conversations come along, the merge can be undone with
         `undoContactMerge` — and `contact.invite_redeemed` names it in
         `mergedContactId`. Otherwise nothing is bound or merged, the link
         stays usable, and the cabinet gets one `contact.invite_conflict`
         event (payload `ContactInviteConflictEvent`) naming both contacts;
-        merge them yourself and have the person follow the link again.
+        merge them yourself and have the person follow the link again. A
+        link made for a contact that was merged into another one since binds
+        to that other contact.
 
 
         Errors: 404 `contact.not_found` for an unknown contact or one outside
@@ -31253,7 +31256,11 @@ components:
             and messages now belong to `contactId`; messages you saw under
             this id are the same person's. null when no merge happened. The
             merge is recorded (`listContactMerges`, reason
-            `deep_link_orphan`) and can be undone with `undoContactMerge`.
+            `deep_link_orphan`) and can be undone with `undoContactMerge`;
+            the invite then stays used. Show it to the person working with
+            the contact rather than moving the messages over silently: the
+            history now on `contactId` was written from the account that
+            followed the link.
           type: string
           format: uuid
           nullable: true
@@ -31293,12 +31300,13 @@ components:
         Sent when a person follows a link from `createContactInvite` but
         their identity on the channel already belongs to another contact of
         the cabinet that is more than an automatic contact made from their
-        own messages (it has host refs, edits, a phone number, another kind
-        of channel and so on). Nothing is bound or merged and the link is
+        own messages (somebody answered them, it has host refs, a desk
+        mapping, edits, a phone number, another kind of channel and so on). Nothing is bound or merged and the link is
         NOT used up: merge the two contacts (`mergeContacts`), then have the
         person follow the same link again, or send them a new one. Sent once
         per link and person (`inviteTokenHash`, `chatId`): the person
-        following the same link again does not repeat it. Webhook deliveries
+        following the same link again does not repeat it; after 20 different
+        people a link reports no more conflicts. Webhook deliveries
         are at-least-once: deduplicate on `X-Linqelio-Delivery`.
       properties:
         contactId:
