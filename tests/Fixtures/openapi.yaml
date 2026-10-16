@@ -14047,6 +14047,19 @@ paths:
         the link itself.
 
 
+        When the person already has a contact of their own in this cabinet
+        for that channel identity (they wrote to the bot before following
+        the link): if that contact was only created from their messages and
+        nobody has worked with it (no host refs, no edits, no phone number,
+        no other kind of channel), it is merged into the invited contact —
+        their conversations come along, the merge can be undone with
+        `undoContactMerge` — and `contact.invite_redeemed` names it in
+        `mergedContactId`. Otherwise nothing is bound or merged, the link
+        stays usable, and the cabinet gets one `contact.invite_conflict`
+        event (payload `ContactInviteConflictEvent`) naming both contacts;
+        merge them yourself and have the person follow the link again.
+
+
         Errors: 404 `contact.not_found` for an unknown contact or one outside
         the caller's channel scope; 404 `channel.not_found` for a channel the
         caller does not work; 422 `channel.capability_unsupported` for a
@@ -15956,7 +15969,11 @@ paths:
         consent screen: the app's name and the domain that vouches for it,
         whether it registered itself, the host the browser returns to, the
         permissions it asks for and when the request expires. Reading it
-        grants nothing; the person answers with `decideOAuthConsent`.
+        grants nothing; the person answers with `decideOAuthConsent`. When a
+        pre-registered integration asks to install itself in a cabinet
+        (scope `integration:install`), the answer carries an `install` object
+        and approving issues that integration a cabinet API key instead of an
+        MCP connection.
       x-mcp:
         expose: false
         reason: >-
@@ -16014,7 +16031,14 @@ paths:
         management, platform administration, secrets or the master scope. A
         person with two-factor authentication must have passed it in this
         session. The answer is where to send the browser next: back to the app
-        with a one-time code, or with `access_denied`.
+        with a one-time code, or with `access_denied`. For an install request
+        (`install` present in `getOAuthConsentRequest`) `scopes` is omitted or
+        exactly `["integration:install"]`, and the person must hold
+        `keys:manage` in the chosen cabinet (otherwise 403
+        `auth.forbidden_scope`) and some permission that can go on the key
+        (otherwise 403 `keyring.scope_not_grantable`): the integration then
+        receives a cabinet API key, within the person's own key-grant ceiling,
+        when it exchanges the code.
       x-mcp:
         expose: false
         reason: >-
@@ -16045,6 +16069,7 @@ paths:
         - oauth.request_invalid
         - tenancy.cross_cabinet_denied
         - keyring.scope_not_grantable
+        - auth.forbidden_scope
         - validation.invalid_request
       responses:
         '200':
@@ -24980,9 +25005,12 @@ components:
             `data.change` says which), `channel.status` (a channel's status
             changed), `channel.health_changed` (a channel's health rating
             changed), `alert.raised`, `alert.resolved`, `settings.updated`
-            (a settings section got a new version) and
+            (a settings section got a new version),
             `contact.invite_redeemed` (a person followed an invite link from
-            `createContactInvite`; payload `ContactInviteRedeemedEvent`). A
+            `createContactInvite`; payload `ContactInviteRedeemedEvent`) and
+            `contact.invite_conflict` (a person followed an invite link, but
+            their channel identity belongs to another contact; payload
+            `ContactInviteConflictEvent`). A
             subscription with a non-empty list receives a type added later
             only once it is added here with `updateWebhook`.
           items:
@@ -25876,11 +25904,43 @@ components:
           type: array
           items:
             type: string
-          description: The permissions the app asked for — a hint; the person chooses.
+          description: The permissions the app asked for — a hint; the person chooses. For an install request, exactly `["integration:install"]`.
         expiresAt:
           type: string
           format: date-time
           description: After this moment the request must be started again from the app.
+        install:
+          $ref: '#/components/schemas/OAuthConsentInstall'
+    OAuthConsentInstall:
+      type: object
+      description: >
+        Present only when a pre-registered integration (a confidential client
+        configured on the instance, never a self-registered or metadata-URL
+        app) asks to install itself in a cabinet with the scope
+        `integration:install`. Approving does not connect an app to the MCP
+        server: when the integration exchanges the one-time code it receives a
+        cabinet API key, listed with the cabinet's other keys
+        (`listApiKeys`) and revoked like them (`revokeApiKey`). The consent
+        screen shows no permission checkboxes for it: the person picks the
+        cabinet and approves or refuses.
+      required: [requiredPermission, keyLabel, starPermissions]
+      properties:
+        requiredPermission:
+          type: string
+          description: The permission the person must hold in the chosen cabinet to approve — always `keys:manage`. Without it approving answers 403 `auth.forbidden_scope`.
+        keyLabel:
+          type: string
+          maxLength: 100
+          description: The label the issued key will carry, `<clientName> (OAuth, <the person's email>)`, cut to 100 characters.
+        starPermissions:
+          type: array
+          items:
+            type: string
+          description: >
+            The permissions behind the key scope `*`, in canonical order. The
+            key gets `["*"]` when the person holds all of them in the chosen
+            cabinet, otherwise exactly the ones of them the person holds. It
+            never gets key management, platform administration or secrets.
     OAuthConsentDecision:
       type: object
       description: The person's answer to an authorization request.
@@ -25902,7 +25962,11 @@ components:
           maxItems: 20
           items:
             type: string
-          description: The permissions to give. Required to approve; each must be held by the person in that cabinet.
+          description: >
+            The permissions to give. Required to approve; each must be held by
+            the person in that cabinet. For an install request omit it or send
+            exactly `["integration:install"]`: the key's scopes follow from
+            the person's own permissions (see `OAuthConsentInstall`).
     OAuthConsentResult:
       type: object
       description: Where the console sends the browser after the decision.
@@ -25960,6 +26024,78 @@ components:
           items:
             $ref: '#/components/schemas/OAuthGrant'
           description: The connections.
+    OAuthTokenResponse:
+      type: object
+      description: >
+        The answer of the OAuth token endpoint `POST /oauth/token` (outside
+        the /v1 API: the endpoint follows RFC 6749, its errors are RFC 6749
+        §5.2 JSON `{"error", "error_description"}`). Public MCP clients
+        (`token_endpoint_auth_method` `none`) authenticate with PKCE alone and
+        always receive a `refresh_token`. A pre-registered integration client
+        is confidential: it authenticates with its secret, either
+        `client_secret_post` (form fields `client_id`, `client_secret`) or
+        `client_secret_basic` (HTTP Basic with the form-urlencoded id and
+        secret), and a wrong or missing secret answers 401 `invalid_client`.
+        An integration client asks only for `integration:install`; its code
+        exchange answers with `api_key` and WITHOUT `refresh_token`. The
+        `access_token` of an install is inert (it opens neither the MCP server
+        nor the API): `api_key.secret` is the credential to keep. A code is
+        single-use: a second exchange answers `invalid_grant` and issues no
+        second key; when the person who approved no longer holds
+        `keys:manage` in the cabinet, the exchange answers `invalid_grant`
+        and issues no key.
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token:
+          type: string
+          description: The access token (`lqo_at_…`), valid for `expires_in` seconds.
+        token_type:
+          type: string
+          enum: [Bearer]
+          description: Always `Bearer`.
+        expires_in:
+          type: integer
+          description: The access token's lifetime in seconds.
+        refresh_token:
+          type: string
+          description: The refresh token (`lqo_rt_…`), single-use and rotated on every refresh. Absent for `integration:install`.
+        scope:
+          type: string
+          description: The granted scopes, space-separated; `integration:install` for an install.
+        api_key:
+          $ref: '#/components/schemas/OAuthInstalledApiKey'
+    OAuthInstalledApiKey:
+      type: object
+      description: >
+        The cabinet API key an `integration:install` exchange issues — the
+        same kind of key `createApiKey` mints, shown this once. It appears in
+        `listApiKeys` under `label` and is revoked with `revokeApiKey`.
+      required: [cabinetId, kid, secret, scopes, label]
+      properties:
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet the key acts in (the one the person chose on the consent screen).
+        kid:
+          type: string
+          description: The key's id (`k-` and 8 hex characters).
+        secret:
+          type: string
+          description: 'The full bearer token `<cabinetId>.<kid>.<secret>` — the same string `createApiKey` returns as `bearerToken`. Send it as `Authorization: Bearer …`.'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The key's scopes — `["*"]` when the person who approved holds every permission `*` stands for, otherwise the ones of them they hold.
+        label:
+          type: string
+          description: '`<client name> (OAuth, <email of the person who approved>)`, at most 100 characters.'
+      example:
+        cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+        kid: k-1a2b3c4d
+        secret: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.k-1a2b3c4d.0123456789abcdef0123456789abcdef0123456789abcdef
+        scopes: ['*']
+        label: SGSB2B (OAuth, admin@example.com)
     TokenPasswordRequest:
       type: object
       description: A single-use invite or reset token from the email, and the password the person chose.
@@ -28088,7 +28224,7 @@ components:
           description: The proposal this merge resolved; absent for a merge made without one.
         reason:
           type: string
-          description: The proposal's reason (`shared_phone`, `lid_pair`), `manual`, or what the store recorded.
+          description: The proposal's reason (`shared_phone`, `lid_pair`), `manual`, `deep_link_orphan` (an automatic contact merged when its person followed an invite link), or what the store recorded.
         status:
           $ref: '#/components/schemas/ContactMergeStatus'
         mergedAt:
@@ -28165,7 +28301,8 @@ components:
         `deleted`, `answered_privately` — `channelId` and `chatId`),
         `channel.status`,
         `channel.health_changed`, `compliance.notice` and
-        `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`) —
+        `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`),
+        `contact.invite_conflict` (payload `ContactInviteConflictEvent`) —
         `channels:read` on the channel; `channel.qr` — `channels:manage` on the channel
         (`data.stage` says what changed; the QR itself is read with
         `getChannelStatus`); `settings.updated` — `settings:manage`;
@@ -31068,10 +31205,13 @@ components:
         `createContactInvite` and their identity on the channel is bound to
         the contact (a Telegram bot's `/start`, Viber's conversation start, a
         Messenger or Instagram referral), whether or not they have written
-        anything yet. Not sent for a link that is unknown, expired, already
-        used or opened in another channel (such a link is not used up and
-        still works in its own channel), nor when the identity already
-        belongs to another contact. Webhook deliveries are at-least-once:
+        anything yet — also when their identity had a contact of its own
+        that was created from their messages alone and was merged into the
+        invited one (`mergedContactId`). Not sent for a link that is
+        unknown, expired, already used or opened in another channel (such a
+        link is not used up and still works in its own channel), nor when
+        the identity belongs to another contact somebody works with — that
+        is `contact.invite_conflict`. Webhook deliveries are at-least-once:
         deduplicate on `X-Linqelio-Delivery` or on `inviteTokenHash`.
       properties:
         contactId:
@@ -31105,6 +31245,18 @@ components:
           type: string
           format: uuid
           nullable: true
+        mergedContactId:
+          description: >-
+            The contact that held this identity before and was merged into
+            `contactId` by this redemption: it was created from the person's
+            own messages and nobody had worked with it. Its conversations
+            and messages now belong to `contactId`; messages you saw under
+            this id are the same person's. null when no merge happened. The
+            merge is recorded (`listContactMerges`, reason
+            `deep_link_orphan`) and can be undone with `undoContactMerge`.
+          type: string
+          format: uuid
+          nullable: true
         inviteTokenHash:
           description: >-
             Lower-case hex SHA-256 of the invite token: the UTF-8 bytes of
@@ -31126,9 +31278,86 @@ components:
         - kind
         - chatId
         - conversationId
+        - mergedContactId
         - inviteTokenHash
         - consentSource
         - occurredAt
+
+    # ADR-0119: an invite followed, but the identity belongs to a contact
+    # somebody works with — nothing bound, the link stays usable.
+    ContactInviteConflictEvent:
+      type: object
+      description: >
+        The payload of the `contact.invite_conflict` event — in outbound
+        webhook deliveries and on the realtime stream (RealtimeEvent.data).
+        Sent when a person follows a link from `createContactInvite` but
+        their identity on the channel already belongs to another contact of
+        the cabinet that is more than an automatic contact made from their
+        own messages (it has host refs, edits, a phone number, another kind
+        of channel and so on). Nothing is bound or merged and the link is
+        NOT used up: merge the two contacts (`mergeContacts`), then have the
+        person follow the same link again, or send them a new one. Sent once
+        per link and person (`inviteTokenHash`, `chatId`): the person
+        following the same link again does not repeat it. Webhook deliveries
+        are at-least-once: deduplicate on `X-Linqelio-Delivery`.
+      properties:
+        contactId:
+          description: >-
+            The invited contact — the one the link was made for. Nothing was
+            bound to it.
+          type: string
+          format: uuid
+        channelId:
+          description: >-
+            The channel the invite was made for.
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The person's id on the channel — the Telegram user id, Viber
+            user id, Messenger PSID or Instagram-scoped id; the `chatId` of
+            their direct conversation, as in `message.inbound`.
+          type: string
+        conflictingContactId:
+          description: >-
+            The contact this identity belongs to. Always a contact of the
+            same cabinet; read it with `getContact`.
+          type: string
+          format: uuid
+        inviteTokenHash:
+          description: >-
+            Lower-case hex SHA-256 of the invite token, exactly as in
+            `ContactInviteRedeemedEvent.inviteTokenHash`. The token itself
+            is never sent.
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        reason:
+          $ref: '#/components/schemas/ContactInviteConflictReason'
+        occurredAt:
+          description: >-
+            When the link was followed (UTC, RFC 3339).
+          type: string
+          format: date-time
+      required:
+        - contactId
+        - channelId
+        - kind
+        - chatId
+        - conflictingContactId
+        - inviteTokenHash
+        - reason
+        - occurredAt
+
+    ContactInviteConflictReason:
+      type: string
+      description: >
+        Why a followed invite bound nothing: `identity_owned` — the person's
+        channel identity belongs to another contact somebody works with. New
+        values may be added; treat an unknown one like `identity_owned`.
+      enum: [identity_owned]
+      x-enum-varnames: [ContactInviteConflictReasonIdentityOwned]
 
     # =========================================================================
     # BEGIN R11-A schemas: groups while disabled (#129) and group management
