@@ -113,6 +113,7 @@ enum ErrorCode: string
     case MessageNotFound = 'message.not_found';
 
     case ConversationNotFound = 'conversation.not_found';
+    case ThreadNotFound = 'thread.not_found';
     case WebhookNotFound = 'webhook.not_found';
     case AccessPoolNotFound = 'accesspool.not_found';
     case DeadLetterNotFound = 'deadletter.not_found';

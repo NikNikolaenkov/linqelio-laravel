@@ -183,6 +183,11 @@ final class Contract
     public const EXCLUDED = [
         'healthCheck' => 'infrastructure; an application has its own health checks',
 
+        // ADR-0121: the topic catalogue of a Telegram forum group. The package has
+        // no `threadId` on send/feed yet, so the catalogue has nothing to feed;
+        // wrapped together with them in a follow-up.
+        'listConversationThreads' => 'forum topics (ADR-0121) — not wrapped yet, together with threadId on send/feed',
+
         // Platform administration needs the platform:admin scope, which client
         // keys are not given. Wrapping it would suggest an application can call
         // it, and it cannot.
