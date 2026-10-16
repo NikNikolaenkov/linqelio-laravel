@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's `conversation.rekeyed` webhook
+  event (ADR-0120, payload `ConversationRekeyedEvent`): a conversation opened
+  by a send to a phone got the chat's real id (`chatId`, was
+  `previousChatId`), or was folded into the conversation that already had it
+  (`mergedConversationId`, now gone; `conversationId` holds the chat). Re-key
+  what you store by chat id or conversation id. It reaches listeners as
+  `WebhookReceived`; the package does not model it as a message.
 - Contract fixture synced with Linqelio's `contact.invite_redeemed` webhook
   event (ADR-0117, payload `ContactInviteRedeemedEvent`): sent once when a
   person follows a `contacts()->invite()` link, with `contactId`, `channelId`,
