@@ -13912,7 +13912,12 @@ paths:
         you may already have, use `listContacts` with `q`. When `providerId`
         is omitted it is the phone number's digits (no `+`), else the username
         (without `@`); one of `phone`, `username`, `providerId` is required
-        (400 `validation.invalid_request`).
+        (400 `validation.invalid_request`). Two kinds key a phone differently:
+        on WhatsApp Web (`wa_web`) it is the number's WhatsApp address
+        `<digits>@s.whatsapp.net` — the address replies come from — and a
+        `providerId` of digits only is read the same way; a contact already
+        holding the number as bare digits is still matched. On a Telegram
+        account (`tg_client`) it is `+<digits>`.
 
 
         `name` becomes the display name of a NEW contact and is kept as a
@@ -14045,22 +14050,6 @@ paths:
         of the link's token (the value of `start`, `context` or `ref`), so
         the caller can match it to the link it handed out without keeping
         the link itself.
-
-
-        When the person already has a contact of their own in this cabinet
-        for that channel identity (they wrote to the bot before following
-        the link): if that contact was only created from their messages and
-        nobody has worked with it (nobody answered them, no host refs, no
-        desk mapping, no edits, no phone number, no other kind of channel),
-        it is merged into the invited contact —
-        their conversations come along, the merge can be undone with
-        `undoContactMerge` — and `contact.invite_redeemed` names it in
-        `mergedContactId`. Otherwise nothing is bound or merged, the link
-        stays usable, and the cabinet gets one `contact.invite_conflict`
-        event (payload `ContactInviteConflictEvent`) naming both contacts;
-        merge them yourself and have the person follow the link again. A
-        link made for a contact that was merged into another one since binds
-        to that other contact.
 
 
         Errors: 404 `contact.not_found` for an unknown contact or one outside
@@ -14734,6 +14723,20 @@ paths:
         `createScheduledSend`. To see first whether send policy would allow it
         (limits, consent, quiet hours, the WhatsApp 24-hour window), call
         `checkSendPolicy` with the same body.
+
+
+        The message goes into the conversation of the person's real chat on
+        the channel. A WhatsApp Web (`wa_web`) address given as a phone
+        number is sent to the number's WhatsApp address
+        `<digits>@s.whatsapp.net` — the `chatId` their replies carry — so it
+        joins the conversation already open with them. On a Telegram account
+        (`tg_client`) a `+<digits>` phone is sent to the person's numeric
+        Telegram id when the platform already knows it; otherwise it is
+        resolved while sending, and the `+<digits>` conversation is then
+        renamed to the numeric id, or folded into the conversation that
+        already has it — announced by one `conversation.rekeyed` event
+        (payload `ConversationRekeyedEvent`). The `chatId` in the response
+        is the address the message was queued for.
 
 
         The channel: by default the channel of the contact's most recent
@@ -22637,7 +22640,9 @@ components:
           type: string
           description: >-
             The messenger's own id of the person (e.g. a Telegram user id).
-            Defaults to the digits of `phone`, else `username`.
+            Defaults to the digits of `phone`, else `username` — for
+            `wa_web` the number's address `<digits>@s.whatsapp.net`, for
+            `tg_client` `+<digits>`.
         name:
           type: string
           description: Display name for the new contact. Ignored when a contact already matched.
@@ -25005,15 +25010,15 @@ components:
             arrived), `message.status` (an outbound message became sent,
             delivered, read or failed), `message.updated` (a comment was
             edited, hidden, shown again, deleted or answered privately —
-            `data.change` says which), `channel.status` (a channel's status
+            `data.change` says which), `conversation.rekeyed` (a
+            conversation's `chatId` changed, or a second conversation of the
+            same chat was folded into it; payload
+            `ConversationRekeyedEvent`), `channel.status` (a channel's status
             changed), `channel.health_changed` (a channel's health rating
             changed), `alert.raised`, `alert.resolved`, `settings.updated`
-            (a settings section got a new version),
+            (a settings section got a new version) and
             `contact.invite_redeemed` (a person followed an invite link from
-            `createContactInvite`; payload `ContactInviteRedeemedEvent`) and
-            `contact.invite_conflict` (a person followed an invite link, but
-            their channel identity belongs to another contact; payload
-            `ContactInviteConflictEvent`). A
+            `createContactInvite`; payload `ContactInviteRedeemedEvent`). A
             subscription with a non-empty list receives a type added later
             only once it is added here with `updateWebhook`.
           items:
@@ -28227,7 +28232,7 @@ components:
           description: The proposal this merge resolved; absent for a merge made without one.
         reason:
           type: string
-          description: The proposal's reason (`shared_phone`, `lid_pair`), `manual`, `deep_link_orphan` (an automatic contact merged when its person followed an invite link), or what the store recorded.
+          description: The proposal's reason (`shared_phone`, `lid_pair`), `manual`, or what the store recorded.
         status:
           $ref: '#/components/schemas/ContactMergeStatus'
         mergedAt:
@@ -28302,10 +28307,10 @@ components:
         edited, hidden, shown again, deleted or answered privately; `data`
         carries `messageId`, `change` — `edited`, `hidden`, `unhidden`,
         `deleted`, `answered_privately` — `channelId` and `chatId`),
+        `conversation.rekeyed` (payload `ConversationRekeyedEvent`),
         `channel.status`,
         `channel.health_changed`, `compliance.notice` and
-        `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`),
-        `contact.invite_conflict` (payload `ContactInviteConflictEvent`) —
+        `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`) —
         `channels:read` on the channel; `channel.qr` — `channels:manage` on the channel
         (`data.stage` says what changed; the QR itself is read with
         `getChannelStatus`); `settings.updated` — `settings:manage`;
@@ -31198,6 +31203,80 @@ components:
         - raisedAt
     # END R10-E schemas
 
+    # ADR-0120: one conversation per real chat — a re-keyed or folded
+    # conversation is announced, identifiers only.
+    ConversationRekeyedEvent:
+      type: object
+      description: >
+        The payload of the `conversation.rekeyed` event — in outbound webhook
+        deliveries and on the realtime stream (RealtimeEvent.data). Sent once
+        when a direct conversation turns out to have been opened under an
+        address that is not the person's real chat id: a message sent to a
+        `tg_client` contact by `+<digits>` phone resolved to their numeric
+        Telegram id. Either the conversation is renamed to the real chat id
+        (`mergedConversationId` null; `conversationId` is unchanged), or the
+        real chat already had a conversation and the other one was folded
+        into it: its messages now belong to `conversationId`, and
+        `mergedConversationId` no longer exists. Re-key whatever you keep
+        by the old chat id or the merged conversation id to `chatId` and
+        `conversationId`. Webhook deliveries are at-least-once: deduplicate
+        on `X-Linqelio-Delivery`.
+      properties:
+        conversationId:
+          description: >-
+            The conversation of the chat from now on — the one renamed, or
+            the one the other was folded into.
+          type: string
+          format: uuid
+        channelId:
+          description: >-
+            The channel of the conversation.
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The conversation's chat id from now on: the person's real id on
+            the channel, the same value `message.inbound` and
+            `message.status` carry.
+          type: string
+        previousChatId:
+          description: >-
+            The address the conversation was opened under (e.g.
+            `+380501234567`); no conversation has it any more.
+          type: string
+        mergedConversationId:
+          description: >-
+            The conversation folded into `conversationId` and removed, or
+            null when the conversation was only renamed.
+          type: string
+          format: uuid
+          nullable: true
+        contactId:
+          description: >-
+            The contact of `conversationId`, or null when it has none. The
+            contact the message was sent to may differ (a separate contact
+            created for the phone number); joining the two is a contact
+            merge (`mergeContacts`).
+          type: string
+          format: uuid
+          nullable: true
+        occurredAt:
+          description: >-
+            When the conversation was re-keyed (UTC, RFC 3339).
+          type: string
+          format: date-time
+      required:
+        - conversationId
+        - channelId
+        - kind
+        - chatId
+        - previousChatId
+        - mergedConversationId
+        - contactId
+        - occurredAt
+
     # ADR-0117: a redeemed invite (createContactInvite) — identifiers only.
     ContactInviteRedeemedEvent:
       type: object
@@ -31208,13 +31287,10 @@ components:
         `createContactInvite` and their identity on the channel is bound to
         the contact (a Telegram bot's `/start`, Viber's conversation start, a
         Messenger or Instagram referral), whether or not they have written
-        anything yet — also when their identity had a contact of its own
-        that was created from their messages alone and was merged into the
-        invited one (`mergedContactId`). Not sent for a link that is
-        unknown, expired, already used or opened in another channel (such a
-        link is not used up and still works in its own channel), nor when
-        the identity belongs to another contact somebody works with — that
-        is `contact.invite_conflict`. Webhook deliveries are at-least-once:
+        anything yet. Not sent for a link that is unknown, expired, already
+        used or opened in another channel (such a link is not used up and
+        still works in its own channel), nor when the identity already
+        belongs to another contact. Webhook deliveries are at-least-once:
         deduplicate on `X-Linqelio-Delivery` or on `inviteTokenHash`.
       properties:
         contactId:
@@ -31248,22 +31324,6 @@ components:
           type: string
           format: uuid
           nullable: true
-        mergedContactId:
-          description: >-
-            The contact that held this identity before and was merged into
-            `contactId` by this redemption: it was created from the person's
-            own messages and nobody had worked with it. Its conversations
-            and messages now belong to `contactId`; messages you saw under
-            this id are the same person's. null when no merge happened. The
-            merge is recorded (`listContactMerges`, reason
-            `deep_link_orphan`) and can be undone with `undoContactMerge`;
-            the invite then stays used. Show it to the person working with
-            the contact rather than moving the messages over silently: the
-            history now on `contactId` was written from the account that
-            followed the link.
-          type: string
-          format: uuid
-          nullable: true
         inviteTokenHash:
           description: >-
             Lower-case hex SHA-256 of the invite token: the UTF-8 bytes of
@@ -31285,87 +31345,9 @@ components:
         - kind
         - chatId
         - conversationId
-        - mergedContactId
         - inviteTokenHash
         - consentSource
         - occurredAt
-
-    # ADR-0119: an invite followed, but the identity belongs to a contact
-    # somebody works with — nothing bound, the link stays usable.
-    ContactInviteConflictEvent:
-      type: object
-      description: >
-        The payload of the `contact.invite_conflict` event — in outbound
-        webhook deliveries and on the realtime stream (RealtimeEvent.data).
-        Sent when a person follows a link from `createContactInvite` but
-        their identity on the channel already belongs to another contact of
-        the cabinet that is more than an automatic contact made from their
-        own messages (somebody answered them, it has host refs, a desk
-        mapping, edits, a phone number, another kind of channel and so on). Nothing is bound or merged and the link is
-        NOT used up: merge the two contacts (`mergeContacts`), then have the
-        person follow the same link again, or send them a new one. Sent once
-        per link and person (`inviteTokenHash`, `chatId`): the person
-        following the same link again does not repeat it; after 20 different
-        people a link reports no more conflicts. Webhook deliveries
-        are at-least-once: deduplicate on `X-Linqelio-Delivery`.
-      properties:
-        contactId:
-          description: >-
-            The invited contact — the one the link was made for. Nothing was
-            bound to it.
-          type: string
-          format: uuid
-        channelId:
-          description: >-
-            The channel the invite was made for.
-          type: string
-          format: uuid
-        kind:
-          $ref: '#/components/schemas/ChannelKind'
-        chatId:
-          description: >-
-            The person's id on the channel — the Telegram user id, Viber
-            user id, Messenger PSID or Instagram-scoped id; the `chatId` of
-            their direct conversation, as in `message.inbound`.
-          type: string
-        conflictingContactId:
-          description: >-
-            The contact this identity belongs to. Always a contact of the
-            same cabinet; read it with `getContact`.
-          type: string
-          format: uuid
-        inviteTokenHash:
-          description: >-
-            Lower-case hex SHA-256 of the invite token, exactly as in
-            `ContactInviteRedeemedEvent.inviteTokenHash`. The token itself
-            is never sent.
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-        reason:
-          $ref: '#/components/schemas/ContactInviteConflictReason'
-        occurredAt:
-          description: >-
-            When the link was followed (UTC, RFC 3339).
-          type: string
-          format: date-time
-      required:
-        - contactId
-        - channelId
-        - kind
-        - chatId
-        - conflictingContactId
-        - inviteTokenHash
-        - reason
-        - occurredAt
-
-    ContactInviteConflictReason:
-      type: string
-      description: >
-        Why a followed invite bound nothing: `identity_owned` — the person's
-        channel identity belongs to another contact somebody works with. New
-        values may be added; treat an unknown one like `identity_owned`.
-      enum: [identity_owned]
-      x-enum-varnames: [ContactInviteConflictReasonIdentityOwned]
 
     # =========================================================================
     # BEGIN R11-A schemas: groups while disabled (#129) and group management
