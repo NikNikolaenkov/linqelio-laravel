@@ -296,3 +296,28 @@ it('carries unrecognised deliveries through as a raw event', function (): void {
 
     Event::assertDispatched(WebhookReceived::class);
 });
+
+// contact.invite_redeemed (Linqelio ADR-0117): a person followed an invite
+// link. Identifiers only, no messageId — it reaches listeners as the raw
+// WebhookReceived and is never mistaken for a message.
+it('carries a redeemed invite through as a raw event, not a message', function (): void {
+    Event::fake([WebhookReceived::class, MessageReceived::class]);
+    Queue::fake();
+
+    $redeemed = [
+        'contactId' => '6f1c2a8e-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
+        'channelId' => '8c3e9a4b-5d6f-4b82-9cad-4e5f6a7b8c9d',
+        'kind' => 'tg_bot',
+        'chatId' => '629076487',
+        'conversationId' => null,
+        'inviteTokenHash' => hash('sha256', 'lnk_ab'),
+        'consentSource' => 'deep_link',
+        'occurredAt' => now()->toIso8601String(),
+    ];
+    deliver($this, $redeemed)->assertStatus(202);
+    Event::assertDispatched(WebhookReceived::class);
+
+    (new ProcessWebhook($redeemed, 'contact.invite_redeemed'))->handle();
+    Event::assertNotDispatched(MessageReceived::class);
+    expect(LinqelioMessage::query()->count())->toBe(0);
+});

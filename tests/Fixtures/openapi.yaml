@@ -14035,6 +14035,18 @@ paths:
         nothing. The link expires after 24 hours (`expiresAt`).
 
 
+        The link works only in the channel it was made for: opened in
+        another bot or account it binds nothing and stays usable. When the
+        person follows it and the identity is bound, the cabinet gets one
+        `contact.invite_redeemed` event (webhooks and the
+        realtime stream, payload `ContactInviteRedeemedEvent`) — also for a
+        bot's `/start` and Viber's conversation start, where the person has
+        not written anything yet. It carries `inviteTokenHash`, the SHA-256
+        of the link's token (the value of `start`, `context` or `ref`), so
+        the caller can match it to the link it handed out without keeping
+        the link itself.
+
+
         Errors: 404 `contact.not_found` for an unknown contact or one outside
         the caller's channel scope; 404 `channel.not_found` for a channel the
         caller does not work; 422 `channel.capability_unsupported` for a
@@ -24967,8 +24979,12 @@ components:
             edited, hidden, shown again, deleted or answered privately —
             `data.change` says which), `channel.status` (a channel's status
             changed), `channel.health_changed` (a channel's health rating
-            changed), `alert.raised`, `alert.resolved` and `settings.updated`
-            (a settings section got a new version).
+            changed), `alert.raised`, `alert.resolved`, `settings.updated`
+            (a settings section got a new version) and
+            `contact.invite_redeemed` (a person followed an invite link from
+            `createContactInvite`; payload `ContactInviteRedeemedEvent`). A
+            subscription with a non-empty list receives a type added later
+            only once it is added here with `updateWebhook`.
           items:
             type: string
         status:
@@ -28148,8 +28164,9 @@ components:
         carries `messageId`, `change` — `edited`, `hidden`, `unhidden`,
         `deleted`, `answered_privately` — `channelId` and `chatId`),
         `channel.status`,
-        `channel.health_changed` and `compliance.notice` — `channels:read` on
-        the channel; `channel.qr` — `channels:manage` on the channel
+        `channel.health_changed`, `compliance.notice` and
+        `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`) —
+        `channels:read` on the channel; `channel.qr` — `channels:manage` on the channel
         (`data.stage` says what changed; the QR itself is read with
         `getChannelStatus`); `settings.updated` — `settings:manage`;
         `alert.raised`, `alert.resolved` — `channels:read` on the alert's
@@ -31040,6 +31057,78 @@ components:
         - params
         - raisedAt
     # END R10-E schemas
+
+    # ADR-0117: a redeemed invite (createContactInvite) — identifiers only.
+    ContactInviteRedeemedEvent:
+      type: object
+      description: >
+        The payload of the `contact.invite_redeemed` event — in outbound
+        webhook deliveries and on the realtime stream (RealtimeEvent.data).
+        Sent once per redeemed invite: when a person follows a link from
+        `createContactInvite` and their identity on the channel is bound to
+        the contact (a Telegram bot's `/start`, Viber's conversation start, a
+        Messenger or Instagram referral), whether or not they have written
+        anything yet. Not sent for a link that is unknown, expired, already
+        used or opened in another channel (such a link is not used up and
+        still works in its own channel), nor when the identity already
+        belongs to another contact. Webhook deliveries are at-least-once:
+        deduplicate on `X-Linqelio-Delivery` or on `inviteTokenHash`.
+      properties:
+        contactId:
+          description: >-
+            The invited contact; the channel identity is now bound to it.
+            Write to the person with `sendContactMessage` and `channelId`.
+          type: string
+          format: uuid
+        channelId:
+          description: >-
+            The channel the invite was made for.
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The person's id on the channel that was just bound to the
+            contact — the Telegram user id, Viber user id, Messenger PSID or
+            Instagram-scoped id. A direct conversation with them has this
+            `chatId`, the same value `message.inbound` and `message.status`
+            carry. Use it to tell this account from other accounts the
+            contact may have on the same channel.
+          type: string
+        conversationId:
+          description: >-
+            The direct conversation with THIS account (`chatId`) on this
+            channel, or null when there is none yet — redeeming an invite
+            does not create one; the first message either way does. Never
+            a conversation with another account of the contact.
+          type: string
+          format: uuid
+          nullable: true
+        inviteTokenHash:
+          description: >-
+            Lower-case hex SHA-256 of the invite token: the UTF-8 bytes of
+            the link's `start` (Telegram), `context` (Viber) or `ref`
+            (Messenger, Instagram) value. Hash the link you handed out the
+            same way to match it. The token itself is never sent.
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        consentSource:
+          $ref: '#/components/schemas/ConsentSource'
+        occurredAt:
+          description: >-
+            When the invite was redeemed (UTC, RFC 3339).
+          type: string
+          format: date-time
+      required:
+        - contactId
+        - channelId
+        - kind
+        - chatId
+        - conversationId
+        - inviteTokenHash
+        - consentSource
+        - occurredAt
 
     # =========================================================================
     # BEGIN R11-A schemas: groups while disabled (#129) and group management
