@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's Telegram forum topics (ADR-0121):
+  new operation `listConversationThreads` (`GET /conversations/{id}/threads`,
+  schemas `ConversationThread` / `ConversationThreadList`), `threadId` on
+  sends, scheduled sends, feed items and messages and as a feed query
+  parameter, `isForum` on a conversation, the `threads` channel capability and
+  the `thread.not_found` error (now `ErrorCode::ThreadNotFound`). The package
+  does not wrap topics yet: the operation is classified as not wrapped and
+  `threadId` is not a client argument.
 - Contract fixture synced with Linqelio's ADR-0120 amendment: a `tg_client`
   send by phone is keyed by the numeric id only from a Telegram-confirmed,
   same-channel mapping; `conversation.rekeyed` documents that a fold keeps a

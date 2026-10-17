@@ -585,6 +585,7 @@ paths:
                       buttons: false
                       groups: true
                       presence: false
+                      threads: false
                       deepLinkInvite: false
                       delivery: stream
                     settings:
@@ -601,6 +602,7 @@ paths:
                       buttons: true
                       groups: false
                       presence: false
+                      threads: true
                       deepLinkInvite: true
                       delivery: poll
         '401':
@@ -707,6 +709,7 @@ paths:
                   buttons: false
                   groups: true
                   presence: false
+                  threads: false
                   deepLinkInvite: false
                   delivery: stream
         '400':
@@ -3327,6 +3330,7 @@ paths:
                         buttons: false
                         groups: false
                         presence: false
+                        threads: false
                         deepLinkInvite: false
                         delivery: webhook
                       settings:
@@ -6124,6 +6128,8 @@ paths:
         - message.type_unsupported
         - idempotency.key_reused
         - tenancy.suspended
+        # ADR-0121: forum topics.
+        - thread.not_found
       responses:
         '201':
           description: The scheduled send.
@@ -7810,6 +7816,18 @@ paths:
         `channel.capability_unsupported`.
 
 
+        Into a Telegram forum group (`isForum: true`, on a Telegram account
+        `tg_client` or bot `tg_bot`) set `threadId` to the topic's id — the id
+        of its first message — for example
+        `{"type":"text","content":{"text":"…"},"threadId":"14"}`; without it
+        the message goes to the General topic. A topic that cannot be used is
+        never replaced by General: a conversation that is not a forum, or a
+        topic of another chat, is 422 `thread.not_found`; a topic deleted or
+        closed for the account fails the message with the reason class
+        `thread_not_found`. `replyTo` — the `providerMsgId` of a message of
+        this chat, or its number — answers that message, inside its topic.
+
+
         The answer 202 means "accepted", not "delivered": follow the outcome
         with `getMessage` or the `message.status` webhook.
       x-mcp:
@@ -7866,6 +7884,8 @@ paths:
         - template.not_approved
         - template.unsupported
         - template.params_invalid
+        # ADR-0121: forum topics.
+        - thread.not_found
       responses:
         '202':
           description: >
@@ -7977,6 +7997,8 @@ paths:
         - template.not_approved
         - template.unsupported
         - template.params_invalid
+        # ADR-0121: forum topics.
+        - thread.not_found
       responses:
         '200':
           description: The send-policy answer for this prospective send.
@@ -13755,6 +13777,10 @@ paths:
         private reply is possible — and `post` describes the post.
 
 
+        In a Telegram forum group (`isForum: true`) each message carries its
+        topic in `threadId`; pass `threadId` to read one topic only.
+
+
         Use it to read a thread found with `listConversations`. To read
         everything exchanged with one person across all their conversations
         and channels, use `listContactMessages`; to check one message's
@@ -13785,6 +13811,20 @@ paths:
             empty page.
           schema:
             type: string
+        # ADR-0121 (R11/R18): forum topic filter.
+        - name: threadId
+          in: query
+          required: false
+          description: >-
+            Only the messages of one topic of a Telegram forum group: the
+            topic's id (e.g. `14`), or `general` for the General topic —
+            messages without a topic, including everything received before
+            topics were recorded. Omitted: the messages of all topics. `1` is
+            the topic with id 1, not the General topic. Any other value is 400
+            `validation.invalid_request`.
+          schema:
+            type: string
+          example: '14'
         - $ref: '#/components/parameters/Limit'
       x-error-codes:
         - auth.invalid_key
@@ -13888,6 +13928,83 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  # ADR-0121 (R12, R33): the topic catalogue of a Telegram forum group.
+  /conversations/{id}/threads:
+    get:
+      operationId: listConversationThreads
+      x-permission: 'channels:read'
+      summary: List the topics of a Telegram forum group
+      description: >-
+        Returns the topics of a Telegram forum group (`isForum: true` in
+        `listConversations`): a forum supergroup organizes its messages in
+        topics, each with an id (the id of its first message, e.g. `14`), a
+        title and whether it is closed. The list is ordered by topic id and
+        not paginated. A topic whose title is not known yet has an empty
+        `title` — show it as "Topic #<id>".
+
+
+        The General topic is not in the list: it has no id — read it with
+        `threadId=general` and send into it without `threadId`. The list is
+        what the channel reported: for a Telegram account (`tg_client`) it is
+        read from Telegram, for a bot (`tg_bot`) a topic appears once the
+        first message in it arrived, so it may be incomplete.
+
+
+        Next: read one topic with `listConversationMessages` and `threadId`
+        (`/conversations/{id}/feed?threadId=14`), and write into it with
+        `sendConversationMessage` and `threadId`. A conversation that is not
+        a forum has no topics (an empty `items`); a channel without topics
+        (anything but `tg_client` and `tg_bot`) is 409
+        `channel.capability_unsupported`. An unknown conversation, one of
+        another cabinet or one on a channel outside the caller's scope is 404
+        `conversation.not_found`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - conversation.not_found
+        - validation.invalid_request
+        - channel.capability_unsupported
+      responses:
+        '200':
+          description: The topics of the forum group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationThreadList'
+              example:
+                items:
+                  - id: '14'
+                    title: Daily reports
+                    closed: false
+                    updatedAt: '2026-10-15T08:00:00Z'
+                  - id: '27'
+                    title: Warehouse
+                    closed: true
+                    updatedAt: '2026-10-12T17:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /contacts/create:
     post:
@@ -14785,7 +14902,8 @@ paths:
         optionally prefixed `gave up after N attempts: ` — classes `timeout`,
         `provider_unavailable`, `rate_limited`, `rejected`, `not_connected`,
         `channel_gone`, `recipient_not_found`, `media_unavailable`,
-        `gave_up`, `unknown` (more may be added); also `channel.not_connected`
+        `thread_not_found`, `gave_up`, `unknown` (more may be added); also
+        `channel.not_connected`
         and `tenancy.suspended`.
 
 
@@ -14872,6 +14990,8 @@ paths:
         - template.not_approved
         - template.unsupported
         - template.params_invalid
+        # ADR-0121: forum topics.
+        - thread.not_found
       responses:
         # R8-D (#109, ADR-0082): SentMessage = the Envelope + policyWarnings.
         # NOTE: the handler answers a replay of the same Idempotency-Key with
@@ -15003,6 +15123,8 @@ paths:
         - template.not_approved
         - template.unsupported
         - template.params_invalid
+        # ADR-0121: forum topics.
+        - thread.not_found
       responses:
         '200':
           description: The send-policy answer for this prospective send.
@@ -21366,6 +21488,12 @@ components:
           large (files up to 32 MiB). Send a smaller one.
         - `message.not_found` — (404) no such message, or no media on it, in
           the cabinet.
+        - `thread.not_found` — (422) the forum topic cannot be used: the
+          conversation is not a Telegram forum, or `threadId` / `replyTo`
+          names a message of another chat. A topic deleted or closed for the
+          account is found only when sending: the message then fails with the
+          reason class `thread_not_found`. Send into another topic, or omit
+          `threadId` for the General topic; do not retry unchanged.
         - `accesspool.no_next` — (409) no healthy standby credential to rotate
           to. Add one to the access pool first.
         - `accesspool.not_found` — (404) no such access-pool entry.
@@ -22034,6 +22162,11 @@ components:
         - keyring.key_not_found
         - keyring.scope_not_grantable
         # --- END keys -------------------------------------------------------------
+        # --- BEGIN forum topics (ADR-0121) ----------------------------------------
+        #   not_found (422): threadId / replyTo into a conversation that is not
+        #     a forum, or naming a message of another chat.
+        - thread.not_found
+        # --- END forum topics -----------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -22358,6 +22491,14 @@ components:
         replyTo:
           type: string
           description: Optional provider message id this message replies to.
+        # ADR-0121: core field Envelope.ThreadID (additive, omitempty).
+        threadId:
+          type: string
+          description: >-
+            The topic of a Telegram forum group the message belongs to: the
+            topic's id (the id of its first message), e.g. `14`. Absent for
+            the General topic, outside forums, and on messages received before
+            topics were recorded.
         providerMsgId:
           type: string
           # ADR-0012 §3 (also the bus idempotency key).
@@ -22452,6 +22593,14 @@ components:
         # ADR-0108 (#188): the post of a comments conversation — additive.
         post:
           $ref: '#/components/schemas/ConversationPost'
+        # ADR-0121: forum topics — additive.
+        isForum:
+          type: boolean
+          description: >-
+            True for a Telegram forum supergroup — a group whose messages are
+            organized in topics. Each of its messages carries its topic in
+            `threadId`, a send can name the topic, the conversation's feed can
+            be filtered by topic, and its topics can be listed.
       required:
         - id
         - channelId
@@ -22568,6 +22717,52 @@ components:
             $ref: '#/components/schemas/ConversationParticipant'
       required:
         - conversationId
+        - items
+
+    # ADR-0121 (R12): the topic catalogue of a forum group.
+    ConversationThread:
+      type: object
+      description: >-
+        One topic of a Telegram forum group. The General topic is never one:
+        it has no id.
+      properties:
+        id:
+          type: string
+          description: >-
+            The topic's id — the id of its first message, e.g. `14`; what
+            `threadId` takes in `sendConversationMessage` and
+            `listConversationMessages`.
+          example: '14'
+        title:
+          type: string
+          description: >-
+            The topic's title; empty while the channel has not reported it
+            (show it as "Topic #<id>").
+        closed:
+          type: boolean
+          description: >-
+            True when the topic is closed: Telegram takes a message there from
+            the group's admins only.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the platform last learned something about the topic.
+      required:
+        - id
+        - title
+        - closed
+        - updatedAt
+
+    ConversationThreadList:
+      type: object
+      description: The topics of one forum group (`listConversationThreads`), by topic id.
+      properties:
+        items:
+          type: array
+          description: The topics, by id; empty for a conversation that is not a forum.
+          items:
+            $ref: '#/components/schemas/ConversationThread'
+      required:
         - items
 
     # ADR-0062 §4 (the group switch); ADR-0102 (tg_client groups).
@@ -22723,7 +22918,27 @@ components:
             cannot tell the two apart).
         replyTo:
           type: string
-          description: Optional provider message id to reply to.
+          # ADR-0121 (R27): parsed and checked on tg_client / tg_bot.
+          description: >
+            Optional provider message id to reply to. On a Telegram account
+            (`tg_client`) or bot (`tg_bot`) it is the `providerMsgId` of a
+            message of this chat (`<chatId>-<n>`) or just its number `<n>`; a
+            value that does not parse is 400 `validation.invalid_request`, a
+            message of another chat 422 `thread.not_found`.
+        # ADR-0121: forum topics.
+        threadId:
+          type: string
+          description: >
+            The topic of a Telegram forum group to send into: the topic's id,
+            which is the id of its first message — `"14"`, or `"<chatId>-14"`
+            in the form of a `providerMsgId`. Omitted, empty or `"1"`: the
+            General topic. Only on a Telegram account (`tg_client`) or bot
+            (`tg_bot`), elsewhere 409 `channel.capability_unsupported`; a topic
+            of another chat, or a conversation that is not a forum, is 422
+            `thread.not_found`; a value that does not parse is 400
+            `validation.invalid_request`. The message is never sent to the
+            General topic instead of the topic named.
+          example: '14'
         channelId:
           type: string
           description: >
@@ -23332,6 +23547,12 @@ components:
         presence:
           type: boolean
           description: Can report typing and online presence. No kind declares it today.
+        # ADR-0121: forum topics.
+        threads:
+          type: boolean
+          description: >-
+            Can send into a topic of a Telegram forum group (`threadId`) and
+            reports the topic of each inbound message.
         # ADR-0009: click-to-chat deep links.
         deepLinkInvite:
           type: boolean
@@ -23359,6 +23580,7 @@ components:
         - buttons
         - groups
         - presence
+        - threads
         - deepLinkInvite
         - delivery
 
@@ -24701,6 +24923,13 @@ components:
             answers nothing.
         comment:
           $ref: '#/components/schemas/CommentInfo'
+        # ADR-0121: forum topics — additive.
+        threadId:
+          type: string
+          description: >-
+            The topic of a Telegram forum group the message belongs to (the
+            topic's id, e.g. `14`). Absent for the General topic, outside
+            forums, and on messages received before topics were recorded.
       required:
         - id
         - direction
@@ -30389,6 +30618,13 @@ components:
         replyTo:
           type: string
           description: Optional provider message id the message replies to.
+        # ADR-0121: forum topics.
+        threadId:
+          type: string
+          description: >-
+            The topic of a Telegram forum group to send into, as `threadId` of
+            `sendContactMessage`. Omitted: the General topic.
+          example: '14'
       required:
         - contactId
         - sendAt
@@ -30450,6 +30686,12 @@ components:
         replyTo:
           type: string
           description: The provider message id it replies to, when given.
+        # ADR-0121: forum topics.
+        threadId:
+          type: string
+          description: >-
+            The topic of a Telegram forum group it is sent into (the topic's
+            id); absent for the General topic.
         attempts:
           type: integer
           description: >-
