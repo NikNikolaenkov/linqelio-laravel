@@ -48,6 +48,10 @@ enum ErrorCode: string
     case ChannelNotFound = 'channel.not_found';
     case ChannelCapabilityUnsupported = 'channel.capability_unsupported';
     case ChannelPairingRequired = 'channel.pairing_required';
+    /** The connected account differs from the expected phone (409), ADR-0124. */
+    case ChannelAccountMismatch = 'channel.account_mismatch';
+    /** Another channel of the cabinet already holds that number (409), ADR-0124. */
+    case ChannelAccountInUse = 'channel.account_in_use';
 
     case PolicyRateLimited = 'policy.rate_limited';
     case PolicyQuotaExceeded = 'policy.quota_exceeded';

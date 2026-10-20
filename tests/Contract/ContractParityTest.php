@@ -188,6 +188,10 @@ final class Contract
         // wrapped together with them in a follow-up.
         'listConversationThreads' => 'forum topics (ADR-0121) — not wrapped yet, together with threadId on send/feed',
 
+        // ADR-0124: channel account check. `expectedPhone` on connect and the
+        // `account` / `lastError` answer fields ride on operations already wrapped;
+        // the package passes bodies and answers through as they are.
+
         // Apps that connect to an organization (Linqelio #229): sign-up, email
         // confirmation and the app registry are a person's console flows or
         // platform administration, not calls made with a cabinet key.

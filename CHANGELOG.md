@@ -9,6 +9,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's channel account check (ADR-0124:
+  `expectedPhone` on `connectChannel`, `account` and `lastError` on
+  `getChannelStatus`). New error codes: `channel.account_mismatch`,
+  `channel.account_in_use` (now `ErrorCode` cases). No new operations.
 - Contract fixture synced with Linqelio's platform mail settings (ADR-0123:
   `getMailSettings`, `updateMailSettings`, `testMailSettings`) and caught up
   with the apps/auth surface (Linqelio #229: organization app connections,
