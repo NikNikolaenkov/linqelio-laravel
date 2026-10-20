@@ -844,11 +844,20 @@ paths:
         an account with another number is refused before any message is taken
         in, the login is closed, and `getChannelStatus` answers
         `disconnected` with a `lastError` of `channel.account_mismatch` and
-        the masked number that was scanned. Without `expectedPhone` any
-        account is accepted, as before. A number that another channel of the
-        cabinet already holds is refused with 409 `channel.account_in_use`,
-        and a channel that is already connected to a different account than
-        `expectedPhone` answers 409 `channel.account_mismatch`.
+        the masked number that was scanned. The number stays on the channel:
+        a later call without `expectedPhone` checks the login against the
+        same number, and a call with another `expectedPhone` replaces it. A
+        channel that was never given a number accepts any account, as before.
+        A number that another channel of the cabinet already holds is refused
+        with 409 `channel.account_in_use`, and a channel that is already
+        connected to a different account than `expectedPhone` answers 409
+        `channel.account_mismatch`. A WhatsApp Web channel (`wa_web`) that is
+        connected but whose account has not been checked against the number
+        yet restarts its session so the account is checked, and answers
+        `pairing` until then. A Telegram account (`tg_client`) that is
+        connected with no account recorded (connected before the number
+        check existed) cannot be checked: it answers 409
+        `channel.not_connected` — disconnect it and connect it again.
 
         Safe to repeat. Needs a person to scan the QR for the QR kinds, so an
         agent can start it but cannot finish it alone.
@@ -937,11 +946,13 @@ paths:
 
 
         Pass `expectedPhone` to make sure the right account is linked; it
-        defaults to `phone`. An account with another number is refused before
-        any message is taken in, exactly as in `connectChannel`: the status
-        becomes `disconnected` with a `lastError` of
-        `channel.account_mismatch`. A number that another channel of the
-        cabinet already holds is refused with 409 `channel.account_in_use`.
+        defaults to `phone`, so every call sets the number the channel
+        expects, and it stays on the channel as in `connectChannel`. An
+        account with another number is refused before any message is taken
+        in, exactly as in `connectChannel`: the status becomes `disconnected`
+        with a `lastError` of `channel.account_mismatch`. A number that
+        another channel of the cabinet already holds is refused with 409
+        `channel.account_in_use`.
 
 
         Other kinds have no such code and answer 409
@@ -1034,7 +1045,9 @@ paths:
         For a Telegram account (`tg_client`) whose QR login stopped at
         `passwordRequired: true`, send the account's two-step verification
         password as `token`: it finishes the login and is not stored. A
-        WhatsApp Web account (`wa_web`) has no token — it pairs through
+        Telegram account takes no token: sent while no login waits for its
+        password, the value is refused with 409 `channel.not_connected` and
+        nothing is stored. A WhatsApp Web account (`wa_web`) has no token — it pairs through
         `connectChannel`. A Facebook Page (`fb_page`) or Instagram account
         (`instagram`) takes no token either — the platform obtains and renews
         it after a login with Facebook or Instagram (`startMetaConnect`) — and
@@ -1061,6 +1074,8 @@ paths:
         - auth.origin_rejected
         - tenancy.cross_cabinet_denied
         - channel.not_found
+        # Final review I3 (ADR-0124): tg_client with no login waiting for its 2FA password.
+        - channel.not_connected
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
       requestBody:
@@ -1082,6 +1097,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /channels/{id}/sync:
     post:
@@ -22810,8 +22827,10 @@ components:
           another phone number than `expectedPhone`, or than the channel's
           current account. The login is closed and no message is taken in;
           `getChannelStatus` shows it as `lastError` with the masked number
-          scanned. Scan with the right phone, or connect again without
-          `expectedPhone` if the change of number is intended.
+          scanned. Scan with the right phone. The channel keeps expecting its
+          number, also on a connect without `expectedPhone`: if the change of
+          number is intended, connect again with the new number as
+          `expectedPhone` (disconnect a channel that is connected first).
         - `channel.account_in_use` — (409) the phone number is already
           connected through another channel of the cabinet. Use that channel,
           or disconnect it first.
@@ -26143,13 +26162,13 @@ components:
           type: string
           description: >
             The number of the account that was refused, masked to the country
-            code and the last three digits (for example `380*******015`).
+            code and the last three digits (for example `+380 … 015`).
             Absent when the messenger did not reveal a number.
       required:
         - code
       example:
         code: channel.account_mismatch
-        maskedPhone: '380*******015'
+        maskedPhone: '+380 … 015'
 
     ChannelConnectRequest:
       type: object
@@ -26165,7 +26184,9 @@ components:
             must remain. Used for `wa_web` and `tg_client`; ignored for other
             kinds. When the account that logs in has another number, or none
             that can be read, the channel is not activated and stays
-            `disconnected` with `lastError` `channel.account_mismatch`.
+            `disconnected` with `lastError` `channel.account_mismatch`. The
+            number stays on the channel: a later connect without it checks the
+            login against the same number.
       additionalProperties: false
 
     ChannelPairingCodeRequest:

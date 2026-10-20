@@ -13,6 +13,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `expectedPhone` on `connectChannel`, `account` and `lastError` on
   `getChannelStatus`). New error codes: `channel.account_mismatch`,
   `channel.account_in_use` (now `ErrorCode` cases). No new operations.
+  `setChannelCredentials` may now answer 409 `channel.not_connected` (a
+  Telegram account with no login waiting for its password).
 - Contract fixture synced with Linqelio's platform mail settings (ADR-0123:
   `getMailSettings`, `updateMailSettings`, `testMailSettings`) and caught up
   with the apps/auth surface (Linqelio #229: organization app connections,
