@@ -188,6 +188,29 @@ final class Contract
         // wrapped together with them in a follow-up.
         'listConversationThreads' => 'forum topics (ADR-0121) — not wrapped yet, together with threadId on send/feed',
 
+        // Apps that connect to an organization (Linqelio #229): sign-up, email
+        // confirmation and the app registry are a person's console flows or
+        // platform administration, not calls made with a cabinet key.
+        'listAppCatalog' => 'human session only — x-permission self; the apps a person can connect',
+        'listOrganizationAppConnections' => 'human session only — x-permission self; console "connected apps"',
+        'revokeOrganizationAppConnection' => 'human session only — x-permission self; a person disconnects an app',
+        'signupForApp' => 'human identity — a person signs up while connecting an app',
+        'confirmEmailVerification' => 'human identity — the link from the confirmation letter',
+        'resendEmailVerification' => 'human session only — x-permission self',
+        'getAppConnection' => 'the connection of an organization key (an app), not a cabinet-key call — no integration use case yet',
+        'listApps' => 'platform:admin only',
+        'createApp' => 'platform:admin only',
+        'updateApp' => 'platform:admin only',
+        'deleteApp' => 'platform:admin only',
+        'moveCabinet' => 'platform:admin only — moving a cabinet between organizations is the platform operator',
+        'updatePlan' => 'platform:admin only',
+
+        // The platform's own mail settings (Linqelio ADR-0123): the platform
+        // operator configures and tests the mailbox in the console.
+        'getMailSettings' => 'platform:admin only',
+        'updateMailSettings' => 'platform:admin only — carries the SMTP password',
+        'testMailSettings' => 'platform:admin only',
+
         // Platform administration needs the platform:admin scope, which client
         // keys are not given. Wrapping it would suggest an application can call
         // it, and it cannot.

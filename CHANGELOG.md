@@ -9,6 +9,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's platform mail settings (ADR-0123:
+  `getMailSettings`, `updateMailSettings`, `testMailSettings`) and caught up
+  with the apps/auth surface (Linqelio #229: organization app connections,
+  sign-up, email confirmation, app registry, `moveCabinet`, `updatePlan`). New
+  error codes: `mail.not_configured`, `mail.auth`, `mail.connect`, `mail.tls`,
+  `mail.rejected`, `mail.timeout`, `mail.secret_unavailable`,
+  `apps.already_connected`, `apps.app_not_found`, `apps.app_in_use`,
+  `apps.connection_not_found`, `auth.email_unverified`, `auth.account_exists`
+  (now `ErrorCode` cases). No new SDK methods: the 16 new operations are
+  classified as not wrapped (human session or platform:admin).
 - Contract fixture synced with Linqelio's Telegram forum topics (ADR-0121):
   new operation `listConversationThreads` (`GET /conversations/{id}/threads`,
   schemas `ConversationThread` / `ConversationThreadList`), `threadId` on
