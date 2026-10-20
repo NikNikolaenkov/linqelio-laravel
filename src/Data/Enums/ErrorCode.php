@@ -31,6 +31,10 @@ enum ErrorCode: string
     case AuthSecondFactorRequired = 'auth.second_factor_required';
     case AuthSecondFactorInvalid = 'auth.second_factor_invalid';
     case AuthSecondFactorConflict = 'auth.second_factor_conflict';
+    /** The email is not confirmed yet (403). */
+    case AuthEmailUnverified = 'auth.email_unverified';
+    /** An account with that email already exists (409); log in instead of signing up. */
+    case AuthAccountExists = 'auth.account_exists';
 
     case TenancyCabinetNotFound = 'tenancy.cabinet_not_found';
     case TenancyCrossCabinetDenied = 'tenancy.cross_cabinet_denied';
@@ -206,6 +210,34 @@ enum ErrorCode: string
     case KeyringKeyNotFound = 'keyring.key_not_found';
     /** The key would get a scope its issuer does not hold, or one never grantable here (403). */
     case KeyringScopeNotGrantable = 'keyring.scope_not_grantable';
+
+    // Apps that connect to an organization (Linqelio #229).
+    /** The organization is already connected to this app (409). */
+    case AppsAlreadyConnected = 'apps.already_connected';
+    /** No app with that id in the registry (404). */
+    case AppsAppNotFound = 'apps.app_not_found';
+    /** The app id is taken, or the app has connections and cannot be deleted (409). */
+    case AppsAppInUse = 'apps.app_in_use';
+    /** No live connection with that id in the organization (404). */
+    case AppsConnectionNotFound = 'apps.connection_not_found';
+
+    // The platform's own mail settings (Linqelio ADR-0123). The platform operator
+    // sends the test mail; all but mail.not_configured come back as the
+    // `errorCode` of a test result, not as an error response.
+    /** The platform mails to the log only; there is nothing to test (409). */
+    case MailNotConfigured = 'mail.not_configured';
+    /** The mail server refused the login or password. */
+    case MailAuth = 'mail.auth';
+    /** The mail server could not be reached. */
+    case MailConnect = 'mail.connect';
+    /** The encrypted connection to the mail server failed. */
+    case MailTls = 'mail.tls';
+    /** The mail server refused the sender, the recipient or the message. */
+    case MailRejected = 'mail.rejected';
+    /** The mail server did not answer in time. */
+    case MailTimeout = 'mail.timeout';
+    /** The mail server password could not be read from the secret store. */
+    case MailSecretUnavailable = 'mail.secret_unavailable';
 
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';

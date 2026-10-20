@@ -147,8 +147,9 @@ info:
     authenticates it; the cookie is then ignored.
 
     **Which cabinet a call acts in**: a client key — always its own cabinet;
-    a session — the `X-Linqelio-Cabinet` header (or the person's only
-    cabinet); an embed token — the cabinet it was minted in. Resource ids of
+    an organization key (`lqak_…`) — the `X-Linqelio-Cabinet` header (or the
+    organization's only cabinet), see `getAppConnection`; a session — the
+    `X-Linqelio-Cabinet` header (or the person's only cabinet); an embed token — the cabinet it was minted in. Resource ids of
     another cabinet answer 404, exactly like ids that do not exist.
 
     **Permissions**: every operation requires one permission (for example
@@ -446,6 +447,12 @@ tags:
       The pool of provider credentials per channel kind, with
       their health. Use `listAccessPool` to see the entries and
       `rotateAccessPool` to promote the next healthy credential.
+  - name: apps
+    description: >-
+      Apps connected to a whole organization with an organization key
+      (`lqak_…`). The app calls `getAppConnection` to learn which
+      organization it was connected to, whether that organization is active,
+      and which cabinets it may act in with the `X-Linqelio-Cabinet` header.
   - name: platform
     description: >-
       The platform operators' surface across all organizations: organizations
@@ -1602,6 +1609,128 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /cabinets/{id}/move:
+    post:
+      operationId: moveCabinet
+      x-permission: 'platform:admin'
+      summary: Move a cabinet to another organization (platform operator)
+      # Task 12 of the app-registry plan (ADR-0122): one privileged transaction,
+      # quota reserved on the target, two organization_audit rows.
+      description: >-
+        Moves the cabinet into the organization named by `organizationId`.
+        Everything inside the cabinet stays as it is and moves with it: its
+        channels, contacts, conversations, message history, its cabinet API
+        keys and its cabinet-level members. What changes is ownership: from
+        the next request the organization keys of the old organization can no
+        longer act in this cabinet (403 `tenancy.cross_cabinet_denied`), and
+        the keys of the new organization can. Organization-level memberships
+        follow the owner the same way: people who reached the cabinet only
+        through the old organization lose it, and those of the new
+        organization gain it.
+
+
+        An organization key of the new organization that used to reach its
+        only cabinet without naming it loses that default once the
+        organization has two cabinets: from then on every cabinet operation
+        must send the `X-Linqelio-Cabinet` header (otherwise 403
+        `tenancy.cross_cabinet_denied`). Apps should read the cabinet list
+        again with `getAppConnection`.
+
+
+        The target organization must have room for the cabinet: one
+        `cabinets`, one `channels.<kind>` per channel of the cabinet, and one
+        `seats` for each cabinet-level member or pending invitee of the
+        cabinet who holds no seat in the target yet are reserved on its plan.
+        A plan that is full answers 403 `tenancy.quota_exceeded` (the problem
+        body carries `quota`) with the cabinet left where it was. The
+        cabinet's monthly usage so far stays counted against the old
+        organization. A suspended target organization is accepted; the
+        suspension then applies to the moved cabinet, whose channels are held
+        like the rest of that organization's. Both organizations' change
+        histories (`listOrganizationAudit`) record the move, as
+        `cabinet.move_out` and `cabinet.move_in`, without naming the other
+        organization; the platform's own log keeps both, refused moves
+        included.
+
+
+        The apps of the old organization lose the cabinet together with
+        their webhooks: every active webhook subscription of the cabinet
+        that one of the old organization's app connections registered is set
+        to `disabled` by the move (`cabinet.move_out` counts them). The
+        cabinet's own subscriptions keep delivering.
+
+
+        Idempotent: naming the organization that already owns the cabinet
+        changes nothing and answers 200 with `changed: false`. An unknown
+        cabinet answers 404 `tenancy.cabinet_not_found`, an unknown
+        organization 404 `tenancy.organization_not_found`. Two moves of the
+        same cabinet at once can make one of them answer 503
+        `provider.unavailable`; retrying it is safe. Needs the
+        `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): moves a client's
+          workspace between customers, outside any one cabinet.
+      tags:
+        - tenancy
+      parameters:
+        - $ref: '#/components/parameters/CabinetPathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveCabinetRequest'
+            example:
+              organizationId: 9b4c2d1e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.cabinet_not_found
+        - tenancy.organization_not_found
+        - tenancy.quota_exceeded
+        - provider.unavailable
+      responses:
+        '200':
+          description: >-
+            The cabinet now belongs to the named organization (`changed`
+            says whether this call moved it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CabinetMove'
+              example:
+                cabinet:
+                  id: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                  orgId: 9b4c2d1e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+                  name: Kovalenko Trading — Kyiv
+                  organizationName: Kovalenko Trading
+                  slug: kovalenko-trading-kyiv-4f2a
+                  status: active
+                  createdAt: '2026-09-25T10:15:00Z'
+                fromOrganizationId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                changed: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /cabinets/{id}/keys:
     get:
       operationId: listCabinetKeys
@@ -2270,6 +2399,13 @@ paths:
         `secretRef` that is not a `secret://` reference. 503
         `provider.unavailable` means the key could not be generated or stored
         and nothing was registered — retry later.
+
+
+        A subscription registered with an app's organization key belongs to
+        that app's connection: it is set to `disabled` when the organization
+        or the app revokes the connection, and when the cabinet is moved to
+        another organization. The cabinet's own subscriptions are not
+        affected.
       x-mcp:
         expose: true
         readOnly: false
@@ -2366,6 +2502,11 @@ paths:
         change is on the audit trail (`webhook.update` by the system) and
         nothing is delivered until the subscription is set back to `active`
         here.
+
+
+        Set back to `active` with an app's organization key, the subscription
+        belongs to that key's connection from then on, and stops again when
+        that connection is revoked (see `registerWebhook`).
 
 
         An id that names no subscription of this cabinet (unknown or another
@@ -3350,6 +3491,236 @@ paths:
           $ref: '#/components/responses/Conflict'
   # --- END M1 Meta channels (paths) --------------------------------------------
 
+  # --- BEGIN platform mail (ADR-0123): the platform's outgoing mail settings --
+  /platform/mail:
+    get:
+      operationId: getMailSettings
+      x-permission: 'platform:admin'
+      summary: Get the platform's outgoing mail settings (platform operator)
+      # ADR-0123 §3: the database wins over the environment once saved.
+      description: >-
+        Returns the mail configuration the platform sends with right now —
+        invitations, password resets, email confirmations and alert
+        notifications all leave through it — and where it comes from
+        (`source`): `environment` until a platform operator first saves the
+        settings with `updateMailSettings`, `database` from then on. The
+        values are the effective ones, defaults filled in (port, encryption,
+        timeout).
+
+
+        The SMTP password is never returned; `passwordSet` says whether one is
+        configured. With `transport: log` no mail leaves the platform: each
+        one is only written to the server log, without its links. Answers 503
+        `provider.unavailable` when the settings cannot be read; try again.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): the configuration of
+          the platform's own mail server, not any cabinet's data.
+      tags:
+        - platform
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - provider.unavailable
+      responses:
+        '200':
+          description: The mail settings in effect (the password omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSettings'
+              example:
+                source: database
+                transport: smtp
+                from: Linqelio <noreply@example.com>
+                host: smtp.example.com
+                port: 587
+                tls: starttls
+                username: noreply@example.com
+                passwordSet: true
+                heloName: messages.example.com
+                timeoutSeconds: 30
+                updatedAt: '2026-10-19T10:15:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: updateMailSettings
+      x-permission: 'platform:admin'
+      summary: Set the platform's outgoing mail settings (platform operator)
+      # ADR-0123 §2 (the password), §4 (takes effect without a restart).
+      description: >-
+        Stores the mail configuration the platform sends with, replacing the
+        previous one: a field that is absent takes its default (port 587, or
+        465 with `tls: implicit`; `tls: starttls`; a 30-second timeout). From
+        the first save on, the server's environment no longer decides how mail
+        is sent. The change applies to every mail sent after it, including
+        those already waiting to be sent, within 30 seconds on every server.
+
+
+        The password is write-only: it goes to the secret store and no
+        operation returns it. An absent or empty `password` keeps the stored
+        one, but only for the same `host`: a new mail server needs the
+        password entered again, so the stored password is never sent to
+        another server. An empty `username` turns authentication off and
+        forgets the password. On the very first save, when `username` and
+        `host` are the ones the environment configured, the environment's
+        password is kept. A `username` without a password it may use, a
+        `username` with `tls: none`, or an unusable value answers 400
+        `validation.invalid_request`. Answers the
+        settings as `getMailSettings` does. Recorded in the platform's
+        security log, without the password. Check the result with
+        `testMailSettings`.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): carries the SMTP
+          password, which must not pass through an agent's context.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - provider.unavailable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailSettingsUpdate'
+            example:
+              transport: smtp
+              from: Linqelio <noreply@example.com>
+              host: smtp.example.com
+              port: 587
+              tls: starttls
+              username: noreply@example.com
+              password: example-password-not-real
+              heloName: messages.example.com
+              timeoutSeconds: 30
+      responses:
+        '200':
+          description: The stored settings (the password omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSettings'
+              example:
+                source: database
+                transport: smtp
+                from: Linqelio <noreply@example.com>
+                host: smtp.example.com
+                port: 587
+                tls: starttls
+                username: noreply@example.com
+                passwordSet: true
+                heloName: messages.example.com
+                timeoutSeconds: 30
+                updatedAt: '2026-10-19T10:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /platform/mail/test:
+    post:
+      operationId: testMailSettings
+      x-permission: 'platform:admin'
+      summary: Send a test mail with the platform's mail settings (platform operator)
+      # ADR-0123 §5: synchronous, past the queue, on the saved settings.
+      description: >-
+        Sends one short test mail to `to` right away, through the mail
+        settings in effect (save changes with `updateMailSettings` first), and
+        reports whether the mail server accepted it. The mail carries no link
+        and no customer data; its language follows the request's
+        `Accept-Language` (Ukrainian, English or Russian; Ukrainian otherwise).
+
+
+        The answer is 200 either way: `ok: true` when the server accepted the
+        mail, otherwise `ok: false` with `errorCode` naming the failed step —
+        `mail.auth`, `mail.connect`, `mail.tls`, `mail.rejected`,
+        `mail.timeout` or `mail.secret_unavailable` (see the error code
+        list). The mail server's own reply is never returned, only written to
+        the server log. The call waits for the server, up to the configured
+        timeout. Answers 409 `mail.not_configured` with `transport: log`:
+        there is no mail server to test. Recorded in the platform's security
+        log with the recipient and the result.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (`platform:admin`): sends a real mail to a
+          person through the platform's own mail server.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - provider.unavailable
+        - mail.not_configured
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailTestRequest'
+            example:
+              to: olena@example.com
+      responses:
+        '200':
+          description: Whether the mail server accepted the test mail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailTestResult'
+              example:
+                ok: false
+                latencyMs: 412
+                errorCode: mail.auth
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # --- END platform mail (paths) ----------------------------------------------
+
   /platform/operators:
     get:
       operationId: listPlatformOperators
@@ -3427,10 +3798,14 @@ paths:
 
         The account must already exist (invite the person to a cabinet first);
         this operation never creates one, and an unknown account answers 404
-        `platform.account_not_found`. Granting to an account that is already an
-        active operator changes nothing and answers 200 with the existing
-        grant; a new grant, or the re-activation of a revoked one, answers 201.
-        So a retry is safe. Recorded in the platform's security log.
+        `platform.account_not_found`. Its email must be confirmed — by an
+        accepted invitation or the confirmation letter of a sign-up — because
+        anybody can sign up under somebody else's address; an unconfirmed
+        account answers 403 `auth.email_unverified` and is recorded as a
+        refused grant. Granting to an account that is already an active
+        operator changes nothing and answers 200 with the existing grant; a
+        new grant, or the re-activation of a revoked one, answers 201. So a
+        retry is safe. Recorded in the platform's security log.
       x-mcp:
         expose: false
         readOnly: false
@@ -3451,6 +3826,7 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - platform.account_not_found
+        - auth.email_unverified
       requestBody:
         required: true
         content:
@@ -3695,6 +4071,13 @@ paths:
         200 with `changed: false`. Recorded in the audit trail of every cabinet
         of the organization. An unknown id answers 404
         `tenancy.organization_not_found`.
+
+
+        An organization still on the `trial` plan whose `trialUntil` has passed
+        is refused with 400 `validation.invalid_request` (field `trialUntil`):
+        the trial check would suspend it again within minutes. Move it to
+        another plan or extend `trialUntil` with `updateOrganization` first,
+        then resume.
       x-mcp:
         expose: false
         readOnly: false
@@ -16116,12 +16499,14 @@ paths:
         address (the `request` query parameter) and describes it for the
         consent screen: the app's name and the domain that vouches for it,
         whether it registered itself, the host the browser returns to, the
-        permissions it asks for and when the request expires. Reading it
-        grants nothing; the person answers with `decideOAuthConsent`. When a
-        pre-registered integration asks to install itself in a cabinet
-        (scope `integration:install`), the answer carries an `install` object
-        and approving issues that integration a cabinet API key instead of an
-        MCP connection.
+        permissions it asks for and when the request expires. For an app of
+        the platform's registry connecting a whole organization, `connect`
+        lists the organizations the person may pick, whether each is already
+        connected, and whether the person's email is confirmed. Reading it
+        grants nothing; the person answers with `decideOAuthConsent`. The
+        `install` object of the retired integration install is never sent.
+        503 `provider.unavailable` means the person's organizations could not
+        be read for an organization connect; retry with backoff.
       x-mcp:
         expose: false
         reason: >-
@@ -16146,6 +16531,7 @@ paths:
         - auth.session_invalid
         - oauth.request_invalid
         - validation.invalid_request
+        - provider.unavailable
       responses:
         '200':
           description: What the app asks for.
@@ -16166,27 +16552,27 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
     post:
       operationId: decideOAuthConsent
       x-permission: self
       x-permission-reason: >
         The person approves or refuses an app's access to one of their cabinets, with at most their own permissions there. Only a person consents; a client key cannot.
-      summary: Approve or refuse an app's access to one cabinet
+      summary: Approve or refuse an app's access to a cabinet or an organization
       description: >
-        Records the person's answer to an authorization request. Approving
-        names one cabinet the person is a member of and the permissions to
-        give the app — never more than the person holds there, and never key
-        management, platform administration, secrets or the master scope. A
-        person with two-factor authentication must have passed it in this
+        Records the person's answer to an authorization request. Approving a
+        request to the MCP server names one cabinet the person is a member of
+        and the permissions to give the app — never more than the person holds
+        there, and never key management, platform administration, secrets or
+        the master scope. Approving an organization connect request names
+        only `organizationId`: the person needs a confirmed email and the
+        `org_owner` or `org_admin` role there, the organization must not be
+        connected to the app yet, and the key gets the app's permissions the
+        person holds. A person with two-factor authentication — and every
+        `org_owner` connecting an organization — must have passed it in this
         session. The answer is where to send the browser next: back to the app
-        with a one-time code, or with `access_denied`. For an install request
-        (`install` present in `getOAuthConsentRequest`) `scopes` is omitted or
-        exactly `["integration:install"]`, and the person must hold
-        `keys:manage` in the chosen cabinet (otherwise 403
-        `auth.forbidden_scope`) and some permission that can go on the key
-        (otherwise 403 `keyring.scope_not_grantable`): the integration then
-        receives a cabinet API key, within the person's own key-grant ceiling,
-        when it exchanges the code.
+        with a one-time code, or with `access_denied`.
       x-mcp:
         expose: false
         reason: >-
@@ -16219,6 +16605,8 @@ paths:
         - keyring.scope_not_grantable
         - auth.forbidden_scope
         - validation.invalid_request
+        - auth.email_unverified
+        - apps.already_connected
       responses:
         '200':
           description: Where to send the browser.
@@ -16234,6 +16622,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /auth/oauth/grants:
     get:
       operationId: listMyOAuthGrants
@@ -16319,6 +16709,196 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /auth/apps:
+    get:
+      operationId: listAppCatalog
+      x-permission: self
+      x-permission-reason: >
+        The catalog of apps an organization can connect is the same for every signed-in person; it holds nothing of any cabinet, so no cabinet permission applies.
+      summary: List the apps that can be connected to an organization
+      description: >
+        Returns the enabled entries of the app registry for a signed-in person:
+        for each app its id, name, kind, a short description and, for a
+        `listed` app, the `installUrl` of its own install page. A `connect` app
+        starts from its own site and asks for consent; a `listed` app is only a
+        link. Disabled apps are not shown. Ordered by id, not paginated.
+
+
+        The console shows it beside an organization's connections so the person
+        sees what they can add. It is the same for everyone and carries no
+        secrets. Requires a valid session cookie.
+      x-mcp:
+        expose: false
+        reason: >-
+          The catalog is for a person choosing an app in the console; an MCP
+          client acts with a key and has no organization to connect.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - apps
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+      responses:
+        '200':
+          description: The enabled apps, by id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppCatalog'
+              example:
+                items:
+                  - id: sgs
+                    name: SGS B2B
+                    kind: connect
+                    description: Dealer CRM that sends messages through Linqelio.
+                  - id: bitrix-market
+                    name: Bitrix24 Market
+                    kind: listed
+                    description: Install the Linqelio connector from the Bitrix24 marketplace.
+                    installUrl: https://www.bitrix24.com/apps/linqelio
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/organizations/{organizationId}/app-connections:
+    parameters:
+      - $ref: '#/components/parameters/AppConnectionOrganizationId'
+    get:
+      operationId: listOrganizationAppConnections
+      x-permission: self
+      x-permission-reason: >
+        Lists the organization's app connections for a person acting on the organization as a whole. The caller needs the org_owner or org_admin role in that organization (checked in the handler), which a cabinet permission cannot express.
+      summary: List the apps connected to an organization
+      description: >
+        Lists the live app connections of one organization, newest first: the
+        app, the permissions its key holds, the domain it connected from, the
+        email of the person who approved it and when. Revoked connections are
+        not listed. A connection stays in the list when the person who
+        approved it left the organization; it belongs to the organization.
+
+
+        Needs a signed-in person with the `org_owner` or `org_admin` role in
+        the organization (a role in only one cabinet is not enough), and the
+        second factor in the session for an `org_owner` or when the account
+        has it on; otherwise 403 `auth.forbidden_scope` or
+        `auth.second_factor_required`. 503 `provider.unavailable` means the
+        person's roles or the connections could not be read right now; retry
+        with backoff.
+      x-mcp:
+        expose: false
+        reason: >-
+          An organization's connected apps are managed by a person in the
+          console; an agent must not see or change who holds a key.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - apps
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+        - auth.forbidden_scope
+        - auth.second_factor_required
+        - validation.invalid_request
+        - provider.unavailable
+      responses:
+        '200':
+          description: The organization's live app connections, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAppConnectionList'
+              example:
+                items:
+                  - id: 4c1d6a7e-9b2f-4e83-a5d0-7f1e2b3c4d5a
+                    app:
+                      id: sgs
+                      name: SGS B2B
+                    scopes:
+                      - channels:read
+                      - messages:send
+                    redirectDomain: b2b.example.com
+                    approvedEmail: owner@example.com
+                    createdAt: '2026-10-19T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/organizations/{organizationId}/app-connections/{connectionId}:
+    parameters:
+      - $ref: '#/components/parameters/AppConnectionOrganizationId'
+      - name: connectionId
+        in: path
+        required: true
+        description: A connection's id, as `listOrganizationAppConnections` returns it.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: revokeOrganizationAppConnection
+      x-permission: self
+      x-permission-reason: >
+        Disconnects an app from the organization as a whole. The caller needs the org_owner or org_admin role in that organization (checked in the handler), which a cabinet permission cannot express.
+      summary: Disconnect an app from an organization
+      description: >
+        Revokes one app connection of the organization at once: the
+        organization key the app holds stops working on its very next request
+        (401 `auth.invalid_key`), in every cabinet of the organization, and
+        every webhook subscription the app registered with that key is set to
+        `disabled` in the same step, so no more events reach it. The app must
+        ask for consent again to come back. Recorded in the organization's
+        change trail as `app.revoke` with the person who revoked it and the
+        number of webhooks it disabled. An app that revokes its own key
+        through the OAuth revocation endpoint stops its webhooks the same way.
+
+
+        An unknown connection, one that belongs to another organization and one
+        already revoked all answer 404 `apps.connection_not_found`. Needs the
+        `org_owner` or `org_admin` role in the organization and, for an
+        `org_owner` or an account with two-factor on, the second factor in the
+        session; otherwise 403. A request from another site's page is refused
+        with 403 `auth.origin_rejected`. 503 `provider.unavailable` means
+        nothing was revoked (the roles or the store could not be reached);
+        retrying is safe.
+      x-mcp:
+        expose: false
+        reason: >-
+          Revoking an organization's app key is a person's decision in the
+          console; an agent must not manage who holds access.
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - apps
+      security:
+        - sessionCookie: []
+      x-error-codes:
+        - auth.session_invalid
+        - auth.origin_rejected
+        - auth.forbidden_scope
+        - auth.second_factor_required
+        - validation.invalid_request
+        - apps.connection_not_found
+        - provider.unavailable
+      responses:
+        '204':
+          description: The connection is revoked and its key no longer works.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /oauth-grants:
     get:
       operationId: listCabinetOAuthGrants
@@ -16751,6 +17331,224 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  # ADR-0122 §7: sign-up exists only inside an app's connect flow; the email
+  # is confirmed by a letter before the consent can be approved.
+  /auth/signup:
+    post:
+      operationId: signupForApp
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: the person has no account yet. The sealed connect request of a registry app in the body is what admits the call (sign-up exists only inside an app's connect flow), and the operation is rate-limited per address.
+      summary: Create an account and an organization while connecting an app
+      description: >
+        Creates a Linqelio account for a person who came from an app's connect
+        screen (for example SGS) without one, and with it an organization on
+        the trial plan, the person as its owner (`org_owner`) and the
+        organization's first cabinet, named like the organization — all at
+        once, or nothing. The answer opens a session (the same cookie as
+        `login`), so the console can go straight back to the consent screen of
+        the same request.
+
+
+        Sign-up is available only from a connect request: `request` is the
+        sealed request from the consent page's URL, and anything else — a
+        missing, garbled or expired request, or one that is not an
+        organization connect — answers 400 `oauth.request_invalid`. An email
+        that already has an account answers 409 `auth.account_exists`: send
+        the person to `login` with the same request. A password shorter than
+        12 characters answers 400 `validation.invalid_request` (field
+        `password`).
+
+
+        The email is NOT confirmed yet: a confirmation letter goes to the
+        address, and approving the connection answers 403
+        `auth.email_unverified` until the person opens its link
+        (`confirmEmailVerification`). The trial ends at `trialUntil` (the
+        trial plan's length, 14 days unless the Linqelio team changed it).
+        Too many sign-ups from one address answer 429 `policy.rate_limited`
+        with `Retry-After`.
+      x-mcp:
+        expose: false
+        reason: >-
+          Creates a person's own account from their own password in a browser
+          flow; an MCP server acting with a client key must never handle a
+          person's credentials.
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+            example:
+              request: example-sealed-connect-request
+              email: olena@example.com
+              password: example-long-passphrase
+              displayName: Olena Kovalenko
+              organizationName: Kovalenko Auto
+              locale: uk
+      x-error-codes:
+        - validation.invalid_request
+        - oauth.request_invalid
+        - auth.account_exists
+        - auth.origin_rejected
+        - tenancy.quota_exceeded
+        - policy.rate_limited
+        - provider.unavailable
+      responses:
+        '201':
+          description: The account, organization and cabinet exist; the session cookie is set.
+          headers:
+            Set-Cookie:
+              description: The session cookie (`__Host-linqelio_session=...; Path=/; Secure; HttpOnly; SameSite=Strict`).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignupResult'
+              example:
+                accountId: 8e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b
+                organizationId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                cabinetId: 5f6e7d8c-9b0a-4c1d-8e2f-3a4b5c6d7e8f
+                trialUntil: '2026-11-02T10:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /auth/email-verification/confirm:
+    post:
+      operationId: confirmEmailVerification
+      x-permission: none
+      x-permission-reason: >
+        Pre-authentication: the single-use confirmation token from the letter is the credential, verified by internal/authn. The person may open the letter in another browser, without a session.
+      summary: Confirm an email with the link from the confirmation letter
+      description: >
+        Confirms the address of an account created by `signupForApp`: takes
+        the single-use token from the confirmation letter (the link's
+        fragment, `#token=...&request=...`) and marks the email as confirmed.
+        It does not log in. Opening the same link again within its lifetime
+        answers 200 as well; an unknown or expired token (the link lives 24
+        hours) answers 400 `auth.token_invalid`: ask for a new letter with
+        `resendEmailVerification`.
+
+
+        When the link also carries `request` (the app's sealed connect
+        request), send it along: the answer returns a fresh copy, valid for
+        another 30 minutes, so the console can open the consent screen of the
+        same connection with it — even when the original request expired
+        while the letter was on its way. A request that cannot be used any
+        more is simply left out of the answer.
+      x-mcp:
+        expose: false
+        reason: >-
+          Part of a person's own sign-up, which ends in their mailbox; an MCP
+          server acting with a client key has no letter to confirm.
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationConfirmRequest'
+            example:
+              token: example-confirmation-token-from-the-link
+              request: example-sealed-connect-request
+      x-error-codes:
+        - validation.invalid_request
+        - auth.token_invalid
+        - auth.origin_rejected
+      responses:
+        '200':
+          description: The email is confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailVerificationConfirmResult'
+              example:
+                request: example-fresh-sealed-connect-request
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/email-verification/resend:
+    post:
+      operationId: resendEmailVerification
+      x-permission: self
+      x-permission-reason: >
+        Sends a new confirmation letter for the caller's own account, to its own address. Any person with a session may ask for their own letter; no cabinet right is involved.
+      summary: Send the email confirmation letter again
+      description: >
+        Sends a new confirmation letter to the logged-in person's own address
+        when the first one did not arrive or its link expired (it lives 24
+        hours). Pass the app's sealed connect request as `request` to have the
+        new link return the person into the same connection; without it the
+        link only confirms the address. The new link does not cancel the old
+        one.
+
+
+        Always answers 202 with no body; when the email is already confirmed
+        nothing is sent. At most one letter per minute per account: a quicker
+        repeat answers 429 `policy.rate_limited` with `Retry-After`. A request
+        from another site's page is refused with 403 `auth.origin_rejected`.
+      x-mcp:
+        expose: false
+        reason: >-
+          Sends a letter to a person's own mailbox as part of their sign-up;
+          an MCP server acting with a client key has no account to confirm.
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - auth
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationResendRequest'
+            example:
+              request: example-sealed-connect-request
+      x-error-codes:
+        - validation.invalid_request
+        - auth.session_invalid
+        - auth.origin_rejected
+        - policy.rate_limited
+        - provider.unavailable
+      responses:
+        '202':
+          description: A letter is on its way, or the email is already confirmed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /auth/second-factor/totp/enrollment:
     post:
@@ -18156,7 +18954,9 @@ paths:
         (platform changes of plan, overrides, trial, requisites),
         `organization.requisites.update` (the customer's own edit through
         `updateMyOrganization`), `organization.suspend`,
-        `organization.resume` and `cabinet.create` (a cabinet added to it).
+        `organization.resume`, `cabinet.create` (a cabinet added to it),
+        `cabinet.move_out` and `cabinet.move_in` (a cabinet moved away from
+        it or into it by `moveCabinet`).
 
 
         Use it to answer "who changed this customer's plan or limits, and
@@ -18215,6 +19015,292 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # ===========================================================================
+  # App registry (ADR-0122): the platform operators' CRUD over oauth_apps
+  # ===========================================================================
+  /platform/apps:
+    get:
+      operationId: listApps
+      x-permission: 'platform:admin'
+      summary: List the app registry (platform operator)
+      description: >-
+        Returns every entry of the app registry, enabled or not, ordered by
+        id. A `connect` entry is an OAuth client that can connect a whole
+        organization with the `organization:connect` scope; a `listed` entry
+        is a catalog row that links to the app's own install page and is not
+        an OAuth client.
+
+
+        Use it to review which apps may ask an organization for access, or to
+        find an `appId` before `updateApp` or `deleteApp`. Not paginated.
+        Needs the `platform:admin` scope; an operator signed in to the console
+        also needs the second factor in the session.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): the registry decides
+          which apps may ask customers for access.
+      tags:
+        - apps
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The registry, by id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppList'
+              example:
+                items:
+                  - id: sgs
+                    name: SGS B2B
+                    kind: connect
+                    description: Dealer CRM that sends messages through Linqelio.
+                    allowedScopes:
+                      - channels:read
+                      - messages:send
+                    redirectUris:
+                      - https://b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+                    enabled: true
+                    createdAt: '2026-10-19T09:00:00Z'
+                    updatedAt: '2026-10-19T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createApp
+      x-permission: 'platform:admin'
+      summary: Register an app (platform operator)
+      description: >-
+        Adds an entry to the app registry. The `id` is the app's `client_id`
+        and cannot change later (2 to 40 characters: a lowercase letter, then
+        lowercase letters, digits or hyphens). A `connect` app needs at least
+        one allowed scope and one redirect URI; the scopes may not include
+        `*`, `platform:admin`, `secrets:read` or `keys:manage`, and a redirect
+        URI must be https or a loopback address. `enabled` defaults to `true`
+        when omitted.
+
+
+        A taken `id` answers 409 `apps.app_in_use`; a value the registry
+        refuses answers 400 `validation.invalid_request` with the offending
+        field in `errors[]`. The entry takes effect on the next authorization
+        request, with no restart. Recorded in the platform's security log as
+        `platform.app.create`.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (`platform:admin`): registering an app
+          decides who may ask customers for access, which needs a person.
+      tags:
+        - apps
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - apps.app_in_use
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppInput'
+            example:
+              id: sgs
+              name: SGS B2B
+              kind: connect
+              description: Dealer CRM that sends messages through Linqelio.
+              allowedScopes:
+                - channels:read
+                - messages:send
+              redirectUris:
+                - https://b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+      responses:
+        '201':
+          description: The app was registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/App'
+              example:
+                id: sgs
+                name: SGS B2B
+                kind: connect
+                description: Dealer CRM that sends messages through Linqelio.
+                allowedScopes:
+                  - channels:read
+                  - messages:send
+                redirectUris:
+                  - https://b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+                enabled: true
+                createdAt: '2026-10-19T09:00:00Z'
+                updatedAt: '2026-10-19T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /platform/apps/{appId}:
+    parameters:
+      - name: appId
+        in: path
+        required: true
+        description: The app's id, as `listApps` returns it.
+        schema:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{1,39}$'
+    patch:
+      operationId: updateApp
+      x-permission: 'platform:admin'
+      summary: Change a registered app (platform operator)
+      description: >-
+        Changes one registry entry. Merge semantics: an omitted field is
+        unchanged; `allowedScopes` and `redirectUris`, when present, REPLACE
+        the whole list. `clearInstallUrl: true` removes the install link (it
+        wins over `installUrl`). The `id` and `kind` never change. The result
+        is validated as a whole by the same rules as `createApp` — except a
+        patch that only sets `enabled: false`: switching an app off always
+        works, even for an entry today's rules would refuse, so it is never
+        blocked by having to repair the entry first.
+
+
+        The authorization server reads the registry on every request, so a
+        new redirect URI is accepted at once and `enabled: false` stops the
+        app's next authorization or exchange, and switches off every key it
+        already holds, without revoking them. Narrowing `allowedScopes`
+        narrows the keys the app already holds the same way: an organization
+        key acts with the permissions it was issued that the app is still
+        allowed; widening the list never widens a key beyond what it was
+        issued. An unknown id answers 404 `apps.app_not_found`. Recorded in
+        the platform's security log as `platform.app.update`.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): changing an app's
+          scopes or redirects decides who may ask customers for access.
+      tags:
+        - apps
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - apps.app_not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppPatch'
+            example:
+              redirectUris:
+                - https://b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+                - https://staging.b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+              enabled: true
+      responses:
+        '200':
+          description: The app after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/App'
+              example:
+                id: sgs
+                name: SGS B2B
+                kind: connect
+                description: Dealer CRM that sends messages through Linqelio.
+                allowedScopes:
+                  - channels:read
+                  - messages:send
+                redirectUris:
+                  - https://b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+                  - https://staging.b2b.example.com/api/v1/public/comms/linqelio/oauth/callback
+                enabled: true
+                createdAt: '2026-10-19T09:00:00Z'
+                updatedAt: '2026-10-19T09:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteApp
+      x-permission: 'platform:admin'
+      summary: Delete a registered app (platform operator)
+      description: >-
+        Removes an entry from the app registry. An app that has ever had a
+        connection (live or revoked) cannot be deleted: the answer is 409
+        `apps.app_in_use`, and `updateApp` with `enabled: false` switches the
+        app off instead while keeping the history. An unknown id answers 404
+        `apps.app_not_found`, so repeating the call has no further effect.
+
+
+        Recorded in the platform's security log as `platform.app.delete`.
+        Needs the `platform:admin` scope; an operator signed in to the console
+        also needs the second factor in the session.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): removes an app from
+          the registry, which needs a person's decision.
+      tags:
+        - apps
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - apps.app_not_found
+        - apps.app_in_use
+      responses:
+        '204':
+          description: The app was removed from the registry.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
   /platform/plans:
     get:
       operationId: listPlans
@@ -18223,8 +19309,10 @@ paths:
       # Plans are seeded and changed by migration for now; a plan CRUD is a later issue.
       description: >-
         Returns every plan (tariff) with its full limits declaration: one
-        integer per quota metric, where `-1` means unlimited. Plans cannot be
-        created or changed through the API.
+        integer per quota metric, where `-1` means unlimited, and the length of
+        the plan's trial in days (`trialDays`, 0 = no trial). Only the trial
+        length can be changed through the API, with `updatePlan`; plans are
+        created and their limits changed by migration.
 
 
         Use it to pick a `planId` for `createOrganization` or
@@ -18257,6 +19345,7 @@ paths:
                 items:
                   - id: base
                     name: Base
+                    trialDays: 0
                     limits:
                       cabinets: -1
                       seats: -1
@@ -18274,6 +19363,89 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /platform/plans/{planId}:
+    parameters:
+      - name: planId
+        in: path
+        required: true
+        description: The plan's id, as `listPlans` returns it.
+        schema:
+          type: string
+          pattern: '^[a-z][a-z0-9_-]{0,39}$'
+    patch:
+      operationId: updatePlan
+      x-permission: 'platform:admin'
+      summary: Set a plan's trial length (platform operator)
+      description: >-
+        Sets how many days the trial lasts for organizations that sign up on
+        this plan (`trialDays`, 0 to 365; 0 means no trial and no end date).
+        The change applies to signups that happen after it: organizations that
+        are already on a trial keep the `trialUntil` they were given.
+
+
+        Setting the value a plan already has changes nothing and still answers
+        200, so a retry is safe. An unknown plan id answers 404
+        `validation.invalid_request` with `planId: unknown_plan`; a value
+        outside 0 to 365 answers 400 `validation.invalid_request`. Needs the
+        `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: Platform operator surface (`platform:admin`).
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlanRequest'
+            example:
+              trialDays: 14
+      responses:
+        '200':
+          description: The plan after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+              example:
+                id: trial
+                name: Trial
+                trialDays: 14
+                limits:
+                  cabinets: 1
+                  seats: 3
+                  messages.month: 1000
+                  ai.tokens.month: 100000
+                  retention.days: 30
+                  channels.wa_web: 1
+                  channels.wa_cloud: 1
+                  channels.tg_client: 1
+                  channels.tg_bot: 1
+                  channels.viber_bot: 1
+                  channels.fb_page: 1
+                  channels.instagram: 1
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # The caller's own organization. Reading needs settings:manage (the
   # administrative roles: org_owner, org_admin, cabinet_admin, platform_admin —
@@ -20835,6 +22007,92 @@ paths:
   # ===========================================================================
 
   # ===========================================================================
+  # apps — organization keys (ADR-0122 §6)
+  # ===========================================================================
+  /app-connection:
+    get:
+      operationId: getAppConnection
+      # ADR-0122 §6: the organization key reads its own connection. No cabinet
+      # and no scope: the key is about an organization, not a cabinet; any
+      # other credential is refused by the handler (auth.forbidden_scope).
+      x-permission: authenticated
+      x-permission-reason: >
+        An organization key describes its own connection: which organization approved it, with which permissions, and which cabinets it can reach. It needs no cabinet and no permission, and only the key itself may read it, so a cabinet key or a person's session is refused.
+      summary: Get the connection of the calling organization key
+      description: >-
+        Returns the connection behind the organization key that makes the
+        call: the app, the permissions the key carries in every cabinet (those
+        it was issued that the app's registry entry still allows — the
+        platform can narrow them without revoking the key), the organization
+        with its status and trial end, and the organization's cabinets. An app calls it right after the connect exchange and then
+        whenever it needs to refresh the list of cabinets, because cabinets are
+        added, renamed and moved between organizations over time.
+
+        Pass a cabinet `id` from `cabinets` in the `X-Linqelio-Cabinet` header
+        of every cabinet operation; the header may be omitted only when the
+        organization has exactly one cabinet. A cabinet of another
+        organization is 403 `tenancy.cross_cabinet_denied`.
+
+        It answers for a suspended organization too, with
+        `organization.status` `suspended`, so the app can show why its writes
+        are refused (403 `tenancy.suspended`). A revoked or unknown key is 401
+        `auth.invalid_key`; a cabinet key or a session is 403
+        `auth.forbidden_scope`. No cabinet header is needed. An organization
+        deleted while the call runs answers 404
+        `tenancy.organization_not_found` (the key dies with it), and 503
+        `provider.unavailable` means the key or the organization could not be
+        read right now; retry with backoff.
+      x-mcp:
+        expose: false
+        reason: >-
+          Only an organization key can call it; MCP clients act with a
+          person's OAuth token in one cabinet and never hold such a key.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - apps
+      x-error-codes:
+        - auth.invalid_key
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - oauth.token_invalid
+        - tenancy.organization_not_found
+        - provider.unavailable
+      responses:
+        '200':
+          description: The connection of the calling organization key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppConnectionInfo'
+              example:
+                connectionId: 6f1d2c3b-4a59-4e68-8b7c-9d0e1f2a3b4c
+                app:
+                  id: sgs
+                  name: SGS
+                scopes: ['channels:read', 'channels:manage', 'messages:send', 'contacts:write']
+                organization:
+                  id: 2b3c4d5e-6f70-4a81-9b2c-3d4e5f607182
+                  name: Grand Car
+                  status: active
+                  trialUntil: '2026-11-02T00:00:00Z'
+                cabinets:
+                  - id: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+                    name: Kyiv dealers
+                  - id: 7c2d8f3a-4b5e-4071-8a9c-3d4e5f6a7b8c
+                    name: Lviv dealers
+                createdAt: '2026-10-19T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ===========================================================================
   # reference — the contract of the running build (issue #172, ADR-0106)
   # ===========================================================================
   /openapi.json:
@@ -20963,6 +22221,15 @@ components:
         person who consented, with their current role in the consented
         cabinet narrowed to the permissions they gave. An invalid one is 401
         `oauth.token_invalid`.
+
+
+        It also accepts an organization key (`lqak_<kid>.<secret>`), issued
+        to an app the organization connected. It reaches every cabinet of the
+        organization with the same scopes: the cabinet is named in the
+        `X-Linqelio-Cabinet` header (it may be omitted only when the
+        organization has one cabinet), and a cabinet of another organization
+        is 403 `tenancy.cross_cabinet_denied`. In that cabinet it acts exactly
+        like a client key. A revoked or unknown one is 401 `auth.invalid_key`.
     embedToken:
       type: http
       scheme: bearer
@@ -21101,6 +22368,15 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-f]{64}$'
+
+    AppConnectionOrganizationId:
+      name: organizationId
+      in: path
+      required: true
+      description: The organization's id (uuid), as `getMe` lists it in the person's memberships.
+      schema:
+        type: string
+        format: uuid
 
     OAuthGrantId:
       name: grantId
@@ -21400,11 +22676,17 @@ components:
           locked for 15 minutes. Wait, or reset the password.
         - `auth.session_invalid` — (401) the session expired or was revoked:
           log in again; (404) the session to revoke does not exist.
-        - `auth.token_invalid` — (400) an invite or password-reset link is
-          unknown, used or expired. Ask for a new link.
+        - `auth.token_invalid` — (400) an invite, password-reset or email
+          confirmation link is unknown, used or expired. Ask for a new link.
         - `auth.origin_rejected` — (403) a cookie-authenticated unsafe request
           came from another site. Call from the console's origin, or use an
           API key.
+        - `auth.email_unverified` — (403) connecting an organization to an
+          app, or being made a platform operator, needs a confirmed email.
+          Confirm it from the letter, then try again.
+        - `auth.account_exists` — (409) signing up with an email that already
+          has an account. Log in with it instead, from the same connect
+          request.
         - `idempotency.key_reused` — (409) this `Idempotency-Key` was already
           used for a different request. Use a new key for a new action.
         - `idempotency.in_progress` — (409) the first request with this key is
@@ -21449,6 +22731,14 @@ components:
           or older than ten minutes. Start connecting again from the app.
         - `oauth.grant_not_found` — (404) no such live connected app for this
           person or cabinet. Read the list again.
+        - `apps.already_connected` — (409) the organization is already
+          connected to this app. Revoke the existing connection first.
+        - `apps.app_not_found` — (404) no app with that id in the registry.
+          Read the registry again.
+        - `apps.app_in_use` — (409) the app id is already registered, or the app
+          has connections and cannot be deleted. Disable it instead.
+        - `apps.connection_not_found` — (404) no live connection with that id in
+          this organization. Read the list again.
 
         **Team**
 
@@ -21726,6 +23016,30 @@ components:
           reply was sent already, the 7 days after the comment are over, it
           is the channel's own comment or a mention, or the messenger refused
           it for good. Answer publicly with `sendConversationMessage`.
+
+        **Platform mail**
+
+        - `mail.not_configured` — (409) the platform sends mail with
+          `transport: log`, so there is no mail server to test. A platform
+          operator configures one with `updateMailSettings`.
+
+        The next six never come as an HTTP status: they are the `errorCode`
+        of a 200 `testMailSettings` answer with `ok: false`, naming the step
+        at which the test mail failed.
+
+        - `mail.auth` — the mail server refused the login. Check `username`
+          and set the password again.
+        - `mail.connect` — no connection to the mail server, or no usable
+          greeting from it. Check `host` and `port`, and that the server is
+          reachable from the platform.
+        - `mail.tls` — the encryption failed: the server does not offer
+          STARTTLS, or the TLS handshake failed. Check `tls` and `port`.
+        - `mail.rejected` — the mail server refused the sender, the recipient
+          or the mail itself. Check `from` and that the login may send as it.
+        - `mail.timeout` — the mail server stopped answering within
+          `timeoutSeconds`.
+        - `mail.secret_unavailable` — the platform could not read the stored
+          password. Set the password again, or try later.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -22167,6 +23481,32 @@ components:
         #     a forum, or naming a message of another chat.
         - thread.not_found
         # --- END forum topics -----------------------------------------------------
+        # --- BEGIN app registry, organization connect (ADR-0122) -----------------
+        #   already_connected (409): decideOAuthConsent for an organization the
+        #     app already holds a live connection to.
+        #   email_unverified (403): decideOAuthConsent of an organization connect
+        #     request by a person whose email is not confirmed.
+        - apps.already_connected
+        - auth.email_unverified
+        - apps.app_not_found
+        - apps.app_in_use
+        - apps.connection_not_found
+        #   account_exists (409): signupForApp with an email that already has an
+        #     account (any status).
+        - auth.account_exists
+        # --- END app registry -----------------------------------------------------
+        # --- BEGIN platform mail (ADR-0123) ---------------------------------------
+        #   not_configured (409): testMailSettings while transport=log.
+        #   auth / connect / tls / rejected / timeout / secret_unavailable: only
+        #     the errorCode of a 200 MailTestResult (never an HTTP status).
+        - mail.not_configured
+        - mail.auth
+        - mail.connect
+        - mail.tls
+        - mail.rejected
+        - mail.timeout
+        - mail.secret_unavailable
+        # --- END platform mail ----------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -23912,6 +25252,199 @@ components:
         - outcome
     # --- END M1 Meta channels (schemas) -------------------------------------------
 
+    # --- BEGIN platform mail (ADR-0123): schemas --------------------------------
+    MailTransport:
+      type: string
+      description: >-
+        How the platform sends mail: `smtp` — through the configured mail
+        server; `log` — sends nothing, each mail is only written to the server
+        log without its links (for development, or to switch mail off).
+      enum:
+        - smtp
+        - log
+      x-enum-varnames:
+        - MailTransportSmtp
+        - MailTransportLog
+
+    MailTlsMode:
+      type: string
+      description: >-
+        How the connection to the mail server is encrypted: `starttls` —
+        connects in plain text and upgrades with STARTTLS before anything
+        else, refusing a server that does not offer it (usually port 587);
+        `implicit` — encrypted from the first byte (SMTPS, usually port 465);
+        `none` — not encrypted, only for a local relay; no login is allowed
+        then.
+      enum:
+        - starttls
+        - implicit
+        - none
+      x-enum-varnames:
+        - MailTlsStarttls
+        - MailTlsImplicit
+        - MailTlsNone
+
+    MailSettingsSource:
+      type: string
+      description: >-
+        Where the mail settings in effect come from: `database` — saved by a
+        platform operator with `updateMailSettings`; `environment` — the
+        server's environment variables, used until the first save.
+      enum:
+        - database
+        - environment
+      x-enum-varnames:
+        - MailSourceDatabase
+        - MailSourceEnvironment
+
+    MailSettings:
+      type: object
+      description: >-
+        The platform's outgoing mail settings as `getMailSettings` returns
+        them: the values in effect, defaults filled in, and where they come
+        from. The SMTP password is never included.
+      properties:
+        source:
+          $ref: '#/components/schemas/MailSettingsSource'
+        transport:
+          $ref: '#/components/schemas/MailTransport'
+        from:
+          type: string
+          description: >-
+            The sender of every mail, `Name <address>` or a bare address.
+            Empty when not configured (possible with `transport: log`).
+        host:
+          type: string
+          description: The mail server's host name. Empty when not configured.
+        port:
+          type: integer
+          description: The mail server's TCP port, 1–65535.
+        tls:
+          $ref: '#/components/schemas/MailTlsMode'
+        username:
+          type: string
+          description: The login on the mail server. Empty — the platform does not log in.
+        passwordSet:
+          type: boolean
+          description: Whether a password is configured for the login (its value is never returned).
+        heloName:
+          type: string
+          description: >-
+            The name the platform introduces itself with (EHLO). Empty means
+            `localhost`.
+        timeoutSeconds:
+          type: integer
+          description: >-
+            How long one delivery may take, in seconds (1–60): connecting,
+            encryption, login and sending together.
+        updatedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the settings were last saved (UTC). Absent while they come
+            from the environment.
+      required:
+        - source
+        - transport
+        - from
+        - host
+        - port
+        - tls
+        - username
+        - passwordSet
+        - heloName
+        - timeoutSeconds
+
+    MailSettingsUpdate:
+      type: object
+      description: >-
+        The body of `updateMailSettings`. Replaces the stored settings; an
+        absent field takes its default. An absent or empty `password` keeps
+        the stored one.
+      properties:
+        transport:
+          $ref: '#/components/schemas/MailTransport'
+        from:
+          type: string
+          description: >-
+            The sender, `Name <address>` or a bare address. Required with
+            `transport: smtp`.
+          maxLength: 320
+        host:
+          type: string
+          description: >-
+            The mail server's host name. Required with `transport: smtp`.
+          maxLength: 253
+        port:
+          type: integer
+          description: >-
+            The mail server's TCP port, 1–65535. Defaults to 587, or to 465
+            with `tls: implicit`.
+          minimum: 1
+          maximum: 65535
+        tls:
+          $ref: '#/components/schemas/MailTlsMode'
+        username:
+          type: string
+          description: >-
+            The login on the mail server. Absent or empty — the platform does
+            not log in, and the stored password is forgotten.
+          maxLength: 256
+        password:
+          type: string
+          writeOnly: true
+          description: >-
+            The password for `username` (write-only). Absent or empty keeps
+            the stored one.
+          maxLength: 256
+        heloName:
+          type: string
+          description: The name to introduce the platform with (EHLO). Defaults to `localhost`.
+          maxLength: 253
+        timeoutSeconds:
+          type: integer
+          description: How long one delivery may take, in seconds. Defaults to 30.
+          minimum: 1
+          maximum: 60
+      required:
+        - transport
+      additionalProperties: false
+
+    MailTestRequest:
+      type: object
+      description: The body of `testMailSettings`.
+      properties:
+        to:
+          type: string
+          format: email
+          description: The address to send the test mail to, e.g. `olena@example.com`.
+          maxLength: 320
+      required:
+        - to
+      additionalProperties: false
+
+    MailTestResult:
+      type: object
+      description: >-
+        The outcome of `testMailSettings`: whether the mail server accepted
+        the test mail, how long it took and, when it did not, at which step it
+        failed (`errorCode`: `mail.auth`, `mail.connect`, `mail.tls`,
+        `mail.rejected`, `mail.timeout` or `mail.secret_unavailable`).
+      properties:
+        ok:
+          type: boolean
+          description: true when the mail server accepted the test mail.
+        latencyMs:
+          type: integer
+          format: int64
+          description: How long the attempt took, in milliseconds.
+        errorCode:
+          $ref: '#/components/schemas/ErrorCode'
+      required:
+        - ok
+        - latencyMs
+    # --- END platform mail (schemas) --------------------------------------------
+
     # ADR-0011: settings are readable, credentials never are.
     ChannelSettings:
       type: object
@@ -24118,7 +25651,7 @@ components:
       description: >-
         A cabinet: the workspace that holds a client's channels, contacts,
         conversations, members and API keys, isolated from every other
-        cabinet. Returned by `listCabinets` and `createCabinet`.
+        cabinet. Returned by `listCabinets`, `createCabinet` and `moveCabinet`.
       properties:
         id:
           type: string
@@ -24130,8 +25663,8 @@ components:
         organizationName:
           type: string
           description: >
-            The owning organization's name. Filled by listCabinets; absent on
-            the other operations that return a Cabinet.
+            The owning organization's name. Filled by listCabinets and
+            moveCabinet; absent on the other operations that return a Cabinet.
         name:
           type: string
           description: The display name given at creation.
@@ -24189,6 +25722,44 @@ components:
             organization first and name it here.
       required:
         - name
+
+    MoveCabinetRequest:
+      type: object
+      description: The body of `moveCabinet` — the organization the cabinet moves to.
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+          description: >
+            The organization that will own the cabinet. Its plan must have room
+            for one more `cabinets` and for every channel of the cabinet;
+            naming the current owner changes nothing.
+      required:
+        - organizationId
+
+    CabinetMove:
+      type: object
+      description: >-
+        The answer of `moveCabinet`: the cabinet as it is now, the organization
+        that owned it before the call, and whether the call moved it.
+      properties:
+        cabinet:
+          $ref: '#/components/schemas/Cabinet'
+        fromOrganizationId:
+          type: string
+          format: uuid
+          description: >-
+            The id of the organization that owned the cabinet before the call;
+            equal to `cabinet.orgId` when nothing changed.
+        changed:
+          type: boolean
+          description: >-
+            `true` when this call moved the cabinet, `false` when it already
+            belonged to the named organization (nothing was written).
+      required:
+        - cabinet
+        - fromOrganizationId
+        - changed
 
     ApiKey:
       type: object
@@ -25540,6 +27111,266 @@ components:
     # =========================================================================
     # platform operators (ADR-0075)
     # =========================================================================
+    AppKind:
+      type: string
+      enum: [connect, listed]
+      # Named: as the only enum with these values the generator would emit
+      # bare api.Connect / api.Listed.
+      x-enum-varnames: [AppKindConnect, AppKindListed]
+      description: >-
+        What a registry app is. `connect` — an OAuth client that connects a
+        whole organization, started from the app's own site; `listed` — a
+        catalog entry that only links to the app's own install page. Fixed
+        once the app is created.
+    App:
+      type: object
+      description: >-
+        One entry of the app registry, as `listApps`, `createApp` and
+        `updateApp` return it. A `connect` app is an OAuth client that
+        connects whole organizations; a `listed` app is a catalog row.
+      properties:
+        id:
+          type: string
+          description: The app's id; for a `connect` app it is the OAuth `client_id`.
+          example: sgs
+        name:
+          type: string
+          description: The name shown to people on the consent screen.
+          example: SGS B2B
+        kind:
+          $ref: '#/components/schemas/AppKind'
+        description:
+          type: string
+          description: A short explanation of what the app does; may be empty.
+        installUrl:
+          type: string
+          description: Where a `listed` app is installed from (https URL or a path starting with `/`); omitted when unset.
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          description: The key scopes the app may ask for; never `*`, `platform:admin`, `secrets:read` or `keys:manage`.
+        redirectUris:
+          type: array
+          items:
+            type: string
+          description: The exact redirect URIs the app may use; https or loopback only.
+        enabled:
+          type: boolean
+          description: "`false` stops new connections and switches off the keys the app already holds."
+        createdAt:
+          type: string
+          format: date-time
+          description: When the app was registered (UTC, RFC 3339).
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the entry last changed (UTC, RFC 3339).
+      required:
+        - id
+        - name
+        - kind
+        - description
+        - allowedScopes
+        - redirectUris
+        - enabled
+        - createdAt
+        - updatedAt
+
+    AppList:
+      type: object
+      description: The app registry, by id.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/App'
+          description: Every registry entry, enabled or not.
+      required:
+        - items
+
+    AppCatalog:
+      type: object
+      description: The enabled apps a signed-in person can connect to an organization, by id.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppCatalogItem'
+          description: Every enabled registry entry.
+      required:
+        - items
+
+    AppCatalogItem:
+      type: object
+      description: >-
+        One enabled app as the catalog shows it: what it is called, what it
+        does and, for a `listed` app, where to install it. No scopes or
+        redirect URIs: those belong to the platform operators.
+      properties:
+        id:
+          type: string
+          description: The app's id.
+          example: sgs
+        name:
+          type: string
+          description: The name shown to people.
+          example: SGS B2B
+        kind:
+          $ref: '#/components/schemas/AppKind'
+        description:
+          type: string
+          description: A short explanation of what the app does; may be empty.
+        installUrl:
+          type: string
+          description: Where a `listed` app is installed from (https URL or a path starting with `/`); omitted when unset.
+      required:
+        - id
+        - name
+        - kind
+        - description
+
+    OrganizationAppConnection:
+      type: object
+      description: >-
+        One live app connection of an organization: the app, the permissions
+        its organization key holds, where it connected from and who approved
+        it. The key itself is never shown.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The connection's id; pass it to `revokeOrganizationAppConnection`.
+        app:
+          $ref: '#/components/schemas/OrganizationAppConnectionApp'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: The permissions the organization key holds.
+        redirectDomain:
+          type: string
+          description: The domain the app connected from (the host of its redirect URI).
+        approvedEmail:
+          type: string
+          description: The email of the person who approved the connection, as it was when they approved; kept even if they leave.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the connection was made (UTC, RFC 3339).
+      required:
+        - id
+        - app
+        - scopes
+        - redirectDomain
+        - approvedEmail
+        - createdAt
+
+    OrganizationAppConnectionApp:
+      type: object
+      description: The registry entry a connection belongs to, by its current name.
+      properties:
+        id:
+          type: string
+          description: The app's id.
+          example: sgs
+        name:
+          type: string
+          description: The app's current name.
+          example: SGS B2B
+      required:
+        - id
+        - name
+
+    OrganizationAppConnectionList:
+      type: object
+      description: An organization's live app connections, newest first.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationAppConnection'
+          description: Every live connection of the organization.
+      required:
+        - items
+
+    AppInput:
+      type: object
+      additionalProperties: false
+      description: A new registry entry for `createApp`.
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{1,39}$'
+          description: The app's id, which becomes its `client_id` and cannot change later.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The name shown on the consent screen.
+        kind:
+          $ref: '#/components/schemas/AppKind'
+        description:
+          type: string
+          maxLength: 1000
+          description: A short explanation of what the app does.
+        installUrl:
+          type: string
+          description: An https URL or a path starting with `/`; for a `listed` app.
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          description: The key scopes the app may ask for. A `connect` app needs at least one.
+        redirectUris:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: The exact redirect URIs (https or loopback). A `connect` app needs at least one.
+        enabled:
+          type: boolean
+          description: Defaults to `true` when omitted.
+      required:
+        - id
+        - name
+        - kind
+
+    AppPatch:
+      type: object
+      additionalProperties: false
+      description: Merge patch for `updateApp`; omitted fields are unchanged.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A new display name.
+        description:
+          type: string
+          maxLength: 1000
+          description: A new description; an empty string clears it.
+        installUrl:
+          type: string
+          description: A new install link (https URL or a path starting with `/`).
+        clearInstallUrl:
+          type: boolean
+          description: Remove the install link. Wins over `installUrl`.
+        allowedScopes:
+          type: array
+          items:
+            type: string
+          description: Replaces the whole list of allowed scopes.
+        redirectUris:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+          description: Replaces the whole list of redirect URIs.
+        enabled:
+          type: boolean
+          description: "`false` switches the app off without deleting it."
+
     PlatformOperator:
       type: object
       description: >-
@@ -26139,7 +27970,7 @@ components:
         - items
     OAuthConsentRequest:
       type: object
-      description: An app's request to connect to the MCP server, as the consent screen shows it.
+      description: An app's request to connect to the MCP server, or to connect an organization, as the consent screen shows it.
       required: [clientName, clientId, clientDomain, registered, redirectDomain, redirectMismatch, requestedScopes, expiresAt]
       properties:
         clientName:
@@ -26150,7 +27981,7 @@ components:
           description: The app's identifier — its metadata document URL, or the id it registered under.
         clientDomain:
           type: string
-          description: The domain that vouches for the app (its metadata URL's host; for a self-registered app, the host it returns to).
+          description: The domain that vouches for the app (its metadata URL's host; for a self-registered app or an app of the platform's registry, the host it returns to).
         registered:
           type: boolean
           description: True when the app registered itself on the spot instead of publishing a metadata document; warn the person.
@@ -26164,25 +27995,82 @@ components:
           type: array
           items:
             type: string
-          description: The permissions the app asked for — a hint; the person chooses. For an install request, exactly `["integration:install"]`.
+          description: The permissions the app asked for — a hint; the person chooses.
         expiresAt:
           type: string
           format: date-time
           description: After this moment the request must be started again from the app.
         install:
-          $ref: '#/components/schemas/OAuthConsentInstall'
-    OAuthConsentInstall:
+          deprecated: true
+          description: Never sent. It described the retired integration install, which no longer exists; kept only so older consoles keep compiling.
+          allOf:
+            - $ref: '#/components/schemas/OAuthConsentInstall'
+        connect:
+          description: >
+            Present only when an app of the platform's registry asks to
+            connect a whole organization. Then the screen picks an
+            organization instead of a cabinet and permissions, and
+            `clientDomain` is the host the browser returns to. Absent for an
+            app connecting to the MCP server.
+          allOf:
+            - $ref: '#/components/schemas/OAuthConsentConnect'
+    OAuthConsentConnect:
       type: object
       description: >
-        Present only when a pre-registered integration (a confidential client
-        configured on the instance, never a self-registered or metadata-URL
-        app) asks to install itself in a cabinet with the scope
-        `integration:install`. Approving does not connect an app to the MCP
-        server: when the integration exchanges the one-time code it receives a
-        cabinet API key, listed with the cabinet's other keys
-        (`listApiKeys`) and revoked like them (`revokeApiKey`). The consent
-        screen shows no permission checkboxes for it: the person picks the
-        cabinet and approves or refuses.
+        What an organization connect request offers: the registry app, the
+        permissions its key asks for, whether the person's email is confirmed
+        (approving needs it) and the organizations the person may pick.
+      required: [appId, scopes, emailVerified, organizations]
+      properties:
+        appId:
+          type: string
+          description: The app's id in the platform's registry (also its OAuth client_id).
+        scopes:
+          type: array
+          items:
+            type: string
+          description: >
+            The permissions the app's key asks for, as the registry lists
+            them. The key gets those of them the approver holds in the
+            organization; key management, platform administration, secrets
+            and the master scope are never among them.
+        emailVerified:
+          type: boolean
+          description: False when the person has not confirmed their email yet; approving then answers 403 `auth.email_unverified`.
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthConsentOrganization'
+          description: The organizations where the person holds an organization-level role, by name. Empty when they hold none.
+    OAuthConsentOrganization:
+      type: object
+      description: An organization the person may pick on the connect screen.
+      required: [id, name, role, canApprove, connected]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The organization id; send it as `organizationId` to approve.
+        name:
+          type: string
+          description: The organization's name.
+        role:
+          type: string
+          description: The person's organization-level role there, `org_owner` or `org_admin`.
+        canApprove:
+          type: boolean
+          description: True when that role may connect apps to the organization.
+        connected:
+          type: boolean
+          description: True when the app is already connected to this organization; show it disabled, approving answers 409 `apps.already_connected`.
+    OAuthConsentInstall:
+      type: object
+      deprecated: true
+      description: >
+        Never sent. It described a request of the retired integration install
+        (a pre-registered confidential client asking for a cabinet API key),
+        which no longer exists: every app connecting over OAuth is a public
+        client. The schema stays only for `OAuthConsentRequest.install`.
       required: [requiredPermission, keyLabel, starPermissions]
       properties:
         requiredPermission:
@@ -26216,17 +28104,26 @@ components:
         cabinetId:
           type: string
           format: uuid
-          description: The cabinet the app will act in. Required to approve.
+          description: >
+            The cabinet the app will act in. Required to approve a request to
+            the MCP server; must be absent for an organization connect request.
         scopes:
           type: array
           maxItems: 20
           items:
             type: string
           description: >
-            The permissions to give. Required to approve; each must be held by
-            the person in that cabinet. For an install request omit it or send
-            exactly `["integration:install"]`: the key's scopes follow from
-            the person's own permissions (see `OAuthConsentInstall`).
+            The permissions to give. Required to approve a request to the MCP
+            server, each held by the person in that cabinet; must be absent
+            for an organization connect request, whose key's permissions the
+            server decides.
+        organizationId:
+          type: string
+          format: uuid
+          description: >
+            The organization to connect. Required to approve an organization
+            connect request (`connect` in the described request); not used
+            otherwise.
     OAuthConsentResult:
       type: object
       description: Where the console sends the browser after the decision.
@@ -26274,6 +28171,90 @@ components:
           type: string
           format: date-time
           description: When it last called the API, to five minutes.
+    AppConnectionInfo:
+      type: object
+      description: >-
+        An organization key's connection, as `getAppConnection` returns it:
+        the app, the permissions the key carries, the organization and the
+        cabinets the key can act in.
+      required: [connectionId, app, scopes, organization, cabinets, createdAt]
+      properties:
+        connectionId:
+          type: string
+          format: uuid
+          description: The connection's id; it stays the same for the life of the key.
+        app:
+          $ref: '#/components/schemas/AppConnectionApp'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: >-
+            The permissions the key carries, the same in every cabinet of the
+            organization. They were fixed when the organization approved the
+            connection.
+        organization:
+          $ref: '#/components/schemas/AppConnectionOrganization'
+        cabinets:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppConnectionCabinet'
+          description: >-
+            The organization's cabinets, oldest first: every cabinet the key
+            can name in the `X-Linqelio-Cabinet` header.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the organization approved the connection.
+    AppConnectionApp:
+      type: object
+      description: The app the key was issued to, as the platform's app registry names it.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: The app's registry id, which is also its OAuth `client_id` (for example `sgs`).
+        name:
+          type: string
+          description: The app's display name.
+    AppConnectionOrganization:
+      type: object
+      description: The organization that approved the connection, and whether it can work now.
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The organization's id.
+        name:
+          type: string
+          description: The organization's name.
+        status:
+          type: string
+          enum: [active, suspended]
+          # Named, or the generator renames UpdateWebhookRequestStatus's `active`.
+          x-enum-varnames: [AppConnectionOrganizationStatusActive, AppConnectionOrganizationStatusSuspended]
+          description: >-
+            `active` — the cabinets work normally. `suspended` — the platform
+            suspended the organization (for example, its trial expired): its
+            cabinets are read-only, and writes answer 403 `tenancy.suspended`
+            until it is resumed.
+        trialUntil:
+          type: string
+          format: date-time
+          description: When the organization's trial ends; absent when it is not on a trial.
+    AppConnectionCabinet:
+      type: object
+      description: One cabinet of the organization the key can act in.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The cabinet's id, for the `X-Linqelio-Cabinet` header.
+        name:
+          type: string
+          description: The cabinet's name.
     OAuthGrantList:
       type: object
       description: Connected apps, newest first.
@@ -26289,21 +28270,12 @@ components:
       description: >
         The answer of the OAuth token endpoint `POST /oauth/token` (outside
         the /v1 API: the endpoint follows RFC 6749, its errors are RFC 6749
-        §5.2 JSON `{"error", "error_description"}`). Public MCP clients
-        (`token_endpoint_auth_method` `none`) authenticate with PKCE alone and
-        always receive a `refresh_token`. A pre-registered integration client
-        is confidential: it authenticates with its secret, either
-        `client_secret_post` (form fields `client_id`, `client_secret`) or
-        `client_secret_basic` (HTTP Basic with the form-urlencoded id and
-        secret), and a wrong or missing secret answers 401 `invalid_client`.
-        An integration client asks only for `integration:install`; its code
-        exchange answers with `api_key` and WITHOUT `refresh_token`. The
-        `access_token` of an install is inert (it opens neither the MCP server
-        nor the API): `api_key.secret` is the credential to keep. A code is
-        single-use: a second exchange answers `invalid_grant` and issues no
-        second key; when the person who approved no longer holds
-        `keys:manage` in the cabinet, the exchange answers `invalid_grant`
-        and issues no key.
+        §5.2 JSON `{"error", "error_description"}`). Every client is public
+        (`token_endpoint_auth_method` `none`): it authenticates with PKCE
+        alone, sends `client_id` in the form, and an `Authorization` header or
+        a `client_secret` is not read. An MCP client always receives a
+        `refresh_token`. A code is single-use: a second exchange answers
+        `invalid_grant`.
       required: [access_token, token_type, expires_in, scope]
       properties:
         access_token:
@@ -26318,18 +28290,22 @@ components:
           description: The access token's lifetime in seconds.
         refresh_token:
           type: string
-          description: The refresh token (`lqo_rt_…`), single-use and rotated on every refresh. Absent for `integration:install`.
+          description: The refresh token (`lqo_rt_…`), single-use and rotated on every refresh.
         scope:
           type: string
-          description: The granted scopes, space-separated; `integration:install` for an install.
+          description: The granted scopes, space-separated.
         api_key:
-          $ref: '#/components/schemas/OAuthInstalledApiKey'
+          deprecated: true
+          description: Never sent. It carried the cabinet API key of the retired integration install.
+          allOf:
+            - $ref: '#/components/schemas/OAuthInstalledApiKey'
     OAuthInstalledApiKey:
       type: object
+      deprecated: true
       description: >
-        The cabinet API key an `integration:install` exchange issues — the
-        same kind of key `createApiKey` mints, shown this once. It appears in
-        `listApiKeys` under `label` and is revoked with `revokeApiKey`.
+        Never issued. It was the cabinet API key of the retired integration
+        install — the same kind of key `createApiKey` mints. The schema stays
+        only for `OAuthTokenResponse.api_key`.
       required: [cabinetId, kid, secret, scopes, label]
       properties:
         cabinetId:
@@ -26375,6 +28351,108 @@ components:
       required:
         - token
         - password
+    SignupRequest:
+      type: object
+      description: >
+        The body of `signupForApp`: the app's sealed connect request, the
+        person's address, password and name, and the name of the organization
+        to create.
+      properties:
+        request:
+          type: string
+          description: The sealed connect request from the consent page's URL (`/connect?request=...`), exactly as it is.
+          minLength: 1
+          maxLength: 8192
+        email:
+          type: string
+          description: The address to log in with and to send the confirmation letter to (case-insensitive; surrounding spaces are trimmed).
+          minLength: 3
+          maxLength: 320
+        password:
+          type: string
+          description: >
+            The password the person chose, at least 12 characters; no rules
+            about character kinds (length matters more). Never log or store it.
+          minLength: 1
+          maxLength: 1024
+        displayName:
+          type: string
+          description: How the person is called in the console and in the team list.
+          minLength: 1
+          maxLength: 200
+        organizationName:
+          type: string
+          description: The name of the organization to create; its first cabinet gets the same name.
+          minLength: 1
+          maxLength: 200
+        locale:
+          type: string
+          enum: [uk, en, ru]
+          description: >
+            The language of the console and of the letters: `uk` — Ukrainian
+            (also when omitted), `en` — English, `ru` — Russian.
+      required:
+        - request
+        - email
+        - password
+        - displayName
+        - organizationName
+    SignupResult:
+      type: object
+      description: >
+        What `signupForApp` created. The session cookie is set alongside; go
+        back to the consent screen of the same request next.
+      required: [accountId, organizationId, cabinetId]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          description: The new account.
+        organizationId:
+          type: string
+          format: uuid
+          description: The new organization; the person is its owner (`org_owner`).
+        cabinetId:
+          type: string
+          format: uuid
+          description: The organization's first cabinet, named like the organization.
+        trialUntil:
+          type: string
+          format: date-time
+          description: When the trial ends; absent when the trial plan has no end date.
+    EmailVerificationConfirmRequest:
+      type: object
+      description: The body of `confirmEmailVerification`, taken from the confirmation link's fragment.
+      properties:
+        token:
+          type: string
+          description: The token from the link's fragment (`#token=...`), exactly as it is.
+          minLength: 1
+          maxLength: 256
+        request:
+          type: string
+          description: The sealed connect request from the same fragment (`&request=...`), URL-decoded; omit when the link has none.
+          maxLength: 8192
+      required:
+        - token
+    EmailVerificationConfirmResult:
+      type: object
+      description: The answer of `confirmEmailVerification`.
+      properties:
+        request:
+          type: string
+          description: >
+            A fresh sealed connect request (valid 30 minutes) to open the
+            consent screen with; present only when the body carried a request
+            that can still be used.
+    EmailVerificationResendRequest:
+      type: object
+      description: The optional body of `resendEmailVerification`.
+      properties:
+        request:
+          type: string
+          description: The sealed connect request the new link should return the person into; omit for a link that only confirms the address.
+          maxLength: 8192
     PasswordResetRequest:
       type: object
       description: The body of `requestPasswordReset`.
@@ -27512,12 +29590,33 @@ components:
         name:
           type: string
           description: The plan's display name (`Base`).
+        trialDays:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: >-
+            How many days an organization that signs up on this plan stays on
+            trial; 0 means no trial. Set with `updatePlan`.
         limits:
           $ref: '#/components/schemas/QuotaLimits'
       required:
         - id
         - name
+        - trialDays
         - limits
+
+    UpdatePlanRequest:
+      type: object
+      additionalProperties: false
+      description: Merge patch for a plan; omitted fields are unchanged.
+      properties:
+        trialDays:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: >-
+            The trial length in days for organizations that sign up on this
+            plan afterwards (0 to 365; 0 = no trial).
 
     PlanList:
       type: object
@@ -27812,18 +29911,27 @@ components:
           description: When the change was made (UTC, RFC 3339).
         actorType:
           type: string
-          description: The author's kind, `api_key` or `account`.
+          description: >-
+            The author's kind: `api_key`, `account`, or `app` (a connected app
+            revoking its own organization key through the OAuth revocation
+            endpoint).
         actorId:
           type: string
-          description: The key id or the account id of the author.
+          description: The key id, the account id or the app id of the author.
         action:
           type: string
           description: >-
             What happened: `organization.create`, `organization.update` (a
             platform change of plan, overrides, trial or requisites),
             `organization.requisites.update` (the customer's own edit),
-            `organization.suspend`, `organization.resume` or `cabinet.create`
-            (a cabinet added to the organization).
+            `organization.suspend`, `organization.resume`, `cabinet.create`
+            (a cabinet added to the organization), `cabinet.move_out` and
+            `cabinet.move_in` (a cabinet moved to another organization or from
+            one; `detail` names the cabinet and the other organization),
+            `app.connect` (an app was
+            connected and its organization key issued; `detail` names the
+            app, the key id and its scopes) or `app.revoke` (the connection
+            was revoked by an administrator or by the app itself).
         detail:
           type: object
           additionalProperties: true
