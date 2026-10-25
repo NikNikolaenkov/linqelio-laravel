@@ -54,6 +54,14 @@
 # (the middleware takes either), declare a 403 response and list
 # auth.forbidden_scope in x-error-codes: that is the refusal the middleware sends.
 #
+# --- On x-platform-support (ADR-0125) ------------------------------------------
+# EVERY operation guarded by a cabinet permission declares how far a platform
+# operator who is NOT a member of the cabinet reaches into it: `tech` (always:
+# connection state, health, alerts, analytics aggregates — no message content),
+# `read` (only through an active support access grant; a safe method only) or
+# `none` (never). There is no default: an operation nobody classified fails the
+# api/parity gate. The marker is an error on any other operation.
+#
 # --- On x-suspension (R7-B, issue #36, ADR-0080) -------------------------------
 # A suspended organization's cabinets are read-only. Which operations that
 # refuses is DERIVED, not listed: every operation that acts in a cabinet (a
@@ -407,6 +415,12 @@ tags:
       The people of a cabinet: members, their roles and channel assignments,
       and invites. Start with `listMembers`; add a person with
       `inviteMember`, change a role or channels with `updateMember`.
+  - name: support-access
+    description: >-
+      Time-boxed read access for the platform's support staff: the cabinet's
+      administrators open a window for 1, 4 or 24 hours, see who holds one,
+      and withdraw it at any moment. Start with `listSupportAccessGrants`;
+      open a window with `createSupportAccessGrant`.
   - name: settings
     description: >-
       The cabinet's settings, one section at a time (AI, compliance,
@@ -535,6 +549,7 @@ paths:
     get:
       operationId: listChannels
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List the channels of the cabinet
       # ADR-0012: channel kinds and their self-declared capabilities.
       description: >-
@@ -621,6 +636,7 @@ paths:
     post:
       operationId: createChannel
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Create a channel in the cabinet
       # ADR-0013 (channel.pairing_required), ADR-0019 (the connect policy
       # budget), ADR-0051 §3 (plan quota per channel kind).
@@ -736,6 +752,7 @@ paths:
     delete:
       operationId: deleteChannel
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Delete a channel and all of its correspondence
       description: >-
         Permanently removes the channel together with its conversations, its
@@ -813,6 +830,7 @@ paths:
     post:
       operationId: connectChannel
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Start connecting a channel (pairing by QR, or webhook registration)
       description: >-
         Starts connecting the channel and answers its status. What happens
@@ -858,6 +876,9 @@ paths:
         connected with no account recorded (connected before the number
         check existed) cannot be checked: it answers 409
         `channel.not_connected` — disconnect it and connect it again.
+        The `account` in the answer is masked for a platform support
+        operator working without the cabinet's support access (see
+        `ChannelAccount`).
 
         Safe to repeat. Needs a person to scan the QR for the QR kinds, so an
         agent can start it but cannot finish it alone.
@@ -925,6 +946,7 @@ paths:
     post:
       operationId: requestChannelPairingCode
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Get a code to link a WhatsApp Web channel by phone number
       description: >-
         The alternative to scanning the QR of a WhatsApp Web channel
@@ -953,6 +975,9 @@ paths:
         with a `lastError` of `channel.account_mismatch`. A number that
         another channel of the cabinet already holds is refused with 409
         `channel.account_in_use`.
+        The `account` in the answer is masked for a platform support
+        operator working without the cabinet's support access (see
+        `ChannelAccount`).
 
 
         Other kinds have no such code and answer 409
@@ -1023,6 +1048,7 @@ paths:
     put:
       operationId: setChannelCredentials
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Set a channel's provider token (write-only)
       # ADR-0011: credentials are write-only, kept only in the secret store.
       description: >-
@@ -1104,6 +1130,7 @@ paths:
     post:
       operationId: syncChannel
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Import a channel's address book or message history
       # ADR-0008 §2: identities are matched exactly, never fuzzily.
       description: >-
@@ -1193,6 +1220,7 @@ paths:
     get:
       operationId: getChannelHistoryImport
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Get the progress of a channel's history import
       description: >-
         Returns the latest history import of a Telegram account channel
@@ -1251,6 +1279,7 @@ paths:
     put:
       operationId: updateChannelSettings
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Replace a channel's settings
       description: >-
         Stores the channel's non-secret settings: for a WhatsApp Business API
@@ -1324,6 +1353,7 @@ paths:
     post:
       operationId: disconnectChannel
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Disconnect a channel
       description: >-
         Closes the channel's live link and answers `state: disconnected`: a
@@ -1388,6 +1418,7 @@ paths:
     get:
       operationId: getChannelStatus
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Get a channel's connection status and pairing QR
       description: >-
         Returns whether the channel can send and receive now (`connected`), is
@@ -1718,6 +1749,12 @@ paths:
         same cabinet at once can make one of them answer 503
         `provider.unavailable`; retrying it is safe. Needs the
         `platform:admin` scope.
+
+
+        Only a cabinet the platform is still setting up can be moved: when
+        either organization — the cabinet's or the target — has ever had a
+        member, the move answers 409 `platform.organization_has_members` and
+        nothing changes.
       x-mcp:
         expose: false
         readOnly: false
@@ -1751,6 +1788,7 @@ paths:
         - tenancy.organization_not_found
         - tenancy.quota_exceeded
         - provider.unavailable
+        - platform.organization_has_members
       responses:
         '200':
           description: >-
@@ -1779,6 +1817,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
@@ -1876,6 +1916,19 @@ paths:
         blindly. The issuance is written to the cabinet's audit trail. Answers
         404 `tenancy.cabinet_not_found` for an unknown cabinet. Needs the
         `platform:admin` scope.
+
+
+        Only for a cabinet the platform is still setting up: once the
+        cabinet's organization has ever had a member, its keys are the
+        client's to create (`createApiKey`) and this operation answers 409
+        `platform.organization_has_members`. A key issued here does not
+        outlive that moment: when the organization's first member joins,
+        everything credential-like made in its cabinets before — every API
+        key and pending invite, whichever operation made it — is revoked
+        and every webhook subscription is disabled, at once. Each cabinet's
+        audit trail gets one `platform.handover` entry listing what was
+        swept and the connected integrations (Bitrix24, Creatio) for the
+        client to review.
       x-mcp:
         expose: false
         readOnly: false
@@ -1908,6 +1961,7 @@ paths:
         - tenancy.cross_cabinet_denied
         - auth.origin_rejected
         - tenancy.cabinet_not_found
+        - platform.organization_has_members
       responses:
         '201':
           description: The new key; `bearerToken` is shown only in this response.
@@ -1927,6 +1981,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /cabinets/{id}/keys/{kid}/rotate:
     post:
@@ -1954,7 +2010,11 @@ paths:
 
 
         Not idempotent: a retry after success finds the old key already
-        retiring and answers 404. Needs the `platform:admin` scope.
+        retiring and answers 404. Needs the `platform:admin` scope. Like
+        `issueCabinetKey`, only for a cabinet whose organization has never
+        had a member; otherwise 409 `platform.organization_has_members`. The
+        replacement, like the outgoing key, is revoked when the
+        organization's first member joins.
       x-mcp:
         expose: false
         readOnly: false
@@ -1991,6 +2051,7 @@ paths:
         # issue #180: the key, not the cabinet, is what was not found.
         - keyring.key_not_found
         - keyring.rotation_overlap_required
+        - platform.organization_has_members
       responses:
         '201':
           description: The replacement key; `bearerToken` is shown only in this response.
@@ -2010,6 +2071,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /cabinets/{id}/keys/{kid}:
     delete:
@@ -2078,6 +2141,7 @@ paths:
     get:
       operationId: listApiKeys
       x-permission: 'keys:manage'
+      x-platform-support: none
       summary: List the cabinet's API keys
       description: >-
         Returns the metadata of every client key of the caller's cabinet,
@@ -2144,6 +2208,7 @@ paths:
     post:
       operationId: createApiKey
       x-permission: 'keys:manage'
+      x-platform-support: none
       summary: Create an API key for the cabinet
       # ADR-0005: the secret is stored only as an argon2id hash. ADR-0110: the
       # grant ceiling. No x-idempotency on purpose: the replay layer stores the
@@ -2202,6 +2267,8 @@ paths:
         - keyring.scope_not_grantable
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # ADR-0125: made with a key the client's first member took away.
+        - platform.organization_has_members
       responses:
         '201':
           description: The new key; `bearerToken` is shown only in this response.
@@ -2219,11 +2286,14 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /api-keys/{kid}/rotate:
     post:
       operationId: rotateApiKey
       x-permission: 'keys:manage'
+      x-platform-support: none
       summary: Rotate one of the cabinet's API keys with an overlap period
       description: >-
         Creates a replacement for the key `kid` and moves the old key to
@@ -2283,6 +2353,8 @@ paths:
         - keyring.rotation_overlap_required
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # ADR-0125: made with a key the client's first member took away.
+        - platform.organization_has_members
       responses:
         '201':
           description: The replacement key; `bearerToken` is shown only in this response.
@@ -2302,11 +2374,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /api-keys/{kid}:
     delete:
       operationId: revokeApiKey
       x-permission: 'keys:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Cuts access: a suspended organization must still be able to withdraw a leaked or unwanted key; nothing is created (ADR-0080 §3).
@@ -2365,6 +2440,7 @@ paths:
     get:
       operationId: listWebhooks
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: List the cabinet's outbound webhook subscriptions
       description: >-
         Returns every outbound webhook subscription of the cabinet: the
@@ -2416,6 +2492,7 @@ paths:
     post:
       operationId: registerWebhook
       x-permission: 'settings:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -2483,6 +2560,8 @@ paths:
         # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
         - idempotency.key_reused
         - idempotency.in_progress
+        # ADR-0125: made with a key the client's first member took away.
+        - platform.organization_has_members
       requestBody:
         required: true
         content:
@@ -2529,6 +2608,7 @@ paths:
     patch:
       operationId: updateWebhook
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: Enable or disable a webhook subscription
       # issue #119: before it, the 404 carried tenancy.cross_cabinet_denied; the
       # status is unchanged, so a client keyed on the status keeps working.
@@ -2615,6 +2695,7 @@ paths:
     delete:
       operationId: deleteWebhook
       x-permission: 'settings:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -2668,6 +2749,7 @@ paths:
     get:
       operationId: listAccessPool
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List the access pool of a channel kind
       description: >-
         Returns the cabinet's access-pool entries for one channel kind. The
@@ -2739,6 +2821,7 @@ paths:
     post:
       operationId: addAccessPoolEntry
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -2822,6 +2905,7 @@ paths:
     put:
       operationId: setAccessPoolHealth
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Return a pool credential to rotation or take it out
       # ADR-0032 §2 (auto-degrade). issue #119: before it, the 404 carried
       # tenancy.cross_cabinet_denied; the status is unchanged.
@@ -2896,6 +2980,7 @@ paths:
     post:
       operationId: rotateAccessPool
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -3280,6 +3365,7 @@ paths:
     post:
       operationId: startMetaConnect
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Start connecting a Facebook Page or an Instagram account
       # ADR-0107 §3: the signed, single-use state.
       description: >-
@@ -3361,6 +3447,7 @@ paths:
     get:
       operationId: getMetaConnectGrant
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: List the accounts a Facebook or Instagram login found
       description: >-
         Returns what the login started by `startMetaConnect` found — the
@@ -3436,6 +3523,7 @@ paths:
     post:
       operationId: completeMetaConnect
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Connect the Pages or the Instagram account the person picked
       # ADR-0107 §3: create or reconnect, subscribe, audit; single use.
       description: >-
@@ -4176,6 +4264,7 @@ paths:
     get:
       operationId: listAudit
       x-permission: 'audit:read'
+      x-platform-support: read
       summary: List the cabinet's audit log, newest first
       # ADR-0028: the audit trail.
       description: >-
@@ -4301,6 +4390,7 @@ paths:
     get:
       operationId: listBitrixPortals
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the Bitrix24 portals linked to the cabinet
       # ADR-0052 (host installations).
       description: >-
@@ -4363,6 +4453,7 @@ paths:
     delete:
       operationId: unlinkBitrixPortal
       x-permission: 'settings:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): unlinking is cutting access, which a suspended
       # organization must still be able to do.
       x-suspension: allowed
@@ -4420,6 +4511,7 @@ paths:
     post:
       operationId: createBitrixPairing
       x-permission: 'settings:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -4768,6 +4860,7 @@ paths:
     get:
       operationId: listCreatioInstallations
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the Creatio instances registered with the cabinet
       description: >-
         Returns the Creatio instances registered with this cabinet, active
@@ -4812,6 +4905,7 @@ paths:
     post:
       operationId: registerCreatioInstallation
       x-permission: 'settings:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -4890,6 +4984,7 @@ paths:
     delete:
       operationId: disableCreatioInstallation
       x-permission: 'settings:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Disabling an instance cuts a host system's access to the cabinet and drops the secret we hold for it; a suspended organization must still be able to take access away (ADR-0080 §3).
@@ -5151,6 +5246,7 @@ paths:
     get:
       operationId: listAiRuns
       x-permission: 'settings:manage'
+      x-platform-support: read
       summary: Read the cabinet's AI run journal
       # ADR-0064 §5 (the run journal).
       description: >-
@@ -5270,6 +5366,7 @@ paths:
     post:
       operationId: testAiProvider
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Test the connection to the cabinet's configured AI provider
       description: >-
         Sends one fixed, tiny prompt — no customer data — to the provider the
@@ -5346,6 +5443,7 @@ paths:
     post:
       operationId: createCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -5485,6 +5583,7 @@ paths:
     get:
       operationId: listCampaigns
       x-permission: 'campaigns:manage'
+      x-platform-support: read
       summary: List the cabinet's campaigns with their progress
       description: >-
         Returns the cabinet's campaigns, newest first, 50 per page by default.
@@ -5587,6 +5686,7 @@ paths:
     get:
       operationId: getCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: read
       summary: Get one campaign and its progress
       description: >-
         Returns one campaign: its settings, its channels with their pacing
@@ -5682,6 +5782,7 @@ paths:
     put:
       operationId: updateCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Replace a draft's name, channels, message, audience and schedule
       description: >-
         Replaces a draft with the body: send every field you want to keep, as
@@ -5794,6 +5895,7 @@ paths:
     delete:
       operationId: deleteCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Delete a draft or a finished campaign
       description: >-
         Permanently deletes a draft, or a `completed`, `cancelled` or `failed`
@@ -5855,6 +5957,7 @@ paths:
     put:
       operationId: setCampaignAudience
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Set a draft's audience
       description: >-
         Replaces who a draft campaign is for: explicit contacts and/or a filter
@@ -5976,6 +6079,7 @@ paths:
     post:
       operationId: launchCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -6111,6 +6215,7 @@ paths:
     post:
       operationId: pauseCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Pausing only stops messages; refusing it during a suspension would
@@ -6214,6 +6319,7 @@ paths:
     post:
       operationId: resumeCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Resume a paused campaign (sending continues)
       # ADR-0063 §8: a suspension pause never resumes on its own.
       description: >-
@@ -6313,6 +6419,7 @@ paths:
     post:
       operationId: cancelCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Cancelling only stops messages (the recipients not yet sent to are
@@ -6416,6 +6523,7 @@ paths:
     get:
       operationId: listCampaignRecipients
       x-permission: 'campaigns:manage'
+      x-platform-support: read
       summary: List a campaign's recipients with their states
       description: >-
         Returns the recipients of a launched campaign in the order they were
@@ -6499,6 +6607,7 @@ paths:
     post:
       operationId: createScheduledSend
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Schedule a message to a contact for a later moment
       # #70 DoD: send policy judges it at send time; ADR-0063 §9: the
       # interactive policy mode.
@@ -6624,6 +6733,7 @@ paths:
     get:
       operationId: listScheduledSends
       x-permission: 'messages:send'
+      x-platform-support: read
       summary: List scheduled sends, soonest first
       description: >-
         Returns the cabinet's scheduled sends ordered by `sendAt`, soonest
@@ -6711,6 +6821,7 @@ paths:
     get:
       operationId: getScheduledSend
       x-permission: 'messages:send'
+      x-platform-support: read
       summary: Get one scheduled send
       description: >-
         Returns one scheduled send: its status (`scheduled` → `sending` →
@@ -6776,6 +6887,7 @@ paths:
     patch:
       operationId: updateScheduledSend
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Move a scheduled send or change its message
       description: >-
         Changes `sendAt` (same bounds as on create: at least 5 seconds, at most
@@ -6863,6 +6975,7 @@ paths:
     post:
       operationId: cancelScheduledSend
       x-permission: 'messages:send'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Cancelling only stops a message; a suspended organization's scheduled
@@ -6941,6 +7054,7 @@ paths:
     get:
       operationId: listChannelHealth
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List the current health of every channel the caller may see
       # ADR-0065: channel health score and business alerts.
       description: >-
@@ -7027,6 +7141,7 @@ paths:
     get:
       operationId: getChannelHealth
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Get one channel's current health and its explanation
       description: >-
         The channel's latest score (0–100), rating, components (each with its
@@ -7105,6 +7220,7 @@ paths:
     get:
       operationId: getChannelHealthHistory
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Get a channel's health over time
       description: >-
         The channel's health snapshots since `since` (default: 7 days ago),
@@ -7183,6 +7299,7 @@ paths:
     get:
       operationId: listAlerts
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List the cabinet's alerts the caller may see, newest first
       # ADR-0065 (alerts); ADR-0008 §3 (cursor paging); issue #140 and the
       # ADR-0065 amendment of 2026-09-25 (the deprecated forms).
@@ -7335,6 +7452,7 @@ paths:
     get:
       operationId: getAlert
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Get one alert
       description: >-
         Returns one alert with its current status, the measured value and the
@@ -7406,6 +7524,7 @@ paths:
     post:
       operationId: acknowledgeAlert
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: Mark an open alert as seen
       description: >-
         "I have seen it": moves an `open` alert to `acknowledged`, recording
@@ -7482,6 +7601,7 @@ paths:
     post:
       operationId: resolveAlert
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Close an alert by hand
       description: >-
         Resolves an open or acknowledged alert now and sends the
@@ -7553,6 +7673,7 @@ paths:
     get:
       operationId: listAlertSubscriptions
       x-permission: 'channels:read'
+      x-platform-support: none
       summary: List the caller's alert subscriptions and the cabinet's shared ones
       description: >-
         Returns who is told about which alerts, and how: the caller's own
@@ -7609,6 +7730,7 @@ paths:
     post:
       operationId: createAlertSubscription
       x-permission: 'channels:read'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -7708,6 +7830,7 @@ paths:
     patch:
       operationId: updateAlertSubscription
       x-permission: 'channels:read'
+      x-platform-support: none
       summary: Change a subscription's filter or switch it off
       description: >-
         Changes the minimum severity, the rule types, the channels or the
@@ -7778,6 +7901,7 @@ paths:
     delete:
       operationId: deleteAlertSubscription
       x-permission: 'channels:read'
+      x-platform-support: none
       # R10-E (ADR-0065): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -7822,6 +7946,7 @@ paths:
     get:
       operationId: listAlertRules
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the alert rules as they apply to the cabinet
       description: >-
         Every rule type with its threshold, window, cooldown, severity and
@@ -7895,6 +8020,7 @@ paths:
     put:
       operationId: putAlertRule
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Override an alert rule for the cabinet
       description: >-
         Replaces the cabinet's override of the rule — every field, so send the
@@ -7972,6 +8098,7 @@ paths:
     delete:
       operationId: resetAlertRule
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Reset an alert rule to the platform default
       description: >-
         Removes the cabinet's override of the rule set with `putAlertRule`, so
@@ -8040,6 +8167,7 @@ paths:
     get:
       operationId: listChannelTemplates
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List a WhatsApp Business API channel's message templates
       description: >
         The WhatsApp Business message templates of a WhatsApp Business API
@@ -8124,6 +8252,7 @@ paths:
     post:
       operationId: syncChannelTemplates
       x-permission: 'channels:manage'
+      x-platform-support: tech
       summary: Re-read a WhatsApp Business API channel's templates from Meta now
       description: >
         Lists every template of the channel's WhatsApp Business Account on
@@ -8205,6 +8334,7 @@ paths:
     post:
       operationId: sendConversationMessage
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Send a message into a conversation (direct, group or comments)
       # ADR-0062 (group conversations); ADR-0002 §5 (Idempotency-Key);
       # issue #140, ADR-0092 amended 2026-09-25 (template sends);
@@ -8370,6 +8500,7 @@ paths:
     post:
       operationId: checkConversationSendPolicy
       x-permission: 'messages:send'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         A dry run that changes nothing (ADR-0082): it answers what a send would get, and for a suspended organization that answer is a deny finding with code tenancy.suspended — refusing the question instead would hide the reason from the composer.
@@ -8484,6 +8615,7 @@ paths:
     get:
       operationId: listConversationParticipants
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List a group conversation's participants
       # ADR-0062 (group conversations).
       description: >-
@@ -8561,6 +8693,7 @@ paths:
     get:
       operationId: listChannelIgnoredGroups
       x-permission: 'channels:manage'
+      x-platform-support: read
       summary: List the groups a channel ignores while its group chats are off
       # ADR-0062 §4: the channel's group switch (settings `groups.enabled`).
       description: >-
@@ -8627,6 +8760,7 @@ paths:
     post:
       operationId: createGroup
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       summary: Create a messenger group with contacts of the cabinet as members
       # issue #66 (group management); ADR-0102 (tg_client supergroups).
@@ -8740,6 +8874,7 @@ paths:
     post:
       operationId: addGroupParticipants
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       summary: Add contacts of the cabinet to a group
       description: >-
@@ -8846,6 +8981,7 @@ paths:
     post:
       operationId: removeGroupParticipants
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       summary: Remove participants from a group
       description: >-
@@ -8938,6 +9074,7 @@ paths:
     patch:
       operationId: updateGroup
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Rename a group
       description: >-
         Changes the group's name (`subject`, 1–100 characters on one line) on
@@ -9020,6 +9157,7 @@ paths:
     post:
       operationId: leaveGroup
       x-permission: 'channels:manage'
+      x-platform-support: none
       x-idempotency: replay
       summary: Make the channel's account leave a group
       description: >-
@@ -9100,6 +9238,7 @@ paths:
     post:
       operationId: testAiGuard
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: Try the AI guard on a sample text
       # ADR-0068 (AI guard); the run lands in the ai_runs journal.
       description: >-
@@ -9190,6 +9329,7 @@ paths:
     get:
       operationId: getContactAiProfile
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get the contact's AI questionnaire state and AI summary
       # ADR-0068 §5 (the AI questionnaire).
       description: >-
@@ -9271,6 +9411,7 @@ paths:
     post:
       operationId: fillContactAiProfile
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -9362,6 +9503,7 @@ paths:
     get:
       operationId: listComplianceScans
       x-permission: 'compliance:read'
+      x-platform-support: tech
       summary: List the cabinet's compliance scans, newest first
       description: >-
         Returns compliance scans — AI reviews of conversations against the
@@ -9459,6 +9601,7 @@ paths:
     post:
       operationId: startComplianceScan
       x-permission: 'compliance:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -9583,6 +9726,7 @@ paths:
     get:
       operationId: getComplianceScan
       x-permission: 'compliance:read'
+      x-platform-support: tech
       summary: Get one compliance scan and its progress
       description: >-
         Returns one compliance scan: its scope, period, the rules it checks,
@@ -9662,6 +9806,7 @@ paths:
     post:
       operationId: cancelComplianceScan
       x-permission: 'compliance:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Cancelling only stops work (and AI spending); a suspended organization
@@ -9742,6 +9887,7 @@ paths:
     get:
       operationId: listComplianceFindings
       x-permission: 'compliance:read'
+      x-platform-support: read
       summary: List compliance findings, newest first
       description: >-
         Returns the violations compliance scans found, newest first, 50 per
@@ -9877,6 +10023,7 @@ paths:
     get:
       operationId: getComplianceFinding
       x-permission: 'compliance:read'
+      x-platform-support: read
       summary: Get one compliance finding with its evidence and history
       description: >-
         Returns one finding with everything the list leaves out: its evidence
@@ -9968,6 +10115,7 @@ paths:
     post:
       operationId: actOnComplianceFinding
       x-permission: 'compliance:review'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -10096,6 +10244,7 @@ paths:
     get:
       operationId: getAnalyticsOverview
       x-permission: 'analytics:read'
+      x-platform-support: tech
       summary: Get the key numbers of a period, compared with the period before
       # ADR-0066 §1: the metric catalogue.
       description: >-
@@ -10221,6 +10370,7 @@ paths:
     get:
       operationId: getAnalyticsTimeseries
       x-permission: 'analytics:read'
+      x-platform-support: tech
       summary: Get one metric over time, by hour, day or week
       description: >-
         Returns one metric for each bucket of the period, for a chart or a
@@ -10329,6 +10479,7 @@ paths:
     get:
       operationId: getAnalyticsBreakdown
       x-permission: 'analytics:read'
+      x-platform-support: tech
       summary: Get the period's numbers per channel, agent, origin or policy reason
       description: >-
         Splits the period's numbers by one dimension (`by`), one row each,
@@ -10444,6 +10595,7 @@ paths:
     get:
       operationId: getAnalyticsHeatmap
       x-permission: 'analytics:read'
+      x-platform-support: tech
       summary: Get message counts by weekday and hour of day
       description: >-
         Returns 7 × 24 counts of the period's messages by weekday (Monday
@@ -10555,6 +10707,7 @@ paths:
     get:
       operationId: getAnalyticsCampaignReport
       x-permission: 'analytics:read'
+      x-platform-support: tech
       summary: Get a campaign's funnel (recipients, sent, delivered, read, replied)
       description: >-
         Returns how a campaign performed: its recipients by state (pending,
@@ -10623,6 +10776,7 @@ paths:
     post:
       operationId: createAnalyticsExport
       x-permission: 'analytics:read'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -10724,6 +10878,7 @@ paths:
     get:
       operationId: listAnalyticsExports
       x-permission: 'analytics:read'
+      x-platform-support: none
       summary: List the caller's recent report exports
       description: >-
         Returns the caller's own 50 most recent report exports in the
@@ -10793,6 +10948,7 @@ paths:
     get:
       operationId: getAnalyticsExport
       x-permission: 'analytics:read'
+      x-platform-support: none
       summary: Get one of the caller's report exports
       description: >-
         Returns one export job: its state (`queued` → `running` →
@@ -10872,6 +11028,7 @@ paths:
     get:
       operationId: downloadAnalyticsExport
       x-permission: 'analytics:read'
+      x-platform-support: none
       summary: Download a completed report export
       # ADR-0056 §1: files stream through the platform, authenticated.
       description: >-
@@ -10955,6 +11112,7 @@ paths:
     post:
       operationId: dryRunCampaign
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Dry-run a draft campaign (who would get it, who is blocked, how long)
       # ADR-0062: a group is not a contact, so group chats are never recipients.
       description: >-
@@ -11076,6 +11234,7 @@ paths:
     post:
       operationId: previewCampaignAudience
       x-permission: 'campaigns:manage'
+      x-platform-support: none
       summary: Count how many contacts an audience would reach on given channels
       description: >-
         Counts, without saving anything, how many contacts an audience
@@ -11178,6 +11337,7 @@ paths:
     get:
       operationId: getBitrixConnector
       x-permission: 'settings:manage'
+      x-platform-support: read
       summary: Get the open-lines connector of a portal — bindings and queue health
       # ADR-0094 (the open-lines connector).
       description: >-
@@ -11265,6 +11425,7 @@ paths:
     patch:
       operationId: updateBitrixConnector
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Set the open line new channels go onto
       description: >-
         Sets `defaultLineId`: the open line a channel without an explicit
@@ -11347,6 +11508,7 @@ paths:
     get:
       operationId: listBitrixOpenLines
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the portal's open lines
       # ADR-0054 §3 (shared lines).
       description: >-
@@ -11420,6 +11582,7 @@ paths:
     put:
       operationId: bindBitrixChannelLine
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Put a channel on an open line
       description: >-
         Binds the channel to an open line of the portal, so its conversations
@@ -11493,6 +11656,7 @@ paths:
     delete:
       operationId: unbindBitrixChannelLine
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Take a channel off its open line
       description: >-
         The channel's messages stop being carried into the portal; its calls
@@ -11541,6 +11705,7 @@ paths:
     post:
       operationId: retryBitrixDeadLetters
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Retry the portal's failed calls and events
       description: >-
         Puts back in the queue, due now, every call to the portal that
@@ -11615,6 +11780,7 @@ paths:
     get:
       operationId: getBitrixCrmSettings
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Get the portal's CRM settings — deduplication, enrichment, field map
       # ADR-0097 (Bitrix24 CRM deduplication and enrichment).
       description: >-
@@ -11687,6 +11853,7 @@ paths:
     put:
       operationId: updateBitrixCrmSettings
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Replace the portal's CRM settings
       description: >-
         Replaces the whole settings object — send every field, as read with
@@ -11785,6 +11952,7 @@ paths:
     get:
       operationId: listBitrixCrmFields
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the CRM fields of an entity type, as the portal reports them
       description: >-
         Asks the portal (`crm.<entity>.fields`) for the fields of CONTACT,
@@ -11862,6 +12030,7 @@ paths:
     get:
       operationId: listBitrixLineRequests
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: List the portal's recent open-line creation requests
       description: >-
         Returns the portal's recent `createBitrixOpenLine` requests, newest
@@ -11921,6 +12090,7 @@ paths:
     post:
       operationId: createBitrixOpenLine
       x-permission: 'settings:manage'
+      x-platform-support: tech
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -13313,6 +13483,7 @@ paths:
     get:
       operationId: listContacts
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List and search contacts
       # ADR-0008 §3 (the receive flow: the host polls new contacts and links them).
       description: >-
@@ -13440,6 +13611,7 @@ paths:
     post:
       operationId: uploadMedia
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Upload an attachment to send
       description: >-
         Stores a file (the raw bytes as the request body, at most 32 MiB) and
@@ -13527,6 +13699,7 @@ paths:
     get:
       operationId: getMessage
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get one message and its delivery status
       description: >-
         Returns one message with its content and its current delivery status.
@@ -13602,6 +13775,7 @@ paths:
     get:
       operationId: getMessageMedia
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Download a message's media attachment
       # NOTE: for an outbound message whose media URL the sender supplied (an
       # external http(s) link) the handler answers 302 to that URL instead of
@@ -13669,6 +13843,7 @@ paths:
     post:
       operationId: hideComment
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Hide a comment from the public
       description: >-
         Hides a comment on the channel's own Facebook Page post or Instagram
@@ -13747,6 +13922,7 @@ paths:
     post:
       operationId: unhideComment
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Show a hidden comment again
       description: >-
         Makes a comment hidden with `hideComment` (or on the messenger)
@@ -13814,6 +13990,7 @@ paths:
     delete:
       operationId: deleteComment
       x-permission: 'channels:manage'
+      x-platform-support: none
       summary: Delete a comment on the messenger
       description: >-
         Deletes a comment from the channel's Facebook Page post or Instagram
@@ -13893,6 +14070,7 @@ paths:
     post:
       operationId: sendPrivateReply
       x-permission: 'messages:send'
+      x-platform-support: none
       x-idempotency: replay
       summary: Answer a commenter privately, in their inbox
       description: >-
@@ -14000,6 +14178,7 @@ paths:
     get:
       operationId: getConversationPostThumbnail
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Download the thumbnail of a comments conversation's post
       description: >-
         Streams the picture of the post a comments conversation is about (a
@@ -14058,6 +14237,7 @@ paths:
     get:
       operationId: listConversations
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List the cabinet's conversations, most recently active first
       description: >-
         Returns the dialog list: one row per conversation — a thread with one
@@ -14194,6 +14374,7 @@ paths:
     get:
       operationId: listConversationMessages
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Read one conversation's messages
       description: >-
         Returns the messages of one conversation, newest page first, each page
@@ -14368,6 +14549,7 @@ paths:
     get:
       operationId: listConversationThreads
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List the topics of a Telegram forum group
       description: >-
         Returns the topics of a Telegram forum group (`isForum: true` in
@@ -14444,6 +14626,7 @@ paths:
     post:
       operationId: createContact
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Create a contact from one messenger address, or find the existing one
       # ADR-0008 §2 (identity key = channel kind + provider id, the inbound auto-link key);
       # ADR-0061 §4 (a chosen name is never replaced by a messenger nickname).
@@ -14562,6 +14745,7 @@ paths:
     post:
       operationId: createContactInvite
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-idempotency: replay
       summary: Create an invite link that connects a contact to a channel
       # ADR-0008 §5 (a redeemed deep-link token binds the identity to this contact); ADR-0115 (Messenger and Instagram).
@@ -14702,6 +14886,7 @@ paths:
     get:
       operationId: getContact
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get a contact
       description: >-
         Returns one contact: all of its identities (its addresses on each
@@ -14782,6 +14967,7 @@ paths:
     patch:
       operationId: updateContact
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Update the host's fields of a contact (custom data and CRM links)
       # ADR-0008 §3 (the host mirrors the contact and returns the link).
       description: >-
@@ -14886,6 +15072,7 @@ paths:
     post:
       operationId: eraseContact
       x-permission: 'compliance:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -14969,6 +15156,7 @@ paths:
     get:
       operationId: listContactConsents
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List a contact's consent to be messaged, per channel
       # ADR-0084 (contact consent with a source).
       description: >-
@@ -15048,6 +15236,7 @@ paths:
     put:
       operationId: grantContactConsent
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Record the contact's consent on one channel
       x-mcp:
         expose: true
@@ -15126,6 +15315,7 @@ paths:
     post:
       operationId: revokeContactConsent
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         An opt-out is the data subject withdrawing consent; honouring it only stops messages, and refusing it while the organization is suspended would keep the person reachable the moment the organization resumes (ADR-0084).
@@ -15204,6 +15394,7 @@ paths:
     get:
       operationId: listContactMessages
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Read a contact's message history across all channels
       # ADR-0008: a contact is one person spanning channels.
       description: >-
@@ -15280,6 +15471,7 @@ paths:
     post:
       operationId: sendContactMessage
       x-permission: 'messages:send'
+      x-platform-support: none
       summary: Send a message to a contact
       # ADR-0012 (the outbound flow); ADR-0002 §5 (Idempotency-Key required).
       description: >-
@@ -15488,6 +15680,7 @@ paths:
     post:
       operationId: checkSendPolicy
       x-permission: 'messages:send'
+      x-platform-support: none
       # Side-effect free; a suspended organization gets its answer as a finding.
       x-suspension: allowed
       x-suspension-reason: >
@@ -15615,6 +15808,7 @@ paths:
     post:
       operationId: createEmbedSession
       x-permission: 'messages:send'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -16954,6 +17148,7 @@ paths:
     get:
       operationId: listCabinetOAuthGrants
       x-permission: 'team:manage'
+      x-platform-support: none
       summary: List the apps connected to this cabinet
       description: >
         Lists the apps members connected to this cabinet through the MCP
@@ -17004,6 +17199,7 @@ paths:
     delete:
       operationId: revokeCabinetOAuthGrant
       x-permission: 'team:manage'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >-
         Taking access away must work while the organization is suspended.
@@ -17043,6 +17239,426 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  # ADR-0125: the cabinet's own side of operator support access.
+  /support-access/grants:
+    get:
+      operationId: listSupportAccessGrants
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: List the support access windows of this cabinet
+      description: >
+        Lists the windows that let the platform's support staff read this
+        cabinet's data: the ones you opened and any emergency access two
+        platform operators opened with a stated reason. By default only the
+        windows still in effect or awaiting confirmation are returned; set
+        `includeEnded=true` to include expired and withdrawn ones. Newest
+        first. Who actually read what is in the audit log (`listAudit`,
+        action `support.access`).
+      x-mcp:
+        expose: false
+        reason: >-
+          Who may read a cabinet's data is a person's decision in the console;
+          an MCP client must not see or manage support access.
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - support-access
+      parameters:
+        - name: includeEnded
+          in: query
+          required: false
+          description: >
+            True to include windows that have expired or were withdrawn.
+            Default false.
+          schema:
+            type: boolean
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The cabinet's support access windows, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportAccessGrantList'
+              example:
+                items:
+                  - id: 3f1d9a52-7c0e-4b8a-a2d4-6e5f4a3b2c1d
+                    kind: client
+                    status: active
+                    reason: Help us find why messages from the shop stopped arriving
+                    durationHours: 4
+                    createdAt: '2026-10-24T09:00:00Z'
+                    expiresAt: '2026-10-24T13:00:00Z'
+                    grantedBy:
+                      id: 1f2e3d4c-5b6a-4789-8a9b-0c1d2e3f4a5b
+                      email: owner@example.com
+                      displayName: Olena Kovalenko
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createSupportAccessGrant
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      x-idempotency: replay
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      summary: Let the platform's support staff read this cabinet for a while
+      description: >
+        Opens a read-only window of 1, 4 or 24 hours counted from now. While it
+        lasts, any active platform operator can read this cabinet's data
+        (conversations, contacts, messages); they cannot send, change or delete
+        anything. Say why in `reason` (up to 500 characters) — it is kept with
+        the window. Withdraw the window at any moment with
+        `revokeSupportAccessGrant`. Every read an operator makes is recorded in
+        the cabinet's audit log. Send an `Idempotency-Key` so that a retry
+        replays the first answer instead of opening a second window.
+      x-mcp:
+        expose: false
+        reason: >-
+          Letting someone read a cabinet's data is a person's decision in the
+          console; an MCP client must not grant support access.
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - support-access
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSupportAccessGrantRequest'
+            example:
+              durationHours: 4
+              reason: Help us find why messages from the shop stopped arriving
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '201':
+          description: The window is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportAccessGrant'
+              example:
+                id: 3f1d9a52-7c0e-4b8a-a2d4-6e5f4a3b2c1d
+                kind: client
+                status: active
+                reason: Help us find why messages from the shop stopped arriving
+                durationHours: 4
+                createdAt: '2026-10-24T09:00:00Z'
+                expiresAt: '2026-10-24T13:00:00Z'
+                grantedBy:
+                  id: 1f2e3d4c-5b6a-4789-8a9b-0c1d2e3f4a5b
+                  email: owner@example.com
+                  displayName: Olena Kovalenko
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /support-access/grants/{grantId}:
+    delete:
+      operationId: revokeSupportAccessGrant
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      x-suspension: allowed
+      x-suspension-reason: >-
+        Taking access away must work while the organization is suspended.
+      summary: Withdraw a support access window
+      # ADR-0125: emergency access is not the client's to withdraw — it ends
+      # at its expiry (a product decision recorded in the ADR).
+      description: >
+        Ends a window the cabinet opened, at once: from the next request the
+        platform's support staff can no longer read this cabinet.
+        Withdrawing a window that has already ended answers 204 too; a window
+        of another cabinet, or an unknown one, answers 404. An emergency
+        access cannot be withdrawn here: it ends by itself at `expiresAt`,
+        and the attempt answers 409 `support.emergency_not_revocable`.
+      x-mcp:
+        expose: false
+        reason: >-
+          Who may read a cabinet's data is a person's decision in the console;
+          an MCP client must not manage support access.
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - support-access
+      parameters:
+        - $ref: '#/components/parameters/SupportAccessGrantId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - support.grant_not_found
+        - support.emergency_not_revocable
+        - validation.invalid_request
+      responses:
+        '204':
+          description: The window is withdrawn.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  # ADR-0125: the operators' side of support access — emergency access needs
+  # two different people.
+  /platform/support-access:
+    get:
+      operationId: listPlatformSupportAccess
+      x-permission: 'platform:admin'
+      summary: List support access windows across cabinets (platform operator)
+      description: >-
+        Lists the windows that let platform operators read client cabinets:
+        the ones in effect now (opened by the cabinet or as an emergency) and
+        the emergency requests still waiting for a second operator. Newest
+        first. Narrow it to one cabinet with `cabinetId`, or to the requests
+        awaiting confirmation with `pending=true`. Each item names the cabinet
+        and its organization. An operator opens a request with
+        `requestEmergencyAccess`; another operator confirms it with
+        `approveEmergencyAccess`. Not paginated.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): who may read client
+          data is a decision for people, not for an MCP client.
+      tags:
+        - platform
+      parameters:
+        - name: cabinetId
+          in: query
+          required: false
+          description: Only the windows of this cabinet.
+          schema:
+            type: string
+            format: uuid
+        - name: pending
+          in: query
+          required: false
+          description: >-
+            `true` returns only the emergency requests awaiting a second
+            operator. Default false: windows in effect and pending requests.
+          schema:
+            type: boolean
+            default: false
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The windows and pending requests, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformSupportAccessList'
+              example:
+                items:
+                  - id: 3f1d9a52-7c0e-4b8a-a2d4-6e5f4a3b2c1d
+                    kind: emergency
+                    status: pending
+                    reason: The owner cannot be reached and a court order arrived
+                    category: legal
+                    durationHours: 4
+                    createdAt: '2026-10-24T09:00:00Z'
+                    requestedBy:
+                      displayName: Anna Shevchenko
+                    cabinetId: 8c1b7e2a-5d3f-4a60-9b12-0f4e6d8a7c35
+                    cabinetName: Main shop
+                    organizationName: Example LLC
+                    requestedByMe: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /platform/support-access/emergency:
+    post:
+      operationId: requestEmergencyAccess
+      x-permission: 'platform:admin'
+      summary: Ask for emergency read access to a cabinet (platform operator)
+      description: >-
+        Records a request to read a client cabinet without the client's
+        consent, for a stated `category` (`legal`, `abuse` or `unreachable`)
+        and `reason` (10 to 1000 characters). It grants nothing yet: a
+        different operator must confirm it with `approveEmergencyAccess`
+        within 24 hours. Once confirmed, the window lasts `durationHours`
+        (1, 4 or 24) from that moment, is read-only, and the cabinet's owners
+        and administrators are told by e-mail. The request is recorded in the
+        cabinet's audit log. It must be made by a signed-in operator, not by
+        an API key: the rule is that two people agree.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (`platform:admin`): reading a client's
+          data without consent needs two people's decision.
+      tags:
+        - platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestEmergencyAccessRequest'
+            example:
+              cabinetId: 8c1b7e2a-5d3f-4a60-9b12-0f4e6d8a7c35
+              category: legal
+              reason: The owner cannot be reached and a court order arrived
+              durationHours: 4
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+      responses:
+        '201':
+          description: The request is recorded and waits for a second operator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportAccessGrant'
+              example:
+                id: 3f1d9a52-7c0e-4b8a-a2d4-6e5f4a3b2c1d
+                kind: emergency
+                status: pending
+                reason: The owner cannot be reached and a court order arrived
+                category: legal
+                durationHours: 4
+                createdAt: '2026-10-24T09:00:00Z'
+                requestedBy:
+                  displayName: Anna Shevchenko
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /platform/support-access/emergency/{grantId}/approve:
+    post:
+      operationId: approveEmergencyAccess
+      x-permission: 'platform:admin'
+      summary: Confirm an emergency access request (platform operator)
+      description: >-
+        Confirms a request another operator made with
+        `requestEmergencyAccess`. From now on, for the requested number of
+        hours, platform operators can read that cabinet (read-only). The
+        cabinet's owners and administrators are told by e-mail; a failure to
+        send the mail does not undo the confirmation. The requester cannot
+        confirm their own request (409 `support.emergency_self_approval`); a
+        request that was already confirmed, withdrawn or left unconfirmed for
+        24 hours answers 409 `support.emergency_not_pending`; an unknown id
+        answers 404 `support.grant_not_found`. It must be made by a signed-in
+        operator, not by an API key.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (`platform:admin`): reading a client's
+          data without consent needs two people's decision.
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/SupportAccessGrantId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - support.grant_not_found
+        - support.emergency_self_approval
+        - support.emergency_not_pending
+      responses:
+        '200':
+          description: The window is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportAccessGrant'
+              example:
+                id: 3f1d9a52-7c0e-4b8a-a2d4-6e5f4a3b2c1d
+                kind: emergency
+                status: active
+                reason: The owner cannot be reached and a court order arrived
+                category: legal
+                durationHours: 4
+                createdAt: '2026-10-24T09:00:00Z'
+                approvedAt: '2026-10-24T09:20:00Z'
+                expiresAt: '2026-10-24T13:20:00Z'
+                requestedBy:
+                  displayName: Anna Shevchenko
+                approvedBy:
+                  displayName: Bohdan Melnyk
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /auth/invites/accept:
     post:
       operationId: acceptInvite
@@ -17071,7 +17687,11 @@ paths:
         unknown, used, revoked or expired token answers 400
         `auth.token_invalid`, and so does the link of a membership-only invite
         for an account that already has a password (use
-        `acceptMembershipInvite` for that one; the link stays valid).
+        `acceptMembershipInvite` for that one; the link stays valid). The
+        link of an invite the platform made for a new organization's first
+        owner (`inviteOrganizationOwner`) answers 409
+        `platform.organization_has_members` once somebody else has joined the
+        organization, with nothing written.
       x-mcp:
         expose: false
         reason: >-
@@ -17097,6 +17717,7 @@ paths:
         - validation.invalid_request
         - auth.token_invalid
         - auth.origin_rejected
+        - platform.organization_has_members
       responses:
         '204':
           description: The account is active with the chosen password.
@@ -17104,6 +17725,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   # ---------------------------------------------------------------------------
   # BEGIN R5-C: membership-only invites for EXISTING accounts (issue #118,
@@ -17220,7 +17843,10 @@ paths:
         stays valid for the right person, and the attempt is recorded in the
         audit log); an account that already reaches the cabinet through a
         cabinet- or organization-level membership — 409 `team.already_member`
-        (changing a role is `updateMember`'s job).
+        (changing a role is `updateMember`'s job); an invite the platform
+        made for a new organization's first owner (`inviteOrganizationOwner`)
+        once somebody else has joined the organization — 409
+        `platform.organization_has_members`.
       x-mcp:
         expose: false
         reason: >-
@@ -17249,6 +17875,7 @@ paths:
         - auth.origin_rejected
         - team.invite_wrong_account
         - team.already_member
+        - platform.organization_has_members
       responses:
         '200':
           description: The membership was added; the invite is accepted and its link spent.
@@ -17888,6 +18515,7 @@ paths:
     get:
       operationId: listMembers
       x-permission: 'team:manage'
+      x-platform-support: none
       summary: List the cabinet's members and pending invites
       x-mcp:
         expose: true
@@ -17980,6 +18608,7 @@ paths:
     patch:
       operationId: updateMember
       x-permission: 'team:manage'
+      x-platform-support: none
       summary: Change a member's role or channel assignments
       # ADR-0050 §1 roles, §6 invariants (last owner / last admin / self-change).
       x-mcp:
@@ -18088,6 +18717,7 @@ paths:
     delete:
       operationId: removeMember
       x-permission: 'team:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -18154,6 +18784,7 @@ paths:
     post:
       operationId: inviteMember
       x-permission: 'team:manage'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -18253,6 +18884,8 @@ paths:
         # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
         - idempotency.key_reused
         - idempotency.in_progress
+        # ADR-0125: made with a key the client's first member took away.
+        - platform.organization_has_members
       responses:
         '201':
           description: >
@@ -18297,6 +18930,7 @@ paths:
     delete:
       operationId: revokeInvite
       x-permission: 'team:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -18377,6 +19011,7 @@ paths:
     get:
       operationId: getSettingsSection
       x-permission: 'settings:manage'
+      x-platform-support: read
       summary: Get one section of the cabinet's settings
       # ADR-0057 §4: secrets are write-only; neither value nor reference is returned.
       x-mcp:
@@ -18441,6 +19076,7 @@ paths:
     put:
       operationId: putSettingsSection
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: Replace one section of the cabinet's settings
       # ADR-0057 §4 (write-only secrets, the model of ADR-0046).
       x-mcp:
@@ -19066,6 +19702,136 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /platform/organizations/{organizationId}/owner-invite:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        description: The organization id.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: inviteOrganizationOwner
+      x-permission: 'platform:admin'
+      summary: Invite a new organization's first owner (platform operator)
+      # ADR-0125: the platform's only way to put the first person into a new
+      # client's organization; inviteMember is closed to operators outside a
+      # cabinet they belong to. No x-idempotency: the generic layer does not
+      # serve platform operations (permissions.Validate refuses it there).
+      description: >-
+        Invites the first owner of a new client organization: the person
+        with this email is invited with the role `org_owner` into the
+        cabinet `cabinetId`, which must belong to this organization; accepting
+        it makes the person an owner of the whole organization. The invite
+        mail is sent to the email. When the email has no account yet
+        (`invite.kind` `new_account`) the link sets the account's password,
+        so it travels by mail only: the response carries no `inviteUrl`, and
+        while the platform sends mail with `transport: log` the call answers
+        409 `mail.not_configured` and creates nothing. When the email already
+        has an account (`existing_account`) the link only adds the
+        membership and works only in that account's own session, so the
+        response also carries it once in `inviteUrl`.
+
+
+        Open only while the organization has never had a member: once
+        anybody has joined it (the owner accepting this invite included) it
+        answers 409 `platform.organization_has_members`, and further people
+        are invited by the organization's own administrators with
+        `inviteMember`. Inviting the same email again replaces its previous
+        invite with a new link; an invite to another email does not touch
+        the earlier ones. When the first person joins, every other invite
+        still pending in the organization's cabinets (made by this operation
+        or any other before that moment) is revoked, and the link of an
+        invite made by this operation that is used later anyway answers 409
+        `platform.organization_has_members`. The email of an active
+        platform operator is refused with 422 `platform.owner_is_operator`:
+        a client's owner is somebody outside the platform team.
+
+
+        A cabinet of another organization, or an unknown one, answers 404
+        `tenancy.cabinet_not_found`; an unknown organization 404
+        `tenancy.organization_not_found`. Not idempotent: each call mints a
+        new link. Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (`platform:admin`): emails a person on
+          behalf of a new customer, and the response may carry an invite
+          link.
+      tags:
+        - platform
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteOrganizationOwnerRequest'
+            example:
+              cabinetId: 5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b
+              email: owner@kovalenko.example
+              displayName: Oksana Kovalenko
+              locale: uk
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.organization_not_found
+        - tenancy.cabinet_not_found
+        - platform.organization_has_members
+        - platform.owner_is_operator
+        - mail.not_configured
+        - team.account_exists
+        - team.already_member
+        - tenancy.quota_exceeded
+        - provider.unavailable
+      responses:
+        '201':
+          description: >-
+            The invite was created and its mail queued. `inviteUrl` is
+            present only for an `existing_account` invite, in this response
+            and nowhere else, ever.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationOwnerInviteResult'
+              example:
+                invite:
+                  id: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
+                  email: owner@kovalenko.example
+                  kind: new_account
+                  role: org_owner
+                  channelIds: []
+                  invitedBy:
+                    type: account
+                    id: 9e8d7c6b-5a49-4382-a1b0-c9d8e7f6a5b4
+                    email: operator@linqelio.example
+                  createdAt: '2026-10-24T10:15:00Z'
+                  expiresAt: '2026-10-27T10:15:00Z'
+                expiresAt: '2026-10-27T10:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ===========================================================================
   # App registry (ADR-0122): the platform operators' CRUD over oauth_apps
   # ===========================================================================
@@ -19507,6 +20273,7 @@ paths:
     get:
       operationId: getMyOrganization
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Get the caller's organization
       description: >-
         Returns the organization that owns the cabinet the caller acts in: its
@@ -19565,6 +20332,7 @@ paths:
     patch:
       operationId: updateMyOrganization
       x-permission: 'billing:manage'
+      x-platform-support: none
       # R7-B (#36, ADR-0080): still served while the organization is suspended.
       x-suspension: allowed
       x-suspension-reason: >
@@ -19648,6 +20416,7 @@ paths:
     get:
       operationId: getMyOrganizationUsage
       x-permission: 'settings:manage'
+      x-platform-support: tech
       summary: Get the caller's organization usage against its limits
       # ADR-0078: counted by the same functions quota reservation uses.
       description: >-
@@ -19736,6 +20505,7 @@ paths:
     get:
       operationId: listContactFields
       x-permission: 'channels:read'
+      x-platform-support: tech
       summary: List the cabinet's typed contact field definitions
       # ADR-0061 §1 (the schema belongs to the cabinet).
       description: >-
@@ -19815,6 +20585,7 @@ paths:
     put:
       operationId: putContactField
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: Create or update one contact field definition
       # ADR-0061 §8 (the type of a field is immutable).
       description: >-
@@ -19919,6 +20690,7 @@ paths:
     delete:
       operationId: deleteContactField
       x-permission: 'settings:manage'
+      x-platform-support: none
       summary: Delete one contact field definition (values are kept)
       # ADR-0061 §8 (orphaned values stay).
       description: >-
@@ -19966,6 +20738,7 @@ paths:
     get:
       operationId: getContactFields
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Read a contact's typed field values with their provenance
       # ADR-0061 §8 (values under a deleted definition are hidden).
       description: >-
@@ -20028,6 +20801,7 @@ paths:
     patch:
       operationId: setContactFields
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Set or clear typed field values on a contact
       # ADR-0061 (typed fields, §4 the authority ladder); ADR-0053 (desk projection).
       x-mcp:
@@ -20144,6 +20918,7 @@ paths:
     get:
       operationId: listContactMergeProposals
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List possible duplicate contacts (merge proposals)
       # ADR-0008 §2 (deterministic detection only); ADR-0060 §5 (LID pairs).
       x-mcp:
@@ -20227,6 +21002,7 @@ paths:
     get:
       operationId: getContactMergeProposal
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get one merge proposal
       description: >-
         Returns one proposal: the two contacts that may be the same person
@@ -20306,6 +21082,7 @@ paths:
     post:
       operationId: dismissContactMergeProposal
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Dismiss a merge proposal — the two are different people
       description: >-
         Marks the proposal dismissed: the two contacts are different people,
@@ -20394,6 +21171,7 @@ paths:
     get:
       operationId: listContactMerges
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: List contact merges, newest first
       description: >-
         Returns the cabinet's merge history, newest first — undone merges
@@ -20477,6 +21255,7 @@ paths:
     post:
       operationId: mergeContacts
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -20604,6 +21383,7 @@ paths:
     get:
       operationId: getContactMerge
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get one contact merge
       description: >-
         Returns one recorded merge: which contact stayed (`survivorId`) and
@@ -20684,6 +21464,7 @@ paths:
     post:
       operationId: undoContactMerge
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Undo a contact merge
       x-mcp:
         expose: false
@@ -20795,6 +21576,7 @@ paths:
     get:
       operationId: streamEvents
       x-permission: 'channels:read'
+      x-platform-support: none
       summary: Subscribe to the cabinet's live events (Server-Sent Events)
       # ADR-0031: fed from the same event log as the outbound webhooks.
       description: >
@@ -21005,6 +21787,7 @@ paths:
     get:
       operationId: listContactDigests
       x-permission: 'channels:read'
+      x-platform-support: read
       summary: Get status, tags and last activity for a set of contacts
       description: >-
         Returns, for each of up to 200 contacts, what the contact object itself
@@ -21089,6 +21872,7 @@ paths:
     post:
       operationId: uploadContactImport
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-idempotency: replay
       summary: Upload a CSV file of contacts to import
       x-mcp:
@@ -21203,6 +21987,7 @@ paths:
     get:
       operationId: listContactImports
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: List the cabinet's recent contact imports
       description: >-
         Returns the 50 most recent contact import jobs of the cabinet, newest
@@ -21279,6 +22064,7 @@ paths:
     get:
       operationId: getContactImport
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Get one import job and its progress
       description: >-
         Returns the job's state (`uploaded` → `queued` → `running` →
@@ -21370,6 +22156,7 @@ paths:
     post:
       operationId: previewContactImport
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Dry-run a column mapping over the first rows
       # ADR-0084 (an import states consent explicitly, per channel).
       x-mcp:
@@ -21502,6 +22289,7 @@ paths:
     post:
       operationId: startContactImport
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -21635,6 +22423,7 @@ paths:
     post:
       operationId: cancelContactImport
       x-permission: 'contacts:write'
+      x-platform-support: none
       x-suspension: allowed
       x-suspension-reason: >
         Cancelling only stops an import (and drops its file); refusing it while the organization is suspended would leave the run to continue the moment the organization resumes.
@@ -21720,6 +22509,7 @@ paths:
     get:
       operationId: getContactImportReport
       x-permission: 'contacts:write'
+      x-platform-support: none
       summary: Download the per-row report of an import
       x-mcp:
         expose: false
@@ -21766,6 +22556,7 @@ paths:
     post:
       operationId: createContactExport
       x-permission: 'contacts:export'
+      x-platform-support: none
       x-idempotency: replay
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
@@ -21857,6 +22648,7 @@ paths:
     get:
       operationId: listContactExports
       x-permission: 'contacts:export'
+      x-platform-support: none
       summary: List the caller's recent exports
       description: >-
         Returns the caller's own 50 most recent contact exports in the cabinet,
@@ -21926,6 +22718,7 @@ paths:
     get:
       operationId: getContactExport
       x-permission: 'contacts:export'
+      x-platform-support: none
       summary: Get one of the caller's exports
       description: >-
         Returns the export's state (`queued` → `running` → `completed`, or
@@ -22001,6 +22794,7 @@ paths:
     get:
       operationId: downloadContactExport
       x-permission: 'contacts:export'
+      x-platform-support: none
       summary: Download a completed export
       # ADR-0056 §1 (our own surfaces never get a bearer link; the object store
       # is not published).
@@ -22434,6 +23228,15 @@ components:
       in: path
       required: true
       description: A connected app's id, as listMyOAuthGrants or listCabinetOAuthGrants report it.
+      schema:
+        type: string
+        format: uuid
+
+    SupportAccessGrantId:
+      name: grantId
+      in: path
+      required: true
+      description: A support access window's id, as listSupportAccessGrants reports it.
       schema:
         type: string
         format: uuid
@@ -23082,7 +23885,8 @@ components:
         **Platform mail**
 
         - `mail.not_configured` — (409) the platform sends mail with
-          `transport: log`, so there is no mail server to test. A platform
+          `transport: log`, so there is no mail server: nothing to test, and
+          no invite of a new owner's account can be delivered. A platform
           operator configures one with `updateMailSettings`.
 
         The next six never come as an HTTP status: they are the `errorCode`
@@ -23102,6 +23906,30 @@ components:
           `timeoutSeconds`.
         - `mail.secret_unavailable` — the platform could not read the stored
           password. Set the password again, or try later.
+
+        **Platform operator and support access**
+
+        - `platform.support_access_required` — (403) a platform operator who is
+          not a member of the cabinet asked for something their reach does not
+          cover: a read of the cabinet's data with no active access grant, or
+          an operation that is closed to operators. Ask the cabinet's owner or
+          admin for a support access grant; retrying does not help.
+        - `platform.organization_has_members` — (409) the organization has had
+          members, so a platform caller may not issue or rotate its cabinet
+          key, move its cabinet or invite its owner. The organization's own
+          owner does it.
+        - `platform.owner_is_operator` — (422) the first owner of an
+          organization cannot be the email of an active platform operator.
+          Name the customer's own email.
+        - `support.grant_not_found` — (404) no such support access grant in
+          this cabinet (it may have been removed or never existed).
+        - `support.emergency_self_approval` — (409) the operator who requested
+          an emergency access cannot confirm it; another active operator
+          must.
+        - `support.emergency_not_pending` — (409) the emergency access request
+          is already confirmed, revoked or expired, so it cannot be confirmed.
+        - `support.emergency_not_revocable` — (409) an emergency access cannot
+          be withdrawn by the cabinet; it ends by itself at its `expiresAt`.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -23571,6 +24399,15 @@ components:
         - mail.timeout
         - mail.secret_unavailable
         # --- END platform mail ----------------------------------------------------
+        # --- BEGIN platform support access (ADR-0125) -----------------------------
+        - platform.support_access_required
+        - platform.organization_has_members
+        - platform.owner_is_operator
+        - support.grant_not_found
+        - support.emergency_self_approval
+        - support.emergency_not_pending
+        - support.emergency_not_revocable
+        # --- END platform support access ------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -26129,16 +26966,22 @@ components:
       properties:
         phone:
           type: string
-          pattern: '^[0-9]{7,15}$'
           description: >
             The phone number of the account, digits only, with its country code
             and no `+` (for example `380501234567`). Treat two numbers as the
-            same when their digits are equal.
+            same when their digits are equal. A platform support operator
+            working in the cabinet without its support access grant sees it
+            masked to the country code and the last three digits
+            (`+380 … 567`) in every answer that carries the account
+            (`listChannels`, `getChannelStatus`, `connectChannel`,
+            `requestChannelPairingCode`).
         providerId:
           type: string
           description: >
             The account's identifier at the messenger (a WhatsApp JID, a
-            Telegram user id). Opaque; use it only to tell accounts apart.
+            Telegram user id). Opaque; use it only to tell accounts apart. For
+            a platform support operator without the cabinet's support access
+            every run of seven or more digits in it is masked like `phone`.
       required:
         - phone
         - providerId
@@ -27231,7 +28074,10 @@ components:
           description: The subscription the delivery was for (a UUID).
         url:
           type: string
-          description: The endpoint that would not accept it.
+          description: >-
+            The endpoint that would not accept it: its scheme and host only
+            (`https://crm.example.com`). The path and query of a receiver's
+            address can carry its secret and are not shown.
         eventId:
           type: string
           description: The id of the event that was being delivered.
@@ -27246,7 +28092,11 @@ components:
           description: HTTP status of the last attempt; absent when it never got a response (a network error).
         error:
           type: string
-          description: Transport or status error recorded on the last attempt; absent when none was recorded.
+          description: >-
+            Transport or status error recorded on the last attempt, at most
+            300 bytes, with numbers, quoted values and tokens masked (an
+            echoed request would carry a contact's data); absent when none
+            was recorded.
         createdAt:
           type: string
           format: date-time
@@ -28004,12 +28854,280 @@ components:
           description: The assigned channels when allChannels is false; empty otherwise.
           items:
             type: string
+        supportAccess:
+          $ref: '#/components/schemas/SupportAccessMode'
       required:
         - cabinetId
         - roles
         - permissions
         - allChannels
         - channelIds
+    SupportAccessGrantKind:
+      type: string
+      description: >-
+        Who opened a support access window: `client` — an administrator of the
+        cabinet; `emergency` — two platform operators, with a stated reason.
+      enum:
+        - client
+        - emergency
+      # Named apart from the Client type and other `client` constants.
+      x-enum-varnames:
+        - SupportGrantKindClient
+        - SupportGrantKindEmergency
+    SupportAccessGrantStatus:
+      type: string
+      description: >-
+        Where a window stands now: `pending` — an emergency request not yet
+        confirmed by a second operator; `active` — operators can read the
+        cabinet; `expired` — its time ran out (or a request was never
+        confirmed in time); `revoked` — withdrawn.
+      enum:
+        - pending
+        - active
+        - expired
+        - revoked
+      # Named apart from other enums with the same values.
+      x-enum-varnames:
+        - SupportGrantStatusPending
+        - SupportGrantStatusActive
+        - SupportGrantStatusExpired
+        - SupportGrantStatusRevoked
+    SupportAccessClient:
+      type: object
+      description: The cabinet's own person who opened a window.
+      properties:
+        id:
+          type: string
+          description: The account id (UUID).
+        email:
+          type: string
+          description: The person's e-mail.
+        displayName:
+          type: string
+          description: The name shown in the console; may be empty.
+      required:
+        - id
+        - email
+        - displayName
+    SupportAccessOperator:
+      type: object
+      description: >-
+        A platform operator, by name only — the cabinet is not told an
+        operator's e-mail.
+      properties:
+        displayName:
+          type: string
+          description: The operator's name; may be empty.
+      required:
+        - displayName
+    SupportAccessGrant:
+      type: object
+      description: >
+        One window that lets the platform's support staff read this cabinet.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The window's id.
+        kind:
+          $ref: '#/components/schemas/SupportAccessGrantKind'
+        status:
+          $ref: '#/components/schemas/SupportAccessGrantStatus'
+        reason:
+          type: string
+          description: Why the window was opened, in the words of whoever opened it.
+        category:
+          type: string
+          description: >-
+            For an emergency window, why: `legal`, `abuse` or `unreachable`.
+            Absent for a window opened by the cabinet.
+        durationHours:
+          type: integer
+          description: How long the window lasts once open — 1, 4 or 24.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the window was opened (or the emergency requested).
+        approvedAt:
+          type: string
+          format: date-time
+          description: When a second operator confirmed an emergency window.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            When the window stops working. Absent while an emergency request
+            awaits confirmation.
+        revokedAt:
+          type: string
+          format: date-time
+          description: When the window was withdrawn; absent if it was not.
+        grantedBy:
+          $ref: '#/components/schemas/SupportAccessClient'
+        requestedBy:
+          $ref: '#/components/schemas/SupportAccessOperator'
+        approvedBy:
+          $ref: '#/components/schemas/SupportAccessOperator'
+      required:
+        - id
+        - kind
+        - status
+        - reason
+        - durationHours
+        - createdAt
+    SupportAccessGrantList:
+      type: object
+      description: The answer of `listSupportAccessGrants`.
+      properties:
+        items:
+          type: array
+          description: The windows, newest first.
+          items:
+            $ref: '#/components/schemas/SupportAccessGrant'
+      required:
+        - items
+    CreateSupportAccessGrantRequest:
+      type: object
+      description: The body of `createSupportAccessGrant`.
+      properties:
+        durationHours:
+          type: integer
+          description: How long the window stays open, counted from now — 1, 4 or 24.
+          enum: [1, 4, 24]
+          x-enum-varnames:
+            - SupportAccessDurationHour
+            - SupportAccessDurationFourHours
+            - SupportAccessDurationDay
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Why support should look — kept with the window.
+      required:
+        - durationHours
+        - reason
+      additionalProperties: false
+    SupportEmergencyCategory:
+      type: string
+      description: >-
+        Why two operators open emergency access: `legal` — a legal demand;
+        `abuse` — suspected abuse of the platform; `unreachable` — the
+        cabinet's owners cannot be reached.
+      enum:
+        - legal
+        - abuse
+        - unreachable
+      x-enum-varnames:
+        - SupportEmergencyCategoryLegal
+        - SupportEmergencyCategoryAbuse
+        - SupportEmergencyCategoryUnreachable
+    RequestEmergencyAccessRequest:
+      type: object
+      description: The body of `requestEmergencyAccess`.
+      properties:
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet to read.
+        category:
+          $ref: '#/components/schemas/SupportEmergencyCategory'
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          description: Why the cabinet must be read; shown to the cabinet's administrators.
+        durationHours:
+          type: integer
+          description: How long the window lasts once confirmed — 1, 4 or 24.
+          enum: [1, 4, 24]
+          x-enum-varnames:
+            - SupportEmergencyDurationHour
+            - SupportEmergencyDurationFourHours
+            - SupportEmergencyDurationDay
+      required:
+        - cabinetId
+        - category
+        - reason
+        - durationHours
+      additionalProperties: false
+    PlatformSupportAccessGrant:
+      description: A support access window with the cabinet it belongs to.
+      allOf:
+        - $ref: '#/components/schemas/SupportAccessGrant'
+        - type: object
+          properties:
+            cabinetId:
+              type: string
+              format: uuid
+              description: The cabinet the window opens.
+            cabinetName:
+              type: string
+              description: The cabinet's name.
+            organizationName:
+              type: string
+              description: The name of the organization that owns the cabinet.
+            requestedByMe:
+              type: boolean
+              description: >-
+                True when the caller is the operator who filed this window's
+                emergency request, so the caller cannot confirm it. Always
+                false for a window opened by the cabinet.
+          required:
+            - cabinetId
+            - cabinetName
+            - organizationName
+            - requestedByMe
+    PlatformSupportAccessList:
+      type: object
+      description: The answer of `listPlatformSupportAccess`.
+      properties:
+        items:
+          type: array
+          description: The windows and pending requests, newest first.
+          items:
+            $ref: '#/components/schemas/PlatformSupportAccessGrant'
+      required:
+        - items
+    # ADR-0125: present only for a platform operator who is not a member of the
+    # cabinet.
+    SupportAccessMode:
+      type: object
+      description: >
+        How a platform operator reaches this cabinet when they are not one of
+        its members. Absent for members, who act with their membership roles
+        alone.
+      properties:
+        mode:
+          type: string
+          enum: [tech, read]
+          # Named, or the generator collides `read` with MsgStatus's and renames
+          # every enum constant of the contract.
+          x-enum-varnames:
+            - SupportAccessModeTech
+            - SupportAccessModeRead
+          description: >
+            `tech` — technical operations only (no client data); `read` —
+            read-only access to client data while a support grant is active.
+        grantId:
+          type: string
+          description: The active support grant (UUID); present when mode is `read`.
+        kind:
+          type: string
+          enum: [client, emergency]
+          # Named, or `client` collides with the Client type.
+          x-enum-varnames:
+            - SupportAccessModeKindClient
+            - SupportAccessModeKindEmergency
+          description: >
+            Who opened the grant: `client` — the cabinet's own administrator;
+            `emergency` — two operators, with a reason. Present when mode is
+            `read`.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the grant stops working; present when mode is `read`.
+      required:
+        - mode
     Me:
       type: object
       description: >
@@ -28925,6 +30043,66 @@ components:
         - invite
         - inviteUrl
         - expiresAt
+    OrganizationOwnerInviteResult:
+      type: object
+      # ADR-0125: a new account's link sets its password; an operator who
+      # held it could take over the client's organization, so it is mailed
+      # only.
+      description: >-
+        The answer of `inviteOrganizationOwner`: the invite, and its link
+        only when the link cannot set a password.
+      properties:
+        invite:
+          $ref: '#/components/schemas/TeamInvite'
+        inviteUrl:
+          type: string
+          description: >
+            The invite link of an `existing_account` invite — a secret for as
+            long as it lives (single use, 72 h), returned here once and never
+            again. Absent for a `new_account` invite: that link goes by mail
+            only.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the link stops working (UTC, RFC 3339).
+      required:
+        - invite
+        - expiresAt
+    InviteOrganizationOwnerRequest:
+      type: object
+      description: >-
+        The body of `inviteOrganizationOwner`: the cabinet to invite the
+        first owner into, and who the owner is.
+      properties:
+        cabinetId:
+          type: string
+          format: uuid
+          description: >-
+            A cabinet of the organization; the invite is listed among this
+            cabinet's pending invites.
+        email:
+          type: string
+          minLength: 3
+          maxLength: 320
+          description: The owner's email; the invite mail is sent there.
+        displayName:
+          type: string
+          maxLength: 200
+          description: >-
+            The name to give a new account. Ignored when the account already
+            exists.
+        locale:
+          type: string
+          description: >-
+            The owner's interface language; the account default when
+            omitted. `uk` — Ukrainian; `en` — English; `ru` — Russian.
+          enum:
+            - uk
+            - en
+            - ru
+      required:
+        - cabinetId
+        - email
     UpdateMemberRequest:
       type: object
       description: >-
