@@ -9,6 +9,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's operator support access (ADR-0125:
+  every cabinet operation carries `x-platform-support`; support access windows
+  `listSupportAccessGrants`, `createSupportAccessGrant`,
+  `revokeSupportAccessGrant`; platform operators' `listPlatformSupportAccess`,
+  `requestEmergencyAccess`, `approveEmergencyAccess`, `inviteOrganizationOwner`).
+  New error codes: `platform.support_access_required`,
+  `platform.organization_has_members`, `platform.owner_is_operator`,
+  `support.grant_not_found`, `support.emergency_self_approval`,
+  `support.emergency_not_pending`, `support.emergency_not_revocable` (now
+  `ErrorCode` cases). No new SDK methods: the 7 new operations are classified as
+  not wrapped (console session or platform:admin).
 - Contract fixture synced with Linqelio's channel account check (ADR-0124:
   `expectedPhone` on `connectChannel`, `account` and `lastError` on
   `getChannelStatus`). New error codes: `channel.account_mismatch`,

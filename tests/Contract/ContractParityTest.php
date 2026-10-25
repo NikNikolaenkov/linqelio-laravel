@@ -215,6 +215,17 @@ final class Contract
         'updateMailSettings' => 'platform:admin only — carries the SMTP password',
         'testMailSettings' => 'platform:admin only',
 
+        // Operator support access (Linqelio ADR-0125). Letting the platform's
+        // support read a cabinet is a person's decision in the console, and the
+        // emergency path and the first owner's invite are platform operators'.
+        'listSupportAccessGrants' => 'console data-security section — a person reviews who may read the cabinet',
+        'createSupportAccessGrant' => 'console data-security section — granting support access is a decision for a person',
+        'revokeSupportAccessGrant' => 'console data-security section — paired with createSupportAccessGrant',
+        'listPlatformSupportAccess' => 'platform:admin only',
+        'requestEmergencyAccess' => 'platform:admin only — one operator of two in the emergency path',
+        'approveEmergencyAccess' => 'platform:admin only — the second operator of the emergency path',
+        'inviteOrganizationOwner' => 'platform:admin only — the invite link is mailed to the owner',
+
         // Platform administration needs the platform:admin scope, which client
         // keys are not given. Wrapping it would suggest an application can call
         // it, and it cannot.

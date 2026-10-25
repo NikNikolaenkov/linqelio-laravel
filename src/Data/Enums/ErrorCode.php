@@ -156,6 +156,20 @@ enum ErrorCode: string
     case PlatformLastOperator = 'platform.last_operator';
     case PlatformAccountNotFound = 'platform.account_not_found';
     case PlatformOperatorNotFound = 'platform.operator_not_found';
+    /** A platform operator reached cabinet data without a support access window (403), ADR-0125. */
+    case PlatformSupportAccessRequired = 'platform.support_access_required';
+    /** The organization has had members; the platform no longer acts in it (409), ADR-0125. */
+    case PlatformOrganizationHasMembers = 'platform.organization_has_members';
+    /** A platform operator cannot be an organization's first owner (422), ADR-0125. */
+    case PlatformOwnerIsOperator = 'platform.owner_is_operator';
+
+    case SupportGrantNotFound = 'support.grant_not_found';
+    /** An operator tried to confirm their own emergency access request (409), ADR-0125. */
+    case SupportEmergencySelfApproval = 'support.emergency_self_approval';
+    /** The emergency access request is no longer waiting for confirmation (409), ADR-0125. */
+    case SupportEmergencyNotPending = 'support.emergency_not_pending';
+    /** The client cannot withdraw emergency access; it ends on its own (409), ADR-0125. */
+    case SupportEmergencyNotRevocable = 'support.emergency_not_revocable';
 
     /** A settings section was written from a stale version (412). */
     case SettingsVersionConflict = 'settings.version_conflict';
