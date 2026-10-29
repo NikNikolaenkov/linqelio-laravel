@@ -76,4 +76,16 @@ final readonly class MediaResource
     {
         return $this->client->getRaw("/messages/{$messageId}/media");
     }
+
+    /**
+     * Read back a file uploaded with {@see self::upload()}, streamed through the platform.
+     *
+     * The id is the last segment of the `url` that `upload()` answered. Uploads
+     * belong to the cabinet, so any key with `messages:send` in it can read
+     * them; an id from another cabinet is a 404 `media.not_found`.
+     */
+    public function download(string $mediaId): BinaryResponse
+    {
+        return $this->client->getRaw("/media/{$mediaId}");
+    }
 }

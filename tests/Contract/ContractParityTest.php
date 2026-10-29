@@ -90,6 +90,7 @@ final class Contract
 
         'uploadMedia' => 'media()->upload()',
         'getMessageMedia' => 'media()->fetch()',
+        'getUploadedMedia' => 'media()->download()',
 
         'createEmbedSession' => 'embed()->session()',
 
@@ -826,6 +827,9 @@ function contractDrivers(): array
         ],
         'getMessageMedia' => [
             'call' => fn () => Linqelio::media()->fetch('m-1'),
+        ],
+        'getUploadedMedia' => [
+            'call' => fn () => Linqelio::media()->download('md-1'),
         ],
 
         'createEmbedSession' => [

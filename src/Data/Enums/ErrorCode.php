@@ -41,6 +41,8 @@ enum ErrorCode: string
     case TenancyQuotaExceeded = 'tenancy.quota_exceeded';
     case TenancyOrganizationNotFound = 'tenancy.organization_not_found';
     case TenancySuspended = 'tenancy.suspended';
+    /** The cabinet still has channels or a connected desk and cannot be deleted (409), ADR-0126. */
+    case TenancyCabinetNotEmpty = 'tenancy.cabinet_not_empty';
 
     case KeyringRotationOverlapRequired = 'keyring.rotation_overlap_required';
 
@@ -119,6 +121,11 @@ enum ErrorCode: string
     case MessageTypeUnsupported = 'message.type_unsupported';
     case MessageTooLarge = 'message.too_large';
     case MessageNotFound = 'message.not_found';
+
+    /** The media id is unknown or belongs to another cabinet (404), ADR-0126. */
+    case MediaNotFound = 'media.not_found';
+    /** The stored file failed its integrity check (500); retrying does not help, ADR-0126. */
+    case MediaUnreadable = 'media.unreadable';
 
     case ConversationNotFound = 'conversation.not_found';
     case ThreadNotFound = 'thread.not_found';

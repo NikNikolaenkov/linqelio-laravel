@@ -155,6 +155,10 @@ Reading an inbound attachment goes through the platform, not the object store:
 return Linqelio::media()->fetch($messageId)->toResponse();
 ```
 
+A file you uploaded can be read back the same way with
+`Linqelio::media()->download($mediaId)`, the id being the last segment of the
+`url` that the upload answered.
+
 The URL stored on an old message is a presigned link that has long expired. The
 fetch above streams the bytes under your key, and sets `nosniff` — the content
 type comes from whoever sent the file, so serving it unguarded on your own

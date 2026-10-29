@@ -9,6 +9,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - Contract fixture synced with Linqelio's operator support access (ADR-0125:
   every cabinet operation carries `x-platform-support`; support access windows
   `listSupportAccessGrants`, `createSupportAccessGrant`,
@@ -194,6 +198,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - `Contact` carries `hostRefs`, with `hostRef('crm')` to read one back. They were
   writable through `contacts()->update()` and unreadable from the result, so the
   one question a link exists to answer — "is this person already my customer
@@ -219,6 +227,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - `channels()->create()` takes an optional `$idempotencyKey`. The platform now
   reads the header on channel provisioning, so a retry carrying the same key
   replays — it answers with the channel the first attempt created instead of
@@ -260,6 +272,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - `webhooks()->register()` takes the signing key itself as `secret`, and asks the
   platform to mint one when given neither `secret` nor `secretRef`.
 
@@ -302,6 +318,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - `messages()->find()` and the `MessageStatusChanged` event, together answering
   what a send actually did. `send()` returns when the platform accepts the
   command, not when the provider is reached — and until the platform grew
@@ -387,6 +407,10 @@ the fixes landed:
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - `contacts()->erase()` for subject deletion requests. Not a delete of the
   contact record — messages hold the person's number in their own columns with no
   link back to cascade through, so the platform redacts them in one transaction.
@@ -414,6 +438,10 @@ the fixes landed:
 
 ### Added
 
+- `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
+  (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
+  encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,
+  `media.not_found`, `media.unreadable` (now `ErrorCode` cases).
 - Typed client over the Linqelio API: channels, contacts, messages, media,
   conversations and embed sessions.
 - `Idempotency-Key` on every unsafe command, generated when not supplied and
