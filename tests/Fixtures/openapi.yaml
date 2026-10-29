@@ -1638,10 +1638,18 @@ paths:
       x-permission: 'platform:admin'
       summary: Delete a cabinet and everything in it (platform operator)
       description: >-
-        Permanently removes the cabinet with its channels, users,
-        memberships, API keys, contacts, conversations and messages. This is the
-        cabinet-level counterpart of `eraseContact`, used to offboard a client.
-        It cannot be undone; there is no soft delete and no restore.
+        Permanently removes the cabinet with its users, memberships, API
+        keys, contacts, conversations and messages, and queues every file it
+        stored for deletion from the object store. This is the cabinet-level
+        counterpart of `eraseContact`, used to offboard a client. It cannot be
+        undone; there is no soft delete and no restore.
+
+
+        Only an emptied cabinet is deleted. While it still has a channel or a
+        connected desk (a Bitrix24 or Creatio installation), the answer is 409
+        `tenancy.cabinet_not_empty` and nothing changes: delete its channels
+        (`deleteChannel`, which also logs out the messenger session and drops
+        its webhooks and credentials) and unlink its desk first.
 
 
         The audit trail is the one thing that survives: its entries are
@@ -1681,6 +1689,8 @@ paths:
         - tenancy.cabinet_not_found
         # issue #119: a malformed (non-uuid) path id.
         - validation.invalid_request
+        # plan 2Д-б Task 7 (ADR-0126): channels or a live desk installation left.
+        - tenancy.cabinet_not_empty
       responses:
         '204':
           description: The cabinet is gone (whether or not it existed).
@@ -1690,6 +1700,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /cabinets/{id}/move:
     post:
@@ -5519,6 +5531,7 @@ paths:
         # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
         - idempotency.key_reused
         - idempotency.in_progress
+        - provider.unavailable
       responses:
         '201':
           description: The draft.
@@ -5580,6 +5593,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
     get:
       operationId: listCampaigns
       x-permission: 'campaigns:manage'
@@ -5836,6 +5851,7 @@ paths:
         - campaign.invalid
         - channel.not_found
         - tenancy.suspended
+        - provider.unavailable
       responses:
         '200':
           description: The updated draft.
@@ -5892,6 +5908,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
     delete:
       operationId: deleteCampaign
       x-permission: 'campaigns:manage'
@@ -6673,6 +6691,7 @@ paths:
         - tenancy.suspended
         # ADR-0121: forum topics.
         - thread.not_found
+        - provider.unavailable
       responses:
         '201':
           description: The scheduled send.
@@ -6730,6 +6749,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
     get:
       operationId: listScheduledSends
       x-permission: 'messages:send'
@@ -6927,6 +6948,7 @@ paths:
         - scheduled_send.state_conflict
         - message.type_unsupported
         - tenancy.suspended
+        - provider.unavailable
       responses:
         '200':
           description: The updated scheduled send.
@@ -6962,6 +6984,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /scheduled-sends/{scheduledSendId}/cancel:
     parameters:
@@ -11063,6 +11087,8 @@ paths:
         - analytics.export_not_found
         - analytics.export_not_ready
         - analytics.export_expired
+        - media.unreadable
+        - provider.unavailable
       responses:
         '200':
           description: The report file.
@@ -11091,6 +11117,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   # ===========================================================================
   # END R11-E analytics (paths)
   # ===========================================================================
@@ -12769,10 +12799,12 @@ paths:
 
         Uploading sends nothing to anybody. The file may be at most 32 MiB
         (413 `message.too_large`), though each messenger has its own, usually
-        smaller, limit that the send enforces. The returned url is
-        time-limited: send the message soon after uploading. Requires the
-        `message:send` capability; refused while the organization is
-        suspended.
+        smaller, limit that the send enforces. The file is stored encrypted
+        under the cabinet's key and the returned url is a platform URL
+        (`<API base>/v1/media/{id}`, as `uploadMedia` answers), not a storage
+        link: put it in the send as it is. 503 `provider.unavailable` when the
+        file cannot be stored right now (retry). Requires the `message:send`
+        capability; refused while the organization is suspended.
       x-mcp:
         expose: false
         reason: >-
@@ -12813,6 +12845,7 @@ paths:
         - embed.token_expired
         - message.too_large
         - tenancy.suspended
+        - provider.unavailable
       responses:
         '201':
           description: The stored attachment.
@@ -12821,7 +12854,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/UploadedMedia'
               example:
-                url: https://media.example.com/out/5a1c7e2e/01J9Z3K4M5N6P7Q8R9S0T1V2W6.pdf?X-Signature=example
+                id: 01J9Z3K4M5N6P7Q8R9S0T1V2W6.pdf
+                url: https://api.example.com/v1/media/01J9Z3K4M5N6P7Q8R9S0T1V2W6.pdf
                 mime: application/pdf
                 filename: invoice-1045.pdf
                 size: 48213
@@ -12833,6 +12867,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /embed/agent/messages/{id}/media:
     get:
@@ -12843,7 +12879,8 @@ paths:
       summary: Download a message's attachment (operator widget)
       description: >
         Returns the bytes of a message's attachment (image, voice message,
-        document, ...). It is `getMessageMedia` for the Linqelio widget inside
+        document, ...), decrypted, with its length. It is `getMessageMedia`
+        for the Linqelio widget inside
         Bitrix24: the `media.url` of the messages that
         `listEmbedAgentContactMessages` returns points here. Fetch it with the
         operator token in the `Authorization` header and show it from a blob
@@ -12878,6 +12915,8 @@ paths:
         - auth.forbidden_scope
         - embed.token_expired
         - message.not_found
+        - media.unreadable
+        - provider.unavailable
       responses:
         '200':
           description: The attachment bytes.
@@ -12892,6 +12931,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /embed/agent/events/stream:
     get:
@@ -13043,9 +13086,31 @@ paths:
         - name: q
           in: query
           required: false
-          description: >
-            Search: the contact's name, a group's subject, the chat address, the
-            contact's phone numbers and user names (case-insensitive, contains).
+          description: >-
+            Text to search for. Leading and trailing spaces are ignored, and
+            omitted or empty means no search. A conversation matches when any
+            of these holds. (1) Its contact matches as in the contact search
+            of `listContacts`: every word of `q` is the start of a word of the
+            contact's name, or of the messenger name (push name) or username
+            of one of its identities, ignoring letter case; or the whole of
+            `q` is the exact address of one of its identities (a provider id
+            exactly as stored, or a username with or without the leading `@`,
+            case ignored); or the digits of `q`, seven or more, are the whole
+            phone number of one of its identities, or the number part of its
+            provider id, in any formatting (a national number only when the
+            cabinet has a default country). (2) Every word of `q` is the start
+            of a word of the conversation's subject (a group's name), ignoring
+            letter case, so
+            `Family Kov` finds `Family Kovalenko`. (3) The whole of `q` is the
+            conversation's chat address, exactly. Words are runs of letters
+            and digits; other punctuation splits them, but an apostrophe (`'`,
+            `’`, `ʼ`, `` ` ``, `´`) does not, as in `listContacts`: `O’Brien`
+            and `Brien` find `O'Brien`. Words shorter than two characters are
+            skipped, a word
+            is matched by its first 12 characters, and only the first five
+            distinct words are used. A part of a word (`lena`), of a number
+            or of a chat address finds nothing. The search never widens the
+            caller's channels.
           schema:
             type: string
             maxLength: 100
@@ -13493,11 +13558,12 @@ paths:
         contact can be reachable on WhatsApp, Telegram and Viber at once.
 
 
-        Use it to find a contact: `q` searches the name and every identity's
-        phone number, username, messenger name and provider id (so
-        `+380 50 123 45 67`, `0501234567`, `olena_k` and `Olena` all work);
-        `channelKind` keeps contacts reachable on one messenger; `tag` keeps
-        contacts with one tag. The filters combine. To poll for people who
+        Use it to find a contact: `q` finds it by the start of a word of its
+        name or of an identity's messenger name or username (`Ole` finds
+        `Olena K`), or by an exact address or phone number (`olena_k`,
+        `@olena_k`, `+380 50 123 45 67`); a part of a word or of a number
+        finds nothing. `channelKind` keeps contacts reachable on one
+        messenger; `tag` keeps contacts with one tag. The filters combine. To poll for people who
         wrote in for the first time, use `status=new`. Once you have an id,
         `getContact` reads one contact and `listContactDigests` adds each
         row's tags and last activity.
@@ -13523,12 +13589,34 @@ paths:
           in: query
           required: false
           description: >-
-            Text to search for, case-insensitive, as a substring of the
-            contact's display name or of any of its identities' phone number,
-            username, messenger name (push name) or provider id. Input with
-            digits also matches phone numbers stored with spaces or dashes, so
-            `0501234567` finds `+380 50 123 45 67`. Leading and trailing spaces
-            are ignored; omitted or empty means no search.
+            Text to search for. Leading and trailing spaces are ignored, and
+            omitted or empty means no search. A contact matches when any of
+            these holds. (1) Every word of `q` is the start of a word of the
+            contact's name, or of the messenger name (push name) or username
+            of one of its identities, ignoring letter case, so `Ole Ko` finds
+            `Olena Kovalenko`. Words are runs of letters and digits, so `_`,
+            `-` and other punctuation split them (`olena_k` is `olena` and
+            `k`). An apostrophe does not split a word, and its variants (`'`,
+            `’`, `ʼ`, `` ` ``, `´`) count as one: a name word with an
+            apostrophe is found both as the whole word without it and by its
+            part after the last apostrophe, so `O’Brien`, `OBrien` and `Brien`
+            all find `O'Brien`. In `q` such a word is used whole only, so
+            `O'Brien` finds `O'Brien` and `OBrien`, while `O Brien` matches by
+            `Brien`. Words shorter than two characters are skipped, a word is
+            matched by its first 12 characters, and only the first five
+            distinct words are used. (2) The whole of `q` is the exact address
+            of one of its identities: a provider id exactly as stored,
+            including letter case, or a username with or without the leading
+            `@` (case ignored). (3) The digits of `q`, seven or more, are the
+            whole phone number of one of its identities, or the number part of
+            its provider id (such as a WhatsApp address), in any formatting,
+            so `+380 50 123 45 67` and `380501234567` find the same contact.
+            The digits are taken from the whole of `q`. A national number such
+            as `0501234567` finds it only when the cabinet has a default
+            country (`messaging_defaults.default_country` in the cabinet
+            settings). A part of a word (`lena`) or a part of a number
+            (`1234567`) finds nothing, and so does a `q` with no usable word,
+            address or number.
           schema:
             type: string
         # BEGIN UI-R2-D contacts page filters (issue #159)
@@ -13615,19 +13703,24 @@ paths:
       summary: Upload an attachment to send
       description: >-
         Stores a file (the raw bytes as the request body, at most 32 MiB) and
-        returns the link to put in a send's `content.media.url` — for
-        `sendContactMessage`, `sendConversationMessage` or
-        `createScheduledSend` with `type` image, audio, video or document.
-        Messengers fetch outbound media by URL, so the returned `url` is an
-        absolute, time-limited link (about an hour): upload right before
-        sending, not in advance.
+        returns the URL to put in a send's `content.media.url` — for
+        `sendContactMessage`, `sendConversationMessage`, `createScheduledSend`
+        or a campaign's content, with `type` image, audio, video or document.
+        The file is stored encrypted under the cabinet's key. The returned
+        `url` is a platform URL, `<API base>/v1/media/{id}` (the path
+        `/v1/media/{id}` alone when the platform does not know its public
+        address) — never a link into storage — and it does not expire: when
+        the message goes out, the platform gives the messenger a short-lived
+        link of its own. The URL names a file of this cabinet only; read the
+        file back with `getUploadedMedia`.
 
 
         The content type comes from `mime`, else the request's Content-Type,
         else it is detected from the bytes. `filename` is kept (up to 120
         characters) so a document arrives with its name. A larger file is 413
-        `message.too_large`; an empty body is 400. Nothing is sent to anyone
-        by the upload itself, and each call stores a new file.
+        `message.too_large`; an empty body is 400; 503 `provider.unavailable`
+        means the file could not be stored right now (retry). Nothing is sent
+        to anyone by the upload itself, and each call stores a new file.
       x-mcp:
         expose: false
         readOnly: false
@@ -13670,6 +13763,7 @@ paths:
         - message.too_large
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        - provider.unavailable
       responses:
         '201':
           description: The stored attachment.
@@ -13678,7 +13772,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/UploadedMedia'
               example:
-                url: https://media.example.com/out/5a1c7e2e/01J9Z4A5B6C7D8E9F0G1H2J3K4.pdf?X-Amz-Expires=3600&X-Amz-Signature=0f1e2d3c
+                id: 01J9Z4A5B6C7D8E9F0G1H2J3K4.pdf
+                url: https://api.example.com/v1/media/01J9Z4A5B6C7D8E9F0G1H2J3K4.pdf
                 mime: application/pdf
                 filename: invoice-10452.pdf
                 size: 184320
@@ -13694,6 +13789,93 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # Plan 2Д-б Task 5 (ADR-0126): uploads are sealed under the cabinet key and
+  # read back through the platform; the object key is "<cabinet>/out/<mediaId>",
+  # the cabinet coming from the credential, never from the id.
+  /media/{mediaId}:
+    get:
+      operationId: getUploadedMedia
+      x-permission: 'messages:send'
+      x-platform-support: none
+      summary: Download a file uploaded to send
+      description: >-
+        Returns a file uploaded with `uploadMedia` — its bytes, content type
+        and length — streamed through the platform and authenticated like
+        every other call. Its path is the `url` that `uploadMedia` answered,
+        so an integration can check what it is about to send. Files are
+        stored encrypted under the cabinet's key; there is no storage link to
+        them.
+        How a file is answered depends on its type. A raster image, audio or
+        video (not SVG) is answered as itself and inline. A document of an
+        inert type — PDF, ZIP, Word, Excel and PowerPoint (`.doc`, `.docx`,
+        `.xlsx`, `.pptx`), OpenDocument (`.odt`, `.ods`, `.odp`), plain text,
+        CSV or RTF — keeps its real content type and is an attachment to
+        download. Anything else (HTML, SVG, XML, script, an unknown type) is
+        `application/octet-stream` as an attachment. Every file comes with
+        `Content-Security-Policy: default-src 'none'; sandbox` and
+        `X-Content-Type-Options: nosniff`.
+
+
+        Uploads belong to the cabinet, not to the person or key that made
+        them: anyone with `messages:send` in the cabinet can read any of its
+        uploads by id. The id is only meaningful in its own cabinet: a file
+        uploaded in another cabinet, an id nothing was uploaded under, or a
+        value that is not a media id is 404 `media.not_found`. 500 `media.unreadable` means
+        the stored file failed its integrity check (retrying does not help);
+        503 `provider.unavailable` that it cannot be read right now (retry
+        later). The response may be cached privately for an hour.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Returns raw file bytes, not JSON; an agent attaches a file by its
+          URL and never needs to read it back.
+      tags:
+        - messages
+      parameters:
+        - name: mediaId
+          in: path
+          required: true
+          description: >-
+            The `id` that `uploadMedia` answered: a ULID followed by the
+            file's extension when it had one, for example
+            `01J9Z4A5B6C7D8E9F0G1H2J3K4.pdf`.
+          schema:
+            type: string
+            pattern: '^[0-9A-HJKMNP-TV-Z]{26}(\.[a-z0-9]{1,7})?$'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - media.not_found
+        - media.unreadable
+        - provider.unavailable
+      responses:
+        '200':
+          description: The file's bytes, with its content type and length.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /messages/{id}:
     get:
@@ -13716,7 +13898,9 @@ paths:
         Prefer the `message.status` webhook for outcomes at scale; this answers
         for one message, which is what a support desk needs when somebody asks
         what happened to a specific reply. A message of another cabinet or of
-        a channel outside the caller's scope is 404 `message.not_found`.
+        a channel outside the caller's scope is 404 `message.not_found`. A
+        media message's `content.media.url` is the platform path
+        `/v1/messages/{id}/media` (`getMessageMedia`), never a storage link.
       x-mcp:
         expose: true
         readOnly: true
@@ -13782,18 +13966,31 @@ paths:
       # streaming it; the 302 is not declared in the responses.
       description: >-
         Streams the attachment bytes of a media message (a photo, voice
-        message, video or document) through the platform, with the stored
-        content type, its length and a suggested file name
-        (`Content-Disposition`). Storage links are private and expire, so this
-        is the way to read an attachment; it is the `media.url` that message
-        lists show. For an outbound message that referenced an external link
-        of the sender's own, the answer is a redirect to that link.
+        message, video or document) through the platform, decrypted, with its
+        length and a suggested file name (`Content-Disposition`). Attachments
+        are stored encrypted and there is no storage link to them, so this is
+        the way to read one; it is the `media.url` that `getMessage`, a send's
+        answer and message lists show. For an outbound message that
+        referenced an external link of the sender's own, the answer is a
+        redirect to that link.
+        How a file is answered depends on its type. A raster image, audio or
+        video (not SVG) is answered as itself and inline. A document of an
+        inert type — PDF, ZIP, Word, Excel and PowerPoint (`.doc`, `.docx`,
+        `.xlsx`, `.pptx`), OpenDocument (`.odt`, `.ods`, `.odp`), plain text,
+        CSV or RTF — keeps its real content type and is an attachment to
+        download. Anything else (HTML, SVG, XML, script, an unknown type) is
+        `application/octet-stream` as an attachment. Every file comes with
+        `Content-Security-Policy: default-src 'none'; sandbox` and
+        `X-Content-Type-Options: nosniff`.
 
 
         Authorization is the message's own visibility: a message of another
         cabinet, of a channel outside the caller's scope, or one without an
-        attachment is 404 `message.not_found`. The response may be cached
-        privately for an hour.
+        attachment is 404 `message.not_found`, as is one whose file is no
+        longer stored. 500 `media.unreadable` means the stored file failed its
+        integrity check (retrying does not help); 503 `provider.unavailable`
+        that it cannot be read right now (retry later). The response may be
+        cached privately for an hour.
       x-mcp:
         expose: false
         readOnly: true
@@ -13819,6 +14016,8 @@ paths:
         - auth.second_factor_required
         - tenancy.cross_cabinet_denied
         - message.not_found
+        - media.unreadable
+        - provider.unavailable
       responses:
         '200':
           description: The attachment bytes.
@@ -13833,6 +14032,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # --- BEGIN M4 comments (paths; issue #188, ADR-0108) -------------------------
   # Moderation is a quick synchronous call to Meta with the channel's own
@@ -14215,6 +14418,8 @@ paths:
         - conversation.not_found
         # A malformed (non-uuid) conversation id.
         - validation.invalid_request
+        - media.unreadable
+        - provider.unavailable
       responses:
         '200':
           description: The thumbnail's bytes.
@@ -14231,6 +14436,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   # --- END M4 comments (paths) -------------------------------------------------
 
   /conversations:
@@ -22823,6 +23032,8 @@ paths:
         - contact.job_not_found
         - contact.job_conflict
         - contact.export_expired
+        - media.unreadable
+        - provider.unavailable
       responses:
         '200':
           description: The export file.
@@ -22847,6 +23058,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   # ===========================================================================
   # END R9-A contact import / export (paths)
   # ===========================================================================
@@ -23485,6 +23700,17 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    UnreadableFile:
+      # ADR-0126 (plan 2Д-б): a stored file that does not authenticate under
+      # its cabinet's key is never served; the event is logged.
+      description: >-
+        The stored file failed its integrity check and is not served
+        (`media.unreadable`). Retrying does not help; report it to support
+        with the request's `instance`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
 
   schemas:
     # =========================================================================
@@ -23562,6 +23788,9 @@ components:
         - `tenancy.suspended` — (403) the organization is suspended, so its
           cabinets are read-only. Reads keep working; changes wait until the
           Linqelio team resumes it.
+        - `tenancy.cabinet_not_empty` — (409) the cabinet still has channels
+          or a connected desk, so it is not deleted. Delete its channels and
+          unlink its desk, then delete the cabinet.
         - `keyring.rotation_overlap_required` — (400) a key rotation's grace
           period must end in the future. Pass a later `graceUntil` or omit it.
         - `keyring.key_not_found` — (404) no key with that `kid` in the
@@ -23643,6 +23872,11 @@ components:
           large (files up to 32 MiB). Send a smaller one.
         - `message.not_found` — (404) no such message, or no media on it, in
           the cabinet.
+        - `media.not_found` — (404) no file uploaded under that id in the
+          cabinet (`getUploadedMedia`). Upload it again.
+        - `media.unreadable` — (500) a stored file failed its integrity check
+          and is not served. Retrying does not help; report it to support with
+          the request's `instance`.
         - `thread.not_found` — (422) the forum topic cannot be used: the
           conversation is not a Telegram forum, or `threadId` / `replyTo`
           names a message of another chat. A topic deleted or closed for the
@@ -24408,6 +24642,17 @@ components:
         - support.emergency_not_pending
         - support.emergency_not_revocable
         # --- END platform support access ------------------------------------------
+        # --- plan 2Д-б Task 5 (ADR-0126): uploaded files and stored media -------
+        # media.not_found (404): getUploadedMedia names no file of the cabinet;
+        # media.unreadable (500): a stored file does not authenticate under its
+        # cabinet's key (planted, damaged, foreign) and is never served.
+        - media.not_found
+        - media.unreadable
+        # --- plan 2Д-б Task 7 (ADR-0126): deleting a cabinet --------------------
+        # cabinet_not_empty (409): deleteCabinet on a cabinet that still has
+        # channels or a live desk (host) installation — their own teardown
+        # (provider sessions, webhooks, secrets, desk copies) comes first.
+        - tenancy.cabinet_not_empty
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -24728,7 +24973,13 @@ components:
         content:
           type: object
           additionalProperties: true
-          description: Type-dependent payload (JSON). Shape depends on `type`.
+          description: >-
+            Type-dependent payload (JSON). Shape depends on `type`. A media
+            message carries `media` (`url`, `mime`, `filename`, `caption`); its
+            `url` here is always a platform path, never a storage link:
+            `/v1/messages/{id}/media` (`getMessageMedia`), or
+            `/v1/embed/agent/messages/{id}/media` in the answers of the
+            operator widget's send.
         replyTo:
           type: string
           description: Optional provider message id this message replies to.
@@ -25156,7 +25407,14 @@ components:
             Type-dependent payload matching `type`. Required for every type but
             `template`, where it is omitted or empty. An empty JSON array `[]`
             is read as the empty object `{}` (for clients whose serializers
-            cannot tell the two apart).
+            cannot tell the two apart). A media type carries `{"media":
+            {"url": "...", "mime": "...", "filename": "...", "caption": "..."}}`:
+            the `url` that `uploadMedia` answered (`<API base>/v1/media/{id}`
+            or `/v1/media/{id}`), or an absolute http(s) link of your own the
+            messenger fetches. An upload URL must name a file of this cabinet,
+            and a link into the platform's storage a file of this cabinet;
+            anything else — a relative path, another scheme — is refused too:
+            422 `validation.invalid_request`, field `content.media.url`.
         replyTo:
           type: string
           # ADR-0121 (R27): parsed and checked on tg_client / tg_bot.
@@ -27678,9 +27936,18 @@ components:
         A file uploaded with `uploadMedia`, ready to attach to a send by its
         `url`.
       properties:
+        id:
+          type: string
+          description: >-
+            The file's id in its cabinet (`mediaId` of `getUploadedMedia`): a
+            ULID followed by the file's extension when it had one.
         url:
           type: string
-          description: Absolute, time-limited URL the provider fetches.
+          description: >-
+            The platform URL of the file, `<API base>/v1/media/{id}` (the path
+            alone when the platform does not know its public address): put it
+            in a send's `content.media.url` as it is. Not a storage link, and
+            it does not expire; it names a file of this cabinet only.
         mime:
           description: >-
             The media type of the file, for example `image/jpeg`.
@@ -27694,6 +27961,7 @@ components:
             The file size in bytes.
           type: integer
       required:
+        - id
         - url
 
     MediaInfo:
