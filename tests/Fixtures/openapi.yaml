@@ -609,6 +609,8 @@ paths:
                       presence: false
                       threads: false
                       deepLinkInvite: false
+                      voiceNotes: true
+                      videoNotes: true
                       delivery: stream
                     settings:
                       groups:
@@ -626,6 +628,8 @@ paths:
                       presence: false
                       threads: true
                       deepLinkInvite: true
+                      voiceNotes: true
+                      videoNotes: true
                       delivery: poll
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -734,6 +738,8 @@ paths:
                   presence: false
                   threads: false
                   deepLinkInvite: false
+                  voiceNotes: true
+                  videoNotes: true
                   delivery: stream
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -3624,6 +3630,8 @@ paths:
                         presence: false
                         threads: false
                         deepLinkInvite: false
+                        voiceNotes: false
+                        videoNotes: false
                         delivery: webhook
                       settings:
                         metaPageId: '102000000000001'
@@ -6635,6 +6643,7 @@ paths:
         (as `sendContactMessage`) plus `sendAt`; the types are text, image,
         audio, video and document (a template cannot be scheduled: 422
         `message.type_unsupported`), with `content` of at most 16 KiB.
+        `content.media.note` is not accepted here (422, field `content.media.note`, reason `not_supported_here`).
 
 
         The channel is chosen and checked against the caller's scope now (an
@@ -6919,7 +6928,7 @@ paths:
 
         Only while it is `scheduled` (409 `scheduled_send.state_conflict` once
         it is going out, went, failed or was cancelled). The channel and the
-        contact stay; to change those, cancel and schedule anew.
+        contact stay; to change those, cancel and schedule anew. `content.media.note` is not accepted here (422, field `content.media.note`, reason `not_supported_here`).
       x-mcp:
         expose: true
         readOnly: false
@@ -12432,7 +12441,7 @@ paths:
         `sendContactMessage` for the Linqelio widget inside a Bitrix24 CRM
         card, with the same body, the same send policy, the same confirmed-send
         flow (`acknowledgedWarnings`), the same WhatsApp template sends and the
-        same answers. Call `checkEmbedAgentSendPolicy` first to show the
+        same answers, except that `content.media.note` is not accepted here (422, field `content.media.note`, reason `not_supported_here`). Call `checkEmbedAgentSendPolicy` first to show the
         operator what the send policy would say.
 
 
@@ -12593,7 +12602,9 @@ paths:
         this message now, without sending it and without using up any rate
         budget or counter. It is `checkSendPolicy` for
         `sendEmbedAgentMessage`: the same body, capability and channel scope as
-        the send, and no `Idempotency-Key`.
+        the send, and no `Idempotency-Key`. As on the send, `content.media.note`
+        is not accepted here (422, field `content.media.note`, reason
+        `not_supported_here`).
 
 
         The answer carries what the composer shows: the 24-hour window of a
@@ -15737,8 +15748,10 @@ paths:
         optionally prefixed `gave up after N attempts: ` — classes `timeout`,
         `provider_unavailable`, `rate_limited`, `rejected`, `not_connected`,
         `channel_gone`, `recipient_not_found`, `media_unavailable`,
-        `thread_not_found`, `gave_up`, `unknown` (more may be added); also
-        `channel.not_connected`
+        `thread_not_found`, `note_refused`, `gave_up`, `unknown` (more may be
+        added); `note_refused` means the messenger refused a recorded voice
+        message or video note (the recipient does not accept them): send it
+        again without `note`. Also `channel.not_connected`
         and `tenancy.suspended`.
 
 
@@ -25415,6 +25428,34 @@ components:
             and a link into the platform's storage a file of this cabinet;
             anything else — a relative path, another scheme — is refused too:
             422 `validation.invalid_request`, field `content.media.url`.
+
+            `"note": true` beside `url` sends the file as a message recorded in
+            the messenger — a voice message (`type: audio`) or a round video
+            note (`type: video`) — instead of an attached file. It takes only a
+            file `uploadMedia` answered: any other `url` is 422
+            `validation.invalid_request`, field `content.media.url`, reason
+            `upload_required`. The platform converts the file itself (a voice
+            message to OGG/Opus, a video note to a square MP4 of at most 60
+            seconds); a longer video is 422, field `content.media`, reason
+            `video_note_too_long`, a voice recording longer than 20 minutes is
+            422, field `content.media`, reason `voice_too_long`, and a file
+            that cannot be read as media is 422, field `content.media`, reason
+            `unreadable_media`. A channel
+            whose `capabilities.voiceNotes` or `capabilities.videoNotes` is
+            false answers 409 `channel.capability_unsupported`: send the file
+            without `note`. If the messenger refuses the recorded message later,
+            the message becomes `failed` with the reason class `note_refused`.
+            While the platform's converter is unavailable a recorded message
+            may be answered 503 with `Retry-After`; the same file without
+            `note` still sends. On a recorded message the platform sets
+            `content.media.duration` (whole seconds) and, for a voice message,
+            `content.media.waveform` (the messenger's waveform: 5-bit samples
+            packed as Telegram packs them, base64); values a caller sends in
+            these two members are ignored, on any send. A `note` that is not a
+            boolean, or `"note": true` with a `type` other than `audio` or
+            `video`, is 422, field `content.media.note`, reason `invalid`. A
+            video note carries no caption: the messengers show none on it
+            (Telegram drops it), so send any text as a message of its own.
         replyTo:
           type: string
           # ADR-0121 (R27): parsed and checked on tg_client / tg_bot.
@@ -26059,6 +26100,16 @@ components:
             Can invite a contact with a click-to-chat link that opts them into
             the channel (a Telegram bot, a Viber bot, a Facebook Page, an Instagram
             account).
+        voiceNotes:
+          type: boolean
+          description: >-
+            The channel delivers a recorded voice message (`type: audio` with
+            `content.media.note: true`) as the messenger's own voice message.
+        videoNotes:
+          type: boolean
+          description: >-
+            The channel delivers a recorded round video note (`type: video`
+            with `content.media.note: true`) as the messenger's own video note.
         delivery:
           type: string
           description: >-
@@ -26081,6 +26132,8 @@ components:
         - presence
         - threads
         - deepLinkInvite
+        - voiceNotes
+        - videoNotes
         - delivery
 
     # --- BEGIN M1 Meta channels (issue #185, ADR-0107): schemas ----------------
@@ -27991,15 +28044,18 @@ components:
         note:
           type: boolean
           description: >
-            Marks a message RECORDED in the client — a voice message or a video
-            note ("кружечок") — as opposed to an audio/video FILE that happens to
-            be attached. A presentation hint, not a payload type: it rides beside
-            `type` instead of becoming a MsgType member so that an adapter which
-            does not know it sends an ordinary audio/video rather than answering
-            `ErrPermanent`, which would drop the message entirely. Honoured on
-            tg_client for both forms and on tg_bot for voice only — the Bot API
-            refuses a URL for sendVideoNote, so a round frame degrades to a
-            plain video there.
+            Marks a message RECORDED in the client — a voice message or a round
+            video note — as opposed to an audio/video FILE that happens to be
+            attached. It rides beside `type`, which stays `audio` or `video`.
+            Delivered as the messenger's own voice message or video note on
+            Telegram (account and bot) and WhatsApp Web; on WhatsApp Business
+            API only as a voice message (see `Capabilities`).
+        duration:
+          type: integer
+          description: >-
+            The length of the recording in seconds. Set on recorded messages
+            (`note: true`).
+          example: 12
       required:
         - url
 
@@ -33823,7 +33879,7 @@ components:
             example `{"text": "Hello!"}` for `text`, or `{"media": {"url":
             "https://example.com/offer.jpg", "caption": "Our offer"}}` for
             `image`. Omit it for `type: template` (use `template`). At most
-            16 KB of JSON.
+            16 KB of JSON. `content.media.note` is not accepted here (422, field `content.content.media.note`, reason `not_supported_here`).
         template:
           $ref: '#/components/schemas/CampaignTemplateRef'
       required:
