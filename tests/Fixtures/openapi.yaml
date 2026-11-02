@@ -24378,12 +24378,12 @@ paths:
         platform one). The proxy must be `active` (409
         `egress.proxy_not_active`), granted if it is a platform one (403
         `egress.proxy_not_granted`) and still under `maxChannels` (409
-        `egress.proxy_channel_limit`). A channel that is already connected
-        refuses with 409 `egress.rebind_requires_disconnect` — changing the exit
-        is a controlled reconnect, so disconnect first.
+        `egress.proxy_channel_limit`).
 
-        Binding writes intent only and is allowed while the channel is
-        disconnected or inactive. Recorded in the audit trail.
+        A channel that is already connected is rebound the controlled way: the request enqueues an asynchronous rebind job and
+        answers 202 with it — poll `getChannelEgressRebindJob` for the outcome.
+        A disconnected or inactive channel is bound synchronously and answers
+        200. Recorded in the audit trail.
       x-mcp:
         expose: true
         readOnly: false
@@ -24406,7 +24406,6 @@ paths:
         - egress.proxy_not_active
         - egress.proxy_not_granted
         - egress.proxy_channel_limit
-        - egress.rebind_requires_disconnect
       requestBody:
         required: true
         content:
@@ -24417,13 +24416,27 @@ paths:
               proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
       responses:
         '200':
-          description: The channel's exit as it now stands.
+          description: The channel's exit as it now stands (a disconnected channel, bound synchronously).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChannelEgress'
               example:
                 proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+        '202':
+          description: The channel is connected; a controlled rebind job was enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgressRebindJob'
+              example:
+                id: 8f14e45f-ceea-467f-a3f2-9d8f7c0b1a2d
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                proxyId: 0b9c8d7e-6f5a-4b3c-2d1e-0f9a8b7c6d5e
+                status: pending
+                attempt: 0
+                createdAt: '2026-11-02T09:00:00Z'
+                updatedAt: '2026-11-02T09:00:00Z'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -24432,8 +24445,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
     delete:
       operationId: deleteChannelEgress
       x-permission: 'channels:manage'
@@ -24441,13 +24452,11 @@ paths:
       summary: Clear the channel's network exit
       description: >-
         Clears the channel's egress binding, so it dials directly again. A
-        channel that is already connected refuses with 409
-        `egress.rebind_requires_disconnect` — changing the exit is a controlled
-        reconnect, so disconnect first. An id outside the caller's scope answers
-        404 `channel.not_found`.
+        channel that is already connected is rebound the controlled way: the request enqueues an asynchronous rebind job and
+        answers 202 with it — poll `getChannelEgressRebindJob` for the outcome.
+        A disconnected or inactive channel is cleared synchronously and answers
+        204. An id outside the caller's scope answers 404 `channel.not_found`.
 
-        Use it when the channel no longer needs a proxy, or before binding a new
-        one on a connected channel (disconnect, clear, bind, reconnect).
         Recorded in the audit trail.
       x-mcp:
         expose: true
@@ -24467,10 +24476,23 @@ paths:
         - auth.origin_rejected
         - tenancy.suspended
         - channel.not_found
-        - egress.rebind_requires_disconnect
       responses:
         '204':
-          description: The channel's exit was cleared.
+          description: The channel's exit was cleared (a disconnected channel).
+        '202':
+          description: The channel is connected; a controlled rebind job was enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgressRebindJob'
+              example:
+                id: 1c9e7a3b-5d4f-4a2b-8c6d-3e1f0a9b8c7d
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                proxyId: null
+                status: pending
+                attempt: 0
+                createdAt: '2026-11-02T09:00:00Z'
+                updatedAt: '2026-11-02T09:00:00Z'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -24479,8 +24501,150 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
+
+  /channels/{id}/egress/rebind:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The channel id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: rebindChannelEgress
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Rebind a channel's network exit (controlled reconnect)
+      description: >-
+        Changes a channel's egress exit the controlled way: the
+        worker drains the channel's outbox (bounded), disconnects the live
+        session, applies the binding change with the Phase A/B rules (active,
+        granted, under `maxChannels`) and reconnects. When the provider asks for
+        re-authorization after the reconnect, the job ends `reconnect_required`
+        — that is an expected outcome, not a failure.
+
+        Asynchronous: it enqueues a job and answers 202 with it; poll
+        `getChannelEgressRebindJob` for the outcome. Omit `proxyId` (or send
+        null) to clear the exit and dial directly.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: false
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - channel.not_found
+        - egress.proxy_not_found
+        - egress.proxy_not_active
+        - egress.proxy_not_granted
+        - egress.proxy_channel_limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebindChannelEgressRequest'
+            example:
+              proxyId: 0b9c8d7e-6f5a-4b3c-2d1e-0f9a8b7c6d5e
+      responses:
+        '202':
+          description: The rebind job was enqueued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgressRebindJob'
+              example:
+                id: 5a7b9c1d-3e2f-4a6b-8c9d-0e1f2a3b4c5d
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                proxyId: 0b9c8d7e-6f5a-4b3c-2d1e-0f9a8b7c6d5e
+                status: running
+                attempt: 1
+                createdAt: '2026-11-02T09:00:00Z'
+                updatedAt: '2026-11-02T09:01:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /channels/{id}/egress/rebind/{jobId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The channel id (a UUID).
+        schema:
+          type: string
+          format: uuid
+      - name: jobId
+        in: path
+        required: true
+        description: The rebind job id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getChannelEgressRebindJob
+      x-permission: 'channels:read'
+      x-platform-support: none
+      summary: Read a channel's egress rebind job
+      description: >-
+        Returns the current state of an asynchronous egress rebind job the
+        cabinet enqueued with `rebindChannelEgress` (or `setChannelEgress` /
+        `deleteChannelEgress` on a connected channel). A job outside the
+        caller's scope answers 404 `channel.not_found`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      responses:
+        '200':
+          description: The rebind job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgressRebindJob'
+              example:
+                id: 5a7b9c1d-3e2f-4a6b-8c9d-0e1f2a3b4c5d
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                proxyId: 0b9c8d7e-6f5a-4b3c-2d1e-0f9a8b7c6d5e
+                status: succeeded
+                attempt: 1
+                createdAt: '2026-11-02T09:00:00Z'
+                updatedAt: '2026-11-02T09:02:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
 components:
   # ===========================================================================
@@ -25413,8 +25577,10 @@ components:
         - `egress.quota_exceeded` — (403) granting another platform-pool proxy
           would pass the organization's `egress.proxies` plan limit; the `quota`
           member names it.
-        - `egress.rebind_requires_disconnect` — (409) the channel is connected, so
-          its exit cannot be changed; disconnect it first (a controlled reconnect).
+        - `egress.rebind_requires_disconnect` — (409) deprecated: a connected
+          channel's exit change is now the controlled rebind (`rebindChannelEgress`),
+          which answers 202 with a job instead of refusing. Retained for clients
+          that still surface the old code.
         - `egress.check_failed` — (503) the proxy probe failed, or the platform's
           echo endpoint is not configured; the result is persisted to the proxy's
           health.
@@ -40531,4 +40697,73 @@ components:
           type: string
           format: uuid
           description: The proxy to bind the channel to.
+    RebindChannelEgressRequest:
+      type: object
+      description: >
+        The body of `rebindChannelEgress`: the exit to move the channel to. Omit
+        `proxyId` (or send `null`) to clear the exit so the channel dials
+        directly.
+      properties:
+        proxyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The proxy to bind to, or null/absent to dial directly.
+    ChannelEgressRebindJob:
+      type: object
+      description: >
+        An asynchronous controlled egress rebind: the worker drains
+        the channel's outbox (bounded), disconnects the live session, applies the
+        binding change and reconnects. `status` is `reconnect_required` when the
+        provider asks for re-authorization after the reconnect — an expected
+        outcome, not a failure.
+      required: [id, channelId, status, attempt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The rebind job id.
+        channelId:
+          type: string
+          format: uuid
+          description: The channel being rebound.
+        proxyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The exit the rebind moves the channel to, or null to dial directly.
+        status:
+          type: string
+          enum: [pending, running, succeeded, reconnect_required, failed]
+          # Named explicitly: bare values like `running` or `failed` exist in
+          # other enums (AiRunStatus, CampaignStatus, ChannelState), and without
+          # these names oapi-codegen would prefix EVERY colliding enum's
+          # constants with its type name (ChannelStateConnected, …), churning
+          # the whole generated surface.
+          x-enum-varnames:
+            - ChannelEgressRebindJobPending
+            - ChannelEgressRebindJobRunning
+            - ChannelEgressRebindJobSucceeded
+            - ChannelEgressRebindJobReconnectRequired
+            - ChannelEgressRebindJobFailed
+          description: >-
+            The job's state: `pending` — enqueued and not yet claimed;
+            `running` — the worker is draining/disconnecting/rebinding;
+            `succeeded` — the channel is connected on the new exit; `reconnect_required`
+            — the provider asks for re-authorization after the reconnect (an expected
+            outcome); `failed` — the rebind failed and `error` says why.
+        error:
+          type: string
+          description: The failure reason when `status` is `failed`; empty otherwise.
+        attempt:
+          type: integer
+          description: How many times the worker has claimed this job (at-least-once).
+        createdAt:
+          type: string
+          format: date-time
+          description: When the job was enqueued, UTC.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the job last changed state, UTC.
     # END egress-proxy schemas

@@ -453,6 +453,8 @@ final class Contract
         'getChannelEgress' => 'network configuration (settings:manage)',
         'setChannelEgress' => 'network configuration (settings:manage) — rebinding a live channel is an operator decision',
         'deleteChannelEgress' => 'network configuration (settings:manage)',
+        'rebindChannelEgress' => 'network configuration (settings:manage) — the controlled reconnect is an operator action; the console polls the job',
+        'getChannelEgressRebindJob' => 'network configuration (settings:manage) — status of an operator-initiated rebind; only the console polls it',
     ];
 
     /**

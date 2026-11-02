@@ -9,6 +9,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's egress-proxy health/rotation slice
+  (ADR-0130 Phase C): `rebindChannelEgress` and `getChannelEgressRebindJob` are
+  classified as not wrapped — the controlled reconnect is an operator action in
+  the console. No new error codes.
 - Contract fixture synced with Linqelio's tenant egress-proxy management
   (ADR-0130): platform-pool proxy administration (`/platform/proxies`, grants to
   cabinets, synchronous checks), cabinet proxies (`/proxies`, usage) and channel
