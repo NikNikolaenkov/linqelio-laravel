@@ -29030,6 +29030,13 @@ components:
             platform refused it — for example a scan by an account with another
             number than `expectedPhone`. Absent while connecting, once the
             channel is connected, and when the channel was never refused.
+        egress:
+          $ref: '#/components/schemas/ChannelEgressExit'
+          description: >
+            The exit the channel's device is actually dialling out through, for
+            a personal Viber channel whose external driver applies a
+            device-level egress proxy. Present only when the driver has one
+            configured; absent for other kinds and for a channel with no exit.
       required:
         - channelId
         - state
@@ -40582,6 +40589,36 @@ components:
         error:
           type: string
           description: On a failed probe, what went wrong, naming only `host:port` and never credentials.
+    ChannelEgressExit:
+      type: object
+      description: >
+        The network exit a personal Viber channel actually leaves through, as
+        reported by the external driver that runs the phone. It is read from the
+        driver at status time, so it reflects the live device rather than the
+        stored proxy binding. It appears on the channel status only when the
+        driver has an exit configured, and is absent otherwise. The external
+        address and latency are what the driver measured on its last probe; the
+        driver never reports the proxy password here.
+      properties:
+        configured:
+          type: boolean
+          description: Whether the driver has an egress exit configured for this instance.
+        state:
+          type: string
+          description: >
+            The driver's egress lifecycle state: `applied` — the exit is routed
+            and in use; `pending` — configured but not yet routed;
+            `not_configured` — no exit; `error` — the last apply or probe failed.
+        protocol:
+          type: string
+          description: The proxy protocol the exit uses (`http`, `https` or `socks5`).
+        externalIp:
+          type: string
+          description: The address the exit's traffic was seen coming from on the last probe.
+        latencyMs:
+          type: integer
+          format: int64
+          description: How long the last probe took through the exit, in milliseconds.
     GrantEgressProxyRequest:
       type: object
       description: >
