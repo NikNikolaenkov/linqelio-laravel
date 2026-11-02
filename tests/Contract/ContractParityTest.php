@@ -428,6 +428,31 @@ final class Contract
         'revokeInvite' => 'console team management — no integration use case yet',
         'updateMember' => 'console team management — no integration use case yet',
         'removeMember' => 'console team management — no integration use case yet',
+
+        // ADR-0130: egress-proxy management. Which network exit a number dials
+        // out through is infrastructure configuration: a cabinet operator sets it
+        // once per channel (settings:manage) and the platform pool is platform:admin.
+        // The package wraps the send path, not network plumbing, so these are
+        // excluded by design until the platform offers a client-key use case for them.
+        'listPlatformProxies' => 'platform:admin only — the platform pool is operator infrastructure',
+        'createPlatformProxy' => 'platform:admin only — buying and registering an exit',
+        'getPlatformProxy' => 'platform:admin only',
+        'updatePlatformProxy' => 'platform:admin only — carries write-only proxy credentials',
+        'deletePlatformProxy' => 'platform:admin only',
+        'checkPlatformProxy' => 'platform:admin only — a synchronous network probe from the platform',
+        'grantPlatformProxy' => 'platform:admin only — handing a pooled exit to a cabinet',
+        'revokePlatformProxyGrant' => 'platform:admin only',
+        'listPlatformProxyChannels' => 'platform:admin only',
+        'listProxies' => 'network configuration (settings:manage), not an integration call',
+        'createProxy' => 'network configuration (settings:manage) — carries write-only proxy credentials',
+        'getProxy' => 'network configuration (settings:manage)',
+        'updateProxy' => 'network configuration (settings:manage) — carries write-only proxy credentials',
+        'deleteProxy' => 'network configuration (settings:manage)',
+        'checkProxy' => 'network configuration (settings:manage) — a synchronous network probe',
+        'getProxyUsage' => 'network configuration (settings:manage)',
+        'getChannelEgress' => 'network configuration (settings:manage)',
+        'setChannelEgress' => 'network configuration (settings:manage) — rebinding a live channel is an operator decision',
+        'deleteChannelEgress' => 'network configuration (settings:manage)',
     ];
 
     /**
