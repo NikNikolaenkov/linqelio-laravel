@@ -9,6 +9,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's tenant egress-proxy management
+  (ADR-0130): platform-pool proxy administration (`/platform/proxies`, grants to
+  cabinets, synchronous checks), cabinet proxies (`/proxies`, usage) and channel
+  binding (`/channels/{id}/egress`, optional `egressProxyId` on `createChannel`).
+  The 19 new operations are classified as not wrapped — network configuration and
+  platform-operator plumbing, not a send-path call. New error codes:
+  `egress.proxy_not_found`, `egress.proxy_not_platform`,
+  `egress.proxy_not_active`, `egress.proxy_not_granted`,
+  `egress.proxy_channel_limit`, `egress.proxy_in_use`, `egress.grant_in_use`,
+  `egress.grant_exists`, `egress.quota_exceeded`,
+  `egress.rebind_requires_disconnect`, `egress.check_failed` (now `ErrorCode`
+  cases; `egress.check_failed` is retryable).
 - `media()->download($mediaId)` reads back a file uploaded with `media()->upload()`
   (`getUploadedMedia`, ADR-0126). Contract fixture synced with Linqelio's cabinet
   encryption (ADR-0126); new error codes `tenancy.cabinet_not_empty`,

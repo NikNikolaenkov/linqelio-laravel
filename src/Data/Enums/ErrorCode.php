@@ -264,6 +264,33 @@ enum ErrorCode: string
     /** The mail server password could not be read from the secret store. */
     case MailSecretUnavailable = 'mail.secret_unavailable';
 
+    // ADR-0130: egress-proxy management. These codes reach a caller of the proxy
+    // operations (documented in the contract even though the package does not wrap
+    // them yet); parse() must not turn them into Unknown.
+
+    /** No egress proxy with that id. */
+    case EgressProxyNotFound = 'egress.proxy_not_found';
+    /** The proxy is a cabinet's own exit and cannot be used as a platform-pool row. */
+    case EgressProxyNotPlatform = 'egress.proxy_not_platform';
+    /** The exit is paused or retired, so it accepts no new traffic. */
+    case EgressProxyNotActive = 'egress.proxy_not_active';
+    /** The cabinet holds no active grant for this platform-pool exit. */
+    case EgressProxyNotGranted = 'egress.proxy_not_granted';
+    /** The exit already carries the maximum number of channels. */
+    case EgressProxyChannelLimit = 'egress.proxy_channel_limit';
+    /** The proxy still has channels bound to it. */
+    case EgressProxyInUse = 'egress.proxy_in_use';
+    /** A grant cannot be revoked while channels still leave through it. */
+    case EgressGrantInUse = 'egress.grant_in_use';
+    /** A grant for this proxy and cabinet already exists. */
+    case EgressGrantExists = 'egress.grant_exists';
+    /** The organization's plan allows no more pooled exit grants. */
+    case EgressQuotaExceeded = 'egress.quota_exceeded';
+    /** Changing the exit of a live channel needs a controlled reconnect first. */
+    case EgressRebindRequiresDisconnect = 'egress.rebind_requires_disconnect';
+    /** The egress probe could not be run (configuration or an unreachable exit). */
+    case EgressCheckFailed = 'egress.check_failed';
+
     /** Not in the registry: a code this package predates. */
     case Unknown = 'unknown';
 
@@ -293,7 +320,8 @@ enum ErrorCode: string
             self::PolicyRateLimited,
             self::IdempotencyInProgress,
             self::ProviderUnavailable,
-            self::ProviderUpstreamError => true,
+            self::ProviderUpstreamError,
+            self::EgressCheckFailed => true,
             default => false,
         };
     }

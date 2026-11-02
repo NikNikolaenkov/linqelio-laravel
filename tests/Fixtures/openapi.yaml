@@ -100,9 +100,10 @@ info:
     - **Channel** — one connected messenger account or bot: a WhatsApp number
       linked by QR code (`wa_web`), a WhatsApp Business Cloud API number
       (`wa_cloud`), a Telegram account (`tg_client`), a Telegram bot
-      (`tg_bot`), a Viber bot (`viber_bot`), a Facebook Page (`fb_page`) or an
-      Instagram professional account (`instagram`). What a channel can do
-      depends on its kind; `listChannels` reports each channel's capabilities.
+      (`tg_bot`), a Viber bot (`viber_bot`), a personal Viber number
+      (`viber_web`), a Facebook Page (`fb_page`) or an Instagram professional
+      account (`instagram`). What a channel can do depends on its kind;
+      `listChannels` reports each channel's capabilities.
     - **Contact** — a person the cabinet talks to. **Identity** — one of the
       contact's addresses on a channel (a phone number, a Telegram user, a
       Viber user id). One contact may have several identities.
@@ -461,6 +462,13 @@ tags:
       The pool of provider credentials per channel kind, with
       their health. Use `listAccessPool` to see the entries and
       `rotateAccessPool` to promote the next healthy credential.
+  - name: egress
+    description: >-
+      The network exits a session channel dials out through: the platform's
+      shared pool (`/platform/proxies`, with grants to cabinets) and a cabinet's
+      own proxies (`/proxies`), plus the exit bound to one channel
+      (`/channels/{id}/egress`). Credentials are write-only — stored in the
+      secret store, never returned.
   - name: apps
     description: >-
       Apps connected to a whole organization with an organization key
@@ -563,7 +571,8 @@ paths:
         Kinds: a WhatsApp Web account paired by QR (`wa_web`), a WhatsApp
         Business API number (`wa_cloud`), a Telegram account paired by QR
         (`tg_client`), a Telegram bot (`tg_bot`), a Viber bot (`viber_bot`), a
-        Facebook Page (`fb_page`) and an Instagram professional account
+        personal Viber number paired through the evovibgo driver (`viber_web`),
+        a Facebook Page (`fb_page`) and an Instagram professional account
         (`instagram`).
 
 
@@ -647,12 +656,16 @@ paths:
       description: >-
         Creates a channel of the given kind — a WhatsApp Web account (`wa_web`),
         a WhatsApp Business API number (`wa_cloud`), a Telegram account
-        (`tg_client`), a Telegram bot (`tg_bot`) or a Viber bot (`viber_bot`).
+        (`tg_client`), a Telegram bot (`tg_bot`), a Viber bot (`viber_bot`) or a
+        personal Viber number (`viber_web`).
         The channel starts `disconnected` and cannot send or receive until it
         is connected:
 
-        - `wa_web` and `tg_client` pair by QR: call `connectChannel`, have the
-          account owner scan the QR from `getChannelStatus`;
+        - `wa_web`, `tg_client` and `viber_web` pair by QR: call
+          `connectChannel`, have the account owner scan the QR from
+          `getChannelStatus` (for `viber_web` the QR is issued by the external
+          Viber driver the platform runs, and the phone links as a secondary
+          device);
         - `tg_bot`, `viber_bot` and `wa_cloud` connect with a token: call
           `setChannelCredentials` (and for `wa_cloud` first
           `updateChannelSettings` with the phone number id), then
@@ -705,6 +718,12 @@ paths:
         - tenancy.quota_exceeded
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # ADR-0130 Phase B: the optional egressProxyId is validated like
+        # setChannelEgress — active, visible/own, granted, under max_channels.
+        - egress.proxy_not_found
+        - egress.proxy_not_active
+        - egress.proxy_not_granted
+        - egress.proxy_channel_limit
       requestBody:
         required: true
         content:
@@ -856,6 +875,12 @@ paths:
           `setChannelCredentials` and registers the platform's webhook with
           Viber. When the webhook cannot be registered the channel answers
           `connected` with a `detail`: it can send but will not receive.
+        - Personal Viber number (`viber_web`): starts the pairing of the
+          external Viber driver and answers `pairing` with the driver's `qr`;
+          the owner scans it in the Viber app on their phone, which links it as
+          a secondary device. Poll `getChannelStatus` until `connected`. A
+          driver that is not reachable leaves the channel at its stored state
+          and answers the stored row.
         - Telegram bot (`tg_bot`) and WhatsApp Business API (`wa_cloud`): no
           provider call; answers the stored state (they connect through
           `setChannelCredentials`).
@@ -863,8 +888,9 @@ paths:
           call; answers the stored state. They connect, and reconnect, by
           logging in with Facebook or Instagram (`startMetaConnect`).
 
-        For the QR kinds the body is optional. Pass `expectedPhone` — the
-        number the account must have — to make sure the right SIM is linked:
+        For `wa_web` and `tg_client` the body is optional. Pass `expectedPhone`
+        — the number the account must have — to make sure the right SIM is
+        linked:
         an account with another number is refused before any message is taken
         in, the login is closed, and `getChannelStatus` answers
         `disconnected` with a `lastError` of `channel.account_mismatch` and
@@ -1080,7 +1106,10 @@ paths:
         Telegram account takes no token: sent while no login waits for its
         password, the value is refused with 409 `channel.not_connected` and
         nothing is stored. A WhatsApp Web account (`wa_web`) has no token — it pairs through
-        `connectChannel`. A Facebook Page (`fb_page`) or Instagram account
+        `connectChannel`. A personal Viber number (`viber_web`) has no
+        per-channel token either: it pairs through `connectChannel`, and the
+        driver's API key is part of the deployment configuration, so a token
+        sent for one is refused with 400. A Facebook Page (`fb_page`) or Instagram account
         (`instagram`) takes no token either — the platform obtains and renews
         it after a login with Facebook or Instagram (`startMetaConnect`) — and
         a token sent for one is refused with 400.
@@ -1364,11 +1393,13 @@ paths:
       description: >-
         Closes the channel's live link and answers `state: disconnected`: a
         WhatsApp Web account (`wa_web`) is logged out of WhatsApp (the linked
-        device disappears from the phone), a Telegram account (`tg_client`)
-        session is discarded, and a token channel (`tg_bot`, `viber_bot`,
-        `wa_cloud`, `fb_page`, `instagram`) forgets its stored token. From then
-        on the channel neither sends nor receives; messages sent to it
-        meanwhile are not taken in.
+        device disappears from the phone), a personal Viber number
+        (`viber_web`) is unlinked at the external Viber driver (that pairing is
+        gone and connecting again needs a new QR), a Telegram account
+        (`tg_client`) session is discarded, and a token channel (`tg_bot`,
+        `viber_bot`, `wa_cloud`, `fb_page`, `instagram`) forgets its stored
+        token. From then on the channel neither sends nor receives; messages
+        sent to it meanwhile are not taken in.
 
 
         The channel, its conversations and its history are kept. To use it
@@ -20396,6 +20427,7 @@ paths:
                       channels.tg_client: -1
                       channels.tg_bot: -1
                       channels.viber_bot: -1
+                      channels.viber_web: -1
                       channels.fb_page: -1
                       channels.instagram: -1
         '401':
@@ -20475,6 +20507,7 @@ paths:
                   channels.tg_client: 1
                   channels.tg_bot: 1
                   channels.viber_bot: 1
+                  channels.viber_web: 1
                   channels.fb_page: 1
                   channels.instagram: 1
         '400':
@@ -23270,6 +23303,1185 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ===========================================================================
+  # egress proxies — platform pool + cabinet own + channel binding (ADR-0130)
+  # ===========================================================================
+  /platform/proxies:
+    get:
+      operationId: listPlatformProxies
+      x-permission: 'platform:admin'
+      summary: List the platform's egress-proxy pool
+      description: >-
+        Returns every platform-pool egress proxy (the exits the platform bought
+        and grants to cabinets), oldest first. The list is not paginated. A
+        proxy's credentials are never returned: only its `host`, `port` and a
+        masked `username` (the account, partially hidden) identify it.
+
+        Use it to see the pool before granting an exit with
+        `grantPlatformProxy`, or to find an id to update, check or delete. Needs
+        the `platform:admin` scope; cabinet callers read their granted and own
+        proxies with `listProxies`.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): the shared pool spans
+          every cabinet.
+      tags:
+        - egress
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The platform-pool proxies, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyList'
+              example:
+                items:
+                  - id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                    protocol: socks5
+                    host: 203.0.113.50
+                    port: 1080
+                    username: re***nt
+                    maxChannels: 2
+                    status: active
+                    createdAt: '2026-09-22T10:30:00Z'
+                    updatedAt: '2026-09-22T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createPlatformProxy
+      x-permission: 'platform:admin'
+      summary: Add a proxy to the platform pool
+      description: >-
+        Creates a platform-pool egress proxy — an exit the platform bought and
+        can grant to cabinets. `username` and `password` are accepted once, are
+        stored in the secret store (never in the database), and only a
+        `secret://` reference is kept; the response shows the `host`, `port` and
+        a masked `username` and never echoes the password or the reference.
+
+        Use it to stage a new exit before granting it. The new proxy starts
+        `active` (or the `status` you pass) and is recorded in the audit trail.
+        Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (platform:admin): stages a paid exit for
+          the shared pool.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEgressProxyRequest'
+            example:
+              label: residential-east
+              protocol: socks5
+              host: 203.0.113.50
+              port: 1080
+              username: resident
+              password: hunter2
+              maxChannels: 2
+      responses:
+        '201':
+          description: The platform proxy was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                protocol: socks5
+                host: 203.0.113.50
+                port: 1080
+                username: re***nt
+                maxChannels: 2
+                status: active
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T10:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /platform/proxies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The platform proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getPlatformProxy
+      x-permission: 'platform:admin'
+      summary: Get one platform-pool proxy
+      description: >-
+        Returns one platform-pool egress proxy by id, with its `host`, `port`,
+        `status`, `maxChannels`, the last health probe and a masked `username` —
+        never the password or the secret reference. An id that names nothing or
+        a cabinet-owned proxy answers 404 `egress.proxy_not_found`.
+
+        Use it before updating or deleting the exit, or to read its health after
+        a `checkPlatformProxy`. Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): reads the shared pool.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - egress.proxy_not_found
+      responses:
+        '200':
+          description: The platform proxy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                protocol: socks5
+                host: 203.0.113.50
+                port: 1080
+                username: re***nt
+                maxChannels: 2
+                status: active
+                health:
+                  ok: true
+                  externalIp: 198.51.100.7
+                  latencyMs: 84
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T10:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updatePlatformProxy
+      x-permission: 'platform:admin'
+      summary: Change a platform-pool proxy
+      description: >-
+        Changes the mutable fields of a platform-pool proxy: its label, protocol,
+        host, port, `maxChannels`, status and billing. Only the fields you send
+        are changed; `username` and `password` are write-only and, when sent,
+        replace the stored credential in the secret store — the response never
+        echoes them or the reference.
+
+        Changing host, port or protocol changes intent only: a channel already
+        connected through the exit keeps its open connection until it is
+        reconnected. Recorded in the audit trail. Needs the `platform:admin`
+        scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Platform operator surface (platform:admin): edits the shared pool.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - egress.proxy_not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEgressProxyRequest'
+            example:
+              label: residential-east-2
+              status: paused
+      responses:
+        '200':
+          description: The platform proxy as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                protocol: socks5
+                host: 203.0.113.50
+                port: 1080
+                username: re***nt
+                maxChannels: 2
+                status: paused
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T11:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deletePlatformProxy
+      x-permission: 'platform:admin'
+      summary: Delete a platform-pool proxy
+      description: >-
+        Removes a platform-pool proxy for good. If channels are still bound to
+        it, the delete is refused with 409 `egress.proxy_in_use`; pass
+        `?force=unbind` to unbind every such channel first (each unbind is
+        recorded in the audit trail) and then delete. An id that names nothing
+        or a cabinet-owned proxy answers 404 `egress.proxy_not_found`.
+
+        Deleting a shared exit is a network-level change: channels that were
+        using it fall back to no proxy and must be rebound and reconnected
+        deliberately. Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): removes a paid exit from
+          the shared pool.
+      tags:
+        - egress
+      parameters:
+        - name: force
+          in: query
+          required: false
+          description: >-
+            Pass `unbind` to unbind every channel from the proxy before deleting
+            it. Omitted, a proxy with bound channels answers 409
+            `egress.proxy_in_use`.
+          schema:
+            type: string
+            enum: [unbind]
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - egress.proxy_not_found
+        - egress.proxy_in_use
+      responses:
+        '204':
+          description: The platform proxy was deleted.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /platform/proxies/{id}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The platform proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: checkPlatformProxy
+      x-permission: 'platform:admin'
+      summary: Probe a platform-pool proxy
+      description: >-
+        Probes the platform-pool proxy through a configured echo endpoint and
+        records the result in the proxy's health: whether the tunnel works, the
+        external address the world sees and the latency. The result is persisted
+        either way; a failed probe answers 503 `egress.check_failed` and a
+        successful one 200 with the health record.
+
+        The probe needs the platform's echo endpoint configured (`EGRESS_ECHO_URL`);
+        without it the call answers 503 `egress.check_failed`. It never performs
+        network work to a third party's service. Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): probes the shared pool.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - egress.proxy_not_found
+        - egress.check_failed
+      responses:
+        '200':
+          description: The probe succeeded; the health was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyCheckResult'
+              example:
+                ok: true
+                proxyAddr: '203.0.113.50:1080'
+                externalIp: 198.51.100.7
+                latencyMs: 84
+                checkedAt: '2026-09-22T11:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /platform/proxies/{id}/grants:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The platform proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: grantPlatformProxy
+      x-permission: 'platform:admin'
+      summary: Grant a platform-pool proxy to a cabinet
+      description: >-
+        Grants a platform-pool proxy to a cabinet, which makes the exit visible
+        and usable to it (subject to the plan's `egress.proxies` limit). The
+        grant is counted against the cabinet's organization plan; a re-grant of
+        an already granted pair returns the original grant without consuming
+        quota again. Recorded in the audit trail.
+
+        The proxy must be `active` (409 `egress.proxy_not_active`) and a
+        platform-pool row (400 `egress.proxy_not_platform`); at the plan limit
+        the grant is refused 403 `egress.quota_exceeded`. Needs the
+        `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): hands a paid exit to a
+          customer.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - egress.proxy_not_found
+        - egress.proxy_not_platform
+        - egress.proxy_not_active
+        - egress.quota_exceeded
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantEgressProxyRequest'
+            example:
+              cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+      responses:
+        '201':
+          description: The grant was created (or already existed, returned as is).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyGrant'
+              example:
+                id: 5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d
+                cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                grantedBy: platform-operator
+                grantedAt: '2026-09-22T11:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /platform/proxies/{id}/grants/{grantId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The platform proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+      - name: grantId
+        in: path
+        required: true
+        description: The grant id to revoke (a UUID).
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: revokePlatformProxyGrant
+      x-permission: 'platform:admin'
+      summary: Revoke a cabinet's grant of a platform-pool proxy
+      description: >-
+        Soft-revokes a cabinet's grant of a platform-pool proxy: the proxy stops
+        being visible and usable to that cabinet, and the grant row is kept as
+        history. It refuses with 409 `egress.grant_in_use` while any of the
+        cabinet's channels is still bound to the proxy — those must be unbound
+        first, which is a controlled reconnect. An unknown or already-revoked
+        grant answers 404 `egress.proxy_not_found`.
+
+        Recorded in the audit trail. Needs the `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): withdraws a customer's
+          paid exit.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - egress.proxy_not_found
+        - egress.grant_in_use
+      responses:
+        '204':
+          description: The grant was revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /platform/proxies/{id}/channels:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The platform proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listPlatformProxyChannels
+      x-permission: 'platform:admin'
+      summary: List the channels bound to a platform-pool proxy
+      description: >-
+        Returns the channels currently bound to a platform-pool proxy, across
+        every cabinet, with each channel's cabinet id — what an operator needs
+        before replacing or deleting a shared exit, since every one of them will
+        need a controlled reconnect. The list is not paginated.
+
+        Use it before `deletePlatformProxy` to see who is on the exit. Needs the
+        `platform:admin` scope.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (platform:admin): spans every cabinet's
+          channels on the exit.
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - egress.proxy_not_found
+      responses:
+        '200':
+          description: The channels bound to the proxy, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyChannelList'
+              example:
+                items:
+                  - channelId: 8e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b
+                    cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /proxies:
+    get:
+      operationId: listProxies
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: List the cabinet's egress proxies
+      description: >-
+        Returns every egress proxy the cabinet may use: its own proxies and the
+        platform-pool ones granted to it, own rows first. Credentials are never
+        returned — only each proxy's `host`, `port` and a masked `username`.
+        The list is not paginated.
+
+        Use it to pick an exit before binding it to a channel with
+        `setChannelEgress`, or to find an id to update, check or delete. A
+        member whose access is limited to certain channels still reads the
+        cabinet's proxies.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The cabinet's usable egress proxies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyList'
+              example:
+                items:
+                  - id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                    cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                    protocol: https
+                    host: 198.51.100.10
+                    port: 3128
+                    username: o***a
+                    maxChannels: 2
+                    status: active
+                    createdAt: '2026-09-22T10:30:00Z'
+                    updatedAt: '2026-09-22T10:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createProxy
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Add the cabinet's own egress proxy
+      description: >-
+        Creates a proxy owned by the cabinet. `username` and `password` are
+        accepted once, are stored in the secret store (never in the database),
+        and only a `secret://` reference is kept; the response shows the `host`,
+        `port` and a masked `username` and never echoes the password or the
+        reference. The new proxy starts `active` (or the `status` you pass).
+
+        Use it to bring your own exit for a number that must leave from an
+        address you control. Recorded in the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEgressProxyRequest'
+            example:
+              label: my-residential
+              protocol: socks5
+              host: 198.51.100.10
+              port: 1080
+              username: olena
+              password: hunter2
+              maxChannels: 1
+      responses:
+        '201':
+          description: The cabinet's proxy was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                protocol: socks5
+                host: 198.51.100.10
+                port: 1080
+                username: o***a
+                maxChannels: 1
+                status: active
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T10:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /proxies/usage:
+    get:
+      operationId: getProxyUsage
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Read the cabinet's egress-proxy usage and limit
+      description: >-
+        Returns the organization's `egress.proxies` usage and its effective
+        limit (the plan's, with the manual override applied), together with how
+        many of the cabinet's channels are currently bound to any proxy. `limit`
+        is absent exactly when the plan allows an unlimited number; `used` is
+        counted across every cabinet of the organization.
+
+        Use it before granting or binding more exits to see how much room is
+        left. Reading it changes nothing.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+      responses:
+        '200':
+          description: The egress-proxy usage, limit and bound channels.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyUsage'
+              example:
+                used: 2
+                limit: 5
+                unlimited: false
+                boundChannels: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /proxies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getProxy
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Get one of the cabinet's egress proxies
+      description: >-
+        Returns one egress proxy the cabinet may use (its own, or a granted
+        platform one), with its `host`, `port`, `status`, `maxChannels`, the
+        last health probe and a masked `username` — never the password or the
+        secret reference. An id that names nothing the cabinet may see (unknown,
+        another cabinet's, or an ungranted platform one) answers 404
+        `egress.proxy_not_found`.
+
+        Use it before updating or deleting the proxy, or to read its health after
+        a `checkProxy`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - egress.proxy_not_found
+      responses:
+        '200':
+          description: The cabinet's proxy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                protocol: https
+                host: 198.51.100.10
+                port: 3128
+                username: o***a
+                maxChannels: 2
+                status: active
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T10:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateProxy
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Change the cabinet's own egress proxy
+      description: >-
+        Changes the mutable fields of a proxy the cabinet owns: its label,
+        protocol, host, port, `maxChannels`, status and billing. Only the fields
+        you send are changed; `username` and `password` are write-only and, when
+        sent, replace the stored credential in the secret store — the response
+        never echoes them or the reference. A granted platform proxy is read-only
+        and answers 404 `egress.proxy_not_found`.
+
+        Changing host, port or protocol changes intent only: a channel already
+        connected keeps its open connection until reconnected. Recorded in the
+        audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - egress.proxy_not_found
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEgressProxyRequest'
+            example:
+              label: my-residential-2
+              maxChannels: 2
+      responses:
+        '200':
+          description: The proxy as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxy'
+              example:
+                id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                cabinetId: 7d2e9f10-4c5b-4a6e-8f70-1a2b3c4d5e6f
+                protocol: https
+                host: 198.51.100.10
+                port: 3128
+                username: o***a
+                maxChannels: 2
+                status: active
+                createdAt: '2026-09-22T10:30:00Z'
+                updatedAt: '2026-09-22T11:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteProxy
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Delete the cabinet's own egress proxy
+      description: >-
+        Removes a proxy the cabinet owns. Channels bound to it are NOT removed:
+        the binding is cleared (the channel ends up with no proxy, visibly) and
+        each must be rebound and reconnected deliberately. A granted platform
+        proxy is read-only and answers 404 `egress.proxy_not_found`.
+
+        Use it to retire an exit you no longer pay for. Recorded in the audit
+        trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - egress.proxy_not_found
+      responses:
+        '204':
+          description: The proxy was deleted.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /proxies/{id}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The proxy id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: checkProxy
+      x-permission: 'settings:manage'
+      x-platform-support: none
+      summary: Probe one of the cabinet's egress proxies
+      description: >-
+        Probes an egress proxy the cabinet may use through the platform's
+        configured echo endpoint and records the result in the proxy's health:
+        whether the tunnel works, the external address the world sees and the
+        latency. The result is persisted either way; a failed probe answers 503
+        `egress.check_failed` and a successful one 200 with the health record.
+
+        The probe needs the platform's echo endpoint configured; without it the
+        call answers 503 `egress.check_failed`. Recorded in the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - egress.proxy_not_found
+        - egress.check_failed
+      responses:
+        '200':
+          description: The probe succeeded; the health was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EgressProxyCheckResult'
+              example:
+                ok: true
+                proxyAddr: '198.51.100.10:3128'
+                externalIp: 198.51.100.7
+                latencyMs: 84
+                checkedAt: '2026-09-22T11:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/egress:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The channel id (a UUID).
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getChannelEgress
+      x-permission: 'channels:read'
+      x-platform-support: none
+      summary: Read the exit a channel dials out through
+      description: >-
+        Returns the egress proxy currently bound to the channel, or `proxyId:
+        null` when the channel has none (it then dials directly). A channel
+        outside the caller's scope answers 404 `channel.not_found`; a channel
+        bound to a platform proxy whose grant was revoked answers 403
+        `egress.proxy_not_granted` — the exit must be rebound before the channel
+        can connect.
+
+        The proxy is applied before the channel's first connection, so this is
+        the intent the next connect will use.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - egress.proxy_not_granted
+      responses:
+        '200':
+          description: The channel's current exit, or null when it has none.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgress'
+              example:
+                proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: setChannelEgress
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Bind the channel's network exit
+      description: >-
+        Binds the channel to an egress proxy (the caller's own, or a granted
+        platform one). The proxy must be `active` (409
+        `egress.proxy_not_active`), granted if it is a platform one (403
+        `egress.proxy_not_granted`) and still under `maxChannels` (409
+        `egress.proxy_channel_limit`). A channel that is already connected
+        refuses with 409 `egress.rebind_requires_disconnect` — changing the exit
+        is a controlled reconnect, so disconnect first.
+
+        Binding writes intent only and is allowed while the channel is
+        disconnected or inactive. Recorded in the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: false
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - channel.not_found
+        - egress.proxy_not_found
+        - egress.proxy_not_active
+        - egress.proxy_not_granted
+        - egress.proxy_channel_limit
+        - egress.rebind_requires_disconnect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetChannelEgressRequest'
+            example:
+              proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+      responses:
+        '200':
+          description: The channel's exit as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEgress'
+              example:
+                proxyId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: deleteChannelEgress
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Clear the channel's network exit
+      description: >-
+        Clears the channel's egress binding, so it dials directly again. A
+        channel that is already connected refuses with 409
+        `egress.rebind_requires_disconnect` — changing the exit is a controlled
+        reconnect, so disconnect first. An id outside the caller's scope answers
+        404 `channel.not_found`.
+
+        Use it when the channel no longer needs a proxy, or before binding a new
+        one on a connected channel (disconnect, clear, bind, reconnect).
+        Recorded in the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: false
+        idempotent: true
+      tags:
+        - egress
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - channel.not_found
+        - egress.rebind_requires_disconnect
+      responses:
+        '204':
+          description: The channel's exit was cleared.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
 components:
   # ===========================================================================
   # Security
@@ -24177,6 +25389,35 @@ components:
           is already confirmed, revoked or expired, so it cannot be confirmed.
         - `support.emergency_not_revocable` — (409) an emergency access cannot
           be withdrawn by the cabinet; it ends by itself at its `expiresAt`.
+
+        **Egress proxies**
+
+        - `egress.proxy_not_found` — (404) the proxy id names nothing the caller
+          may see (unknown, another cabinet's, or an ungranted platform one).
+        - `egress.proxy_not_platform` — (400) the proxy is a cabinet's own, so it
+          cannot be granted to another cabinet; only a platform-pool row is
+          grantable.
+        - `egress.proxy_not_active` — (409) the proxy is paused or disabled, so it
+          cannot be granted or take a new channel binding.
+        - `egress.proxy_not_granted` — (403) the cabinet has no active grant for
+          this platform-pool proxy, so it cannot bind a channel to it (or a bound
+          channel's grant was revoked).
+        - `egress.proxy_channel_limit` — (409) the proxy already carries
+          `maxChannels` channels; pick another exit or raise the limit.
+        - `egress.proxy_in_use` — (409) the proxy still has channels bound to it,
+          so it cannot be deleted; pass `force=unbind` to unbind them first.
+        - `egress.grant_in_use` — (409) the grant's proxy is still bound to a
+          channel of the cabinet, so the grant cannot be revoked; unbind first.
+        - `egress.grant_exists` — (409) reserved: the pair is already granted; the
+          grant operation is idempotent and returns the existing grant.
+        - `egress.quota_exceeded` — (403) granting another platform-pool proxy
+          would pass the organization's `egress.proxies` plan limit; the `quota`
+          member names it.
+        - `egress.rebind_requires_disconnect` — (409) the channel is connected, so
+          its exit cannot be changed; disconnect it first (a controlled reconnect).
+        - `egress.check_failed` — (503) the proxy probe failed, or the platform's
+          echo endpoint is not configured; the result is persisted to the proxy's
+          health.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -24666,6 +25907,32 @@ components:
         # channels or a live desk (host) installation — their own teardown
         # (provider sessions, webhooks, secrets, desk copies) comes first.
         - tenancy.cabinet_not_empty
+        # --- BEGIN egress proxies (ADR-0130 Phase B) ------------------------------
+        # proxy_not_found (404): an egress proxy id that names nothing the caller
+        # may see (unknown, another cabinet's, or an ungranted platform one).
+        - egress.proxy_not_found
+        # proxy_not_platform (400): granting a cabinet's own proxy to a cabinet.
+        # proxy_not_active (409): granting or binding a paused/disabled proxy.
+        - egress.proxy_not_platform
+        - egress.proxy_not_active
+        # proxy_not_granted (403): binding to an ungranted platform proxy, or a
+        # bound channel whose grant was revoked (fail-closed).
+        - egress.proxy_not_granted
+        # proxy_channel_limit (409): the proxy is at max_channels.
+        - egress.proxy_channel_limit
+        # proxy_in_use (409): deleting a proxy that still has bound channels.
+        - egress.proxy_in_use
+        # grant_in_use (409): revoking a grant whose proxy is still bound.
+        - egress.grant_in_use
+        # grant_exists (409): reserved; the grant operation is idempotent.
+        - egress.grant_exists
+        # quota_exceeded (403): the plan's egress.proxies limit is reached.
+        - egress.quota_exceeded
+        # rebind_requires_disconnect (409): changing a connected channel's exit.
+        - egress.rebind_requires_disconnect
+        # check_failed (503): a failed probe, or no echo endpoint configured.
+        - egress.check_failed
+        # --- END egress proxies ----------------------------------------------------
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -24856,12 +26123,22 @@ components:
     ChannelKind:
       type: string
       # ADR-0012. Extends additively.
+      # ADR-0128: viber_web is a PERSONAL Viber number driven by an external
+      # client driver, deliberately distinct from viber_bot's Public Account.
       description: >
         The kind of messenger account a channel is: `wa_web` — a WhatsApp
         number linked like WhatsApp Web, by scanning a QR code; `wa_cloud` — a
         WhatsApp Business number on Meta's Cloud API (templates, 24-hour
         service window); `tg_client` — a Telegram user account; `tg_bot` — a
-        Telegram bot; `viber_bot` — a Viber bot; `fb_page` — a Facebook Page
+        Telegram bot; `viber_bot` — a Viber bot (a Public Account on the
+        official bot API); `viber_web` — a PERSONAL Viber number, paired as a
+        secondary device through an external driver the platform runs (it
+        sends text, images, video, audio and documents; images and video may
+        carry a caption; it receives text and media best effort — an image
+        preview or a full file may be unavailable, in which case the message
+        arrives as an attachment-unavailable notice — and it receives group
+        conversations but does not send into them; round video notes, templates
+        and buttons are not supported); `fb_page` — a Facebook Page
         (Messenger conversations and the Page's comments); `instagram` — an
         Instagram professional account (Direct, comments and mentions). The
         last two connect by logging in with Facebook or Instagram. New kinds
@@ -24872,6 +26149,7 @@ components:
         - tg_client
         - tg_bot
         - viber_bot
+        - viber_web
         - fb_page
         - instagram
 
@@ -26083,7 +27361,10 @@ components:
           type: boolean
           description: >-
             Can take part in group chats and manage groups (`createGroup`) —
-            WhatsApp Web (`wa_web`) and Telegram account (`tg_client`).
+            WhatsApp Web (`wa_web`) and Telegram account (`tg_client`). A
+            personal Viber number (`viber_web`) also reports true, but only
+            RECEIVES group conversations: it cannot send into a group or manage
+            one, so the value alone does not promise `createGroup` support.
         presence:
           type: boolean
           description: Can report typing and online presence. No kind declares it today.
@@ -26851,8 +28132,9 @@ components:
     CreateChannelRequest:
       type: object
       description: >
-        The body of `createChannel`: the kind of the new channel and an
-        optional name. The channel starts disconnected; `connectChannel` or
+        The body of `createChannel`: the kind of the new channel, an optional
+        name, and an optional egress proxy to bind before the channel's first
+        connection. The channel starts disconnected; `connectChannel` or
         `setChannelCredentials` connects it.
       properties:
         kind:
@@ -26863,6 +28145,15 @@ components:
             Optional human-friendly name shown in the console's channel list
             (for example `Sales WhatsApp`), so the channel is recognisable
             without its id. Part of what an Idempotency-Key replay compares.
+        egressProxyId:
+          type: string
+          format: uuid
+          description: >-
+            Optional egress proxy to bind the channel to before its first
+            connection, so the QR pairing or login leaves from the chosen exit.
+            It must be active, the caller's own or a granted platform one, and
+            still under its `maxChannels`; otherwise the create is refused and
+            no channel is left behind. Omitted, the channel has no proxy.
       required:
         - kind
 
@@ -27518,7 +28809,8 @@ components:
         Live connection/pairing status of a channel, answered by
         `getChannelStatus`, `connectChannel`, `requestChannelPairingCode` and
         `disconnectChannel`. While `state=pairing` a QR channel (wa_web,
-        tg_client) carries the `qr` payload to show to the account owner;
+        tg_client and the personal Viber number viber_web) carries the `qr`
+        payload to show to the account owner;
         `requestChannelPairingCode` answers a `pairingCode` instead.
         For tg_client, `passwordRequired=true` means the QR was scanned but the
         account's two-step verification password must be submitted via
@@ -31127,7 +32419,8 @@ components:
           description: >
             Messages per channel per calendar day (in `timezone`). 0 disables the
             daily window. Unset: the platform default for the channel kind
-            (1000 for wa_web and tg_client, none for official APIs). Media counts
+            (1000 for wa_web and tg_client, 200 for the personal Viber number
+            viber_web, none for official APIs). Media counts
             like text. At the limit sends are deferred to the next day.
         hourly_limit:
           type: integer
@@ -31136,7 +32429,8 @@ components:
           description: >
             Messages per channel per clock hour (in `timezone`). 0 disables the
             hourly window. Unset: the platform default for the channel kind
-            (200 for wa_web and tg_client, none for official APIs).
+            (200 for wa_web and tg_client, 30 for the personal Viber number
+            viber_web, none for official APIs).
         contact_limit:
           type: integer
           minimum: 0
@@ -31226,6 +32520,8 @@ components:
     QuotaLimits:
       type: object
       # ADR-0051 §2: the metric vocabulary.
+      # ADR-0130: egress.proxies counts the pool egress proxies granted to the
+      # organization (a resource, not a monthly flow), next to the channel kinds.
       description: >
         Limits by metric name. A limit is a non-negative integer, or -1 for
         unlimited; a metric that is absent is unlimited. The metrics:
@@ -31233,10 +32529,12 @@ components:
         who are members of (or invited to) any of its cabinets or the
         organization itself; `channels.<kind>` — connected channels of one
         kind (`channels.wa_web`, `channels.wa_cloud`, `channels.tg_client`,
-        `channels.tg_bot`, `channels.viber_bot`, `channels.fb_page`,
-        `channels.instagram`); `messages.month` — outbound
+        `channels.tg_bot`, `channels.viber_bot`, `channels.viber_web`,
+        `channels.fb_page`, `channels.instagram`); `messages.month` — outbound
         messages accepted this calendar month (UTC); `ai.tokens.month` — AI
-        tokens used this calendar month (UTC); `retention.days` — how long
+        tokens used this calendar month (UTC); `egress.proxies` — pool egress
+        proxies granted to the organization (a resource rather than a monthly
+        flow); `retention.days` — how long
         data is kept, a term rather than a consumption. An unknown metric or a
         value below -1 is refused with 400 `validation.invalid_request`.
       additionalProperties:
@@ -38925,3 +40223,312 @@ components:
           items:
             $ref: '#/components/schemas/ContactDigest'
     # END UI-R2-D schemas
+
+    # =========================================================================
+    # BEGIN egress-proxy schemas (ADR-0130 Phase B)
+    # =========================================================================
+    EgressProxyProtocol:
+      type: string
+      # Not an `enum`: the pinned generator renames the constants of the other
+      # enums that share a value (see OrganizationSuspension.status), so the
+      # protocol stays a plain string. The values are `http`, `https`, `socks5`.
+      description: >
+        The wire protocol spoken to the proxy itself: `http` — a CONNECT tunnel
+        to the proxy over plain TCP; `https` — the same CONNECT tunnel wrapped
+        in TLS to the proxy; `socks5` — the SOCKS5 protocol. `http` and `https`
+        differ only in the leg to the proxy, not in what they carry.
+    EgressProxyStatus:
+      type: string
+      # Not an `enum` (same generator constraint as EgressProxyProtocol above):
+      # the values are `active`, `paused` and `disabled`.
+      description: >
+        The proxy's lifecycle state: `active` — may take new traffic; `paused` —
+        parked by an operator, not offered to new bindings but existing
+        connections are kept; `disabled` — retired, not usable at all.
+    EgressProxy:
+      type: object
+      description: >
+        One network exit a session channel dials out through (its own proxy, or
+        a platform-pool one granted to the cabinet). Credentials are never
+        returned: `username` is the masked account name, and the password and
+        the secret-store reference stay out of every response.
+      required: [id, protocol, host, port, maxChannels, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The proxy id. Pass it to `updateProxy`, `deleteProxy`, `checkProxy` or `setChannelEgress`.
+        cabinetId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The owning cabinet, present on a cabinet's own proxy; `null` (or
+            absent) on a platform-pool proxy.
+        label:
+          type: string
+          description: The operator-facing name of the exit, absent when none was given.
+        protocol:
+          $ref: '#/components/schemas/EgressProxyProtocol'
+        host:
+          type: string
+          description: The proxy host — an IP address or a hostname, without a scheme or port.
+        port:
+          type: integer
+          description: The proxy TCP port (1–65535).
+        username:
+          type: string
+          description: >
+            The masked account name used to authenticate to the proxy (for
+            example `re***nt`). Absent when the proxy takes no authentication
+            or the stored credential cannot be read. Never the full username and
+            never the password.
+        maxChannels:
+          type: integer
+          description: How many channels may be bound to this exit at once.
+        status:
+          $ref: '#/components/schemas/EgressProxyStatus'
+        health:
+          type: object
+          additionalProperties: true
+          description: >
+            The last probe result (`ok`, `checkedAt`, `latencyMs`, `externalIp`,
+            `proxyAddr`, and on a failure `errorKind` and `error`), absent before
+            the first `checkProxy` or `checkPlatformProxy`.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the proxy was created, UTC.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the proxy was last changed, UTC.
+    EgressProxyList:
+      type: object
+      description: The egress proxies returned by `listProxies` or `listPlatformProxies`. Not paginated.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Every proxy the caller may see, own rows first.
+          items:
+            $ref: '#/components/schemas/EgressProxy'
+    CreateEgressProxyRequest:
+      type: object
+      description: >
+        A proxy to create, sent to `createProxy` or `createPlatformProxy`.
+        `username` and `password` are write-only: accepted once, stored in the
+        secret store, and never returned — only the `host`, `port` and a masked
+        `username` come back.
+      required: [protocol, host, port]
+      properties:
+        label:
+          type: string
+          description: Optional operator-facing name for the exit.
+        protocol:
+          $ref: '#/components/schemas/EgressProxyProtocol'
+        host:
+          type: string
+          description: The proxy host — an IP address or a hostname, without a scheme or port.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The proxy TCP port.
+        username:
+          type: string
+          description: The account name to authenticate to the proxy; write-only, stored in the secret store.
+        password:
+          type: string
+          writeOnly: true
+          description: The proxy password; write-only, stored in the secret store and never echoed or logged.
+        maxChannels:
+          type: integer
+          description: How many channels may share the exit; omitted or 0 counts as 2.
+        status:
+          $ref: '#/components/schemas/EgressProxyStatus'
+    UpdateEgressProxyRequest:
+      type: object
+      description: >
+        A partial update of a proxy, sent to `updateProxy` or
+        `updatePlatformProxy`. Only the fields you send are changed. `username`
+        and `password` are write-only and, when sent, replace the stored
+        credential in the secret store.
+      properties:
+        label:
+          type: string
+          description: The new operator-facing name.
+        protocol:
+          $ref: '#/components/schemas/EgressProxyProtocol'
+        host:
+          type: string
+          description: The new proxy host.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: The new proxy TCP port.
+        username:
+          type: string
+          description: The new account name; write-only, stored in the secret store.
+        password:
+          type: string
+          writeOnly: true
+          description: The new proxy password; write-only, stored in the secret store and never echoed or logged.
+        maxChannels:
+          type: integer
+          description: How many channels may share the exit.
+        status:
+          $ref: '#/components/schemas/EgressProxyStatus'
+        billing:
+          type: object
+          additionalProperties: true
+          description: Free-form commercial facts about the rented exit (plan, provider, expiry), kept as an object.
+    EgressProxyCheckResult:
+      type: object
+      description: >
+        The result of a proxy probe, returned by `checkProxy` and
+        `checkPlatformProxy`. A successful probe answers 200 with `ok: true`; a
+        failed probe is persisted to the proxy's health and answers 503
+        `egress.check_failed` instead.
+      required: [ok, checkedAt]
+      properties:
+        ok:
+          type: boolean
+          description: Whether the probe tunnelled through the proxy and learned the external address.
+        checkedAt:
+          type: string
+          format: date-time
+          description: When the probe ran, UTC.
+        latencyMs:
+          type: integer
+          format: int64
+          description: How long the echo request took through the proxy, in milliseconds.
+        externalIp:
+          type: string
+          description: The address the echo endpoint saw us come from — the proxy's exit address.
+        proxyAddr:
+          type: string
+          description: The proxy's `host:port` (never credentials).
+        errorKind:
+          type: string
+          description: 'On a failed probe, the classified kind: `unreachable`, `auth` or `timeout`.'
+        error:
+          type: string
+          description: On a failed probe, what went wrong, naming only `host:port` and never credentials.
+    GrantEgressProxyRequest:
+      type: object
+      description: >
+        The body of `grantPlatformProxy`: the cabinet to grant the platform-pool
+        proxy to.
+      required: [cabinetId]
+      properties:
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet (uuid) to grant the exit to.
+    EgressProxyGrant:
+      type: object
+      description: >
+        A grant of a platform-pool proxy to a cabinet, returned by
+        `grantPlatformProxy`. `revokedAt` is absent while the grant is active; a
+        soft-revoked grant keeps its row as history.
+      required: [id, cabinetId, proxyId, grantedBy, grantedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The grant id. Pass it to `revokePlatformProxyGrant`.
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet the exit was granted to.
+        proxyId:
+          type: string
+          format: uuid
+          description: The granted platform-pool proxy.
+        grantedBy:
+          type: string
+          description: Who granted it (an operator or account id); never a secret.
+        grantedAt:
+          type: string
+          format: date-time
+          description: When the grant was made, UTC.
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the grant was soft-revoked, UTC; absent while active.
+        note:
+          type: string
+          description: A service note on the grant, absent when none.
+    EgressProxyChannelList:
+      type: object
+      description: The channels bound to a platform-pool proxy, returned by `listPlatformProxyChannels`. Not paginated.
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: One entry per bound channel, oldest first.
+          items:
+            $ref: '#/components/schemas/EgressProxyChannel'
+    EgressProxyChannel:
+      type: object
+      description: One channel bound to a platform-pool proxy, with the cabinet it belongs to.
+      required: [channelId, cabinetId]
+      properties:
+        channelId:
+          type: string
+          format: uuid
+          description: The channel bound to the exit.
+        cabinetId:
+          type: string
+          format: uuid
+          description: The cabinet that owns the channel.
+    EgressProxyUsage:
+      type: object
+      description: >
+        The cabinet's egress-proxy usage and limit, returned by
+        `getProxyUsage`. `limit` is absent exactly when `unlimited` is true;
+        `used` is counted across every cabinet of the organization.
+      required: [used, unlimited, boundChannels]
+      properties:
+        used:
+          type: integer
+          format: int64
+          description: How many platform-pool proxies the organization has active grants for, across all its cabinets.
+        limit:
+          type: integer
+          format: int64
+          description: The organization's effective `egress.proxies` limit; absent when unlimited.
+        unlimited:
+          type: boolean
+          description: Whether the plan allows an unlimited number of egress proxies.
+        boundChannels:
+          type: integer
+          description: How many of this cabinet's channels are bound to any proxy right now.
+    ChannelEgress:
+      type: object
+      description: >
+        The network exit a channel is bound to, returned by `getChannelEgress`
+        and `setChannelEgress`. `proxyId` is `null` when the channel has no proxy
+        and dials directly.
+      properties:
+        proxyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The bound proxy, or `null` when there is none.
+      required: [proxyId]
+    SetChannelEgressRequest:
+      type: object
+      description: >
+        The body of `setChannelEgress`: the proxy to bind the channel to (the
+        caller's own, or a granted platform one).
+      required: [proxyId]
+      properties:
+        proxyId:
+          type: string
+          format: uuid
+          description: The proxy to bind the channel to.
+    # END egress-proxy schemas
