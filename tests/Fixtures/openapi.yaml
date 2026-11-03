@@ -28109,10 +28109,11 @@ components:
       type: object
       description: >
         Non-secret, per-channel configuration: identifiers taken from the
-        provider's own dashboard and the channel's group switch. Deliberately
-        separate from credentials — these are readable back, while anything
-        set through setChannelCredentials never is. Keys are per-kind; one
-        that does not apply to the channel's kind is rejected.
+        provider's own dashboard, the channel's group switch and — for a
+        personal Viber account — the device it runs on. Deliberately separate
+        from credentials — these are readable back, while anything set through
+        setChannelCredentials never is. Keys are per-kind; one that does not
+        apply to the channel's kind is rejected.
       properties:
         phoneNumberId:
           type: string
@@ -28151,7 +28152,62 @@ components:
             instagram only, read-only. The id of the Instagram professional
             account this channel is, set when it was connected by logging in
             with Instagram. Ignored when sent to updateChannelSettings.
+        device:
+          $ref: '#/components/schemas/ChannelDeviceSettings'
       additionalProperties: false
+
+    # ADR-0128 §3: a personal Viber number is an Android client on a device the
+    # operator has to name. The control plane hands this to the driver.
+    ChannelDeviceSettings:
+      type: object
+      description: >
+        The Android device a `viber_web` channel is driven on. The channel is a
+        personal Viber account running inside an Android client; an external
+        driver starts and drives the device, and the control plane has to tell
+        it which one. Settings for this kind are set before the channel is
+        connected — `connectChannel` reads them — and clear what is omitted,
+        because `updateChannelSettings` replaces the whole object. Every other
+        kind rejects these keys.
+      properties:
+        adbTarget:
+          type: string
+          description: >
+            The adb serial of the device the driver must drive, in the form
+            `<host>:<port>` (for example `127.0.0.1:5556`) or a device serial.
+            Required before the channel can pair: the driver refuses to create
+            an instance without it, so `connectChannel` answers a detail telling
+            the operator to set it rather than the driver's own error. Set it
+            whenever the device moves or is replaced.
+          example: 127.0.0.1:5556
+        containerName:
+          type: string
+          description: >
+            The name of the container the driver starts for this account, when
+            the deployment pins one. Omitted, the driver derives
+            `viber-<channelId>`. A device-level egress proxy is applied inside
+            that container's network namespace, so a name shared with another
+            channel would put two accounts behind one exit.
+        pairingAuto:
+          type: boolean
+          description: >
+            true — the driver connects the instance by itself as soon as it is
+            created; false or omitted — it waits for the control plane's
+            explicit connect, which is what the pairing flow expects. Turn it
+            on only for a driver that does not answer the explicit connect.
+        phone:
+          type: string
+          description: >
+            The number expected to be linked on the device, in digits with the
+            country code (`380501234567`). The driver stores it next to the
+            instance; it is not our account check — `getChannelStatus` reports
+            the number that actually linked.
+          example: '380501234567'
+      additionalProperties: false
+      example:
+        adbTarget: 127.0.0.1:5556
+        containerName: viber-3f6b2a1c
+        pairingAuto: false
+        phone: '380501234567'
 
     Channel:
       type: object
@@ -28299,8 +28355,10 @@ components:
       type: object
       description: >
         The body of `createChannel`: the kind of the new channel, an optional
-        name, and an optional egress proxy to bind before the channel's first
-        connection. The channel starts disconnected; `connectChannel` or
+        name, an optional egress proxy to bind before the channel's first
+        connection, and the optional non-secret settings the channel needs
+        before it can connect (for a personal Viber account, the device it runs
+        on). The channel starts disconnected; `connectChannel` or
         `setChannelCredentials` connects it.
       properties:
         kind:
@@ -28320,6 +28378,15 @@ components:
             It must be active, the caller's own or a granted platform one, and
             still under its `maxChannels`; otherwise the create is refused and
             no channel is left behind. Omitted, the channel has no proxy.
+        settings:
+          $ref: '#/components/schemas/ChannelSettings'
+      example:
+        kind: viber_web
+        label: Sales Viber
+        settings:
+          device:
+            adbTarget: 127.0.0.1:5556
+            containerName: viber-sales
       required:
         - kind
 

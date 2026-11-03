@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's viber_web device settings (personal
+  Viber channels): `ChannelSettings.device` / `ChannelDeviceSettings`
+  (`adbTarget`, `containerName`, `pairingAuto`, `phone`) and
+  `CreateChannelRequest.settings`, so a channel is created with the device it
+  runs on. No new operations or error codes.
 - Contract fixture synced with Linqelio's egress wiring (ADR-0130 Phase E):
   additive `ChannelStatus.egress` + `ChannelEgressExit` schema (the effective
   exit an adapter reports). No new operations or error codes.
