@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's device provisioning:
+  `provisionChannelDevice` and `getChannelProvisioning` (a personal Viber
+  account's Android device is built on the operator host from the console), plus
+  the new `provisioning.*` error codes. Both operations are classified as not
+  wrapped — renting hardware is not an integration call.
 - Contract fixture synced with Linqelio's viber_web device settings (personal
   Viber channels): `ChannelSettings.device` / `ChannelDeviceSettings`
   (`adbTarget`, `containerName`, `pairingAuto`, `phone`) and

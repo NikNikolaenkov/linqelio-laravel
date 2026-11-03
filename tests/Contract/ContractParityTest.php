@@ -455,6 +455,12 @@ final class Contract
         'deleteChannelEgress' => 'network configuration (settings:manage)',
         'rebindChannelEgress' => 'network configuration (settings:manage) — the controlled reconnect is an operator action; the console polls the job',
         'getChannelEgressRebindJob' => 'network configuration (settings:manage) — status of an operator-initiated rebind; only the console polls it',
+
+        // Provisioning a personal Viber account's device (viber_web). The console
+        // asks the host agent for a redroid container and records the adb target in
+        // the channel's settings; an integration has no business renting hardware.
+        'provisionChannelDevice' => 'console infrastructure (channels:manage) — a new Android device is provisioned on the operator host',
+        'getChannelProvisioning' => 'console infrastructure (channels:read) — progress of an operator-initiated device build',
     ];
 
     /**
