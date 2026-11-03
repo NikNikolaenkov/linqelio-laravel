@@ -1510,6 +1510,190 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /channels/{id}/provisioning:
+    post:
+      operationId: provisionChannelDevice
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      x-idempotency: replay
+      summary: Provision an Android device for a personal Viber channel
+      description: >-
+        Creates the Android device a personal Viber account (`viber_web`) runs
+        on, or takes back the one the channel already has, and saves the
+        device's `adbTarget` and `containerName` into the channel's settings
+        once the device is ready. The channel can then pair without anybody
+        naming a container by hand.
+
+
+        The channel must name the number to provision for — its
+        `settings.device.phone` — and the operation refuses a channel that
+        already runs a live session: disconnect it first, or `getChannelStatus`
+        to see what it is. A device is created in minutes (an image may be
+        pulled, Android boots, the client is installed), so an answer can come
+        back before the device is usable: read `state`. `ready` means the
+        settings were saved; `creating` or `installing` means the device is
+        being built and `getChannelProvisioning` reports the progress; `failed`
+        means the device could not be built — `detail` says which step broke and
+        nothing was saved.
+
+
+        Safe to repeat: a new call for a channel that already holds a device
+        returns the device it has instead of creating a second one. Send an
+        `Idempotency-Key` to make a retry of the same call answer its first
+        result. A deployment without a provisioning agent answers 503
+        `provisioning.unavailable`, and `getProvisioningCapacity` says so in
+        advance.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          It builds an Android device on the host, which is platform
+          infrastructure an agent acting for one cabinet must not create; the
+          console offers it to the people who provision Viber numbers.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        # Only a personal Viber account runs on one of these devices.
+        - channel.capability_unsupported
+        # The number to provision for is unknown, or the channel is live.
+        - channel.not_connected
+        - idempotency.key_reused
+        - idempotency.in_progress
+        # The host has no free device slot right now.
+        - provisioning.no_slot_available
+        - provisioning.step_failed
+        - provisioning.unavailable
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The device is ready and its adb target and container name are saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelProvisioning'
+              example:
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                state: ready
+                slot: 3
+                containerName: viber3
+                adbTarget: 127.0.0.1:5558
+                androidVersion: 13.0.0
+                updatedAt: '2026-11-03T10:00:00Z'
+        '202':
+          description: The device is being built; ask `getChannelProvisioning` for its progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelProvisioning'
+              example:
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                state: installing
+                slot: 3
+                containerName: viber3
+                adbTarget: 127.0.0.1:5558
+                androidVersion: 13.0.0
+                updatedAt: '2026-11-03T10:03:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          description: >-
+            A step of building the device failed on the host
+            (`provisioning.step_failed`); the `detail` names the step.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/provisioning/status:
+    get:
+      operationId: getChannelProvisioning
+      x-permission: 'channels:read'
+      x-platform-support: tech
+      summary: Get the provisioning state of a channel's device
+      description: >-
+        Returns the state of the device being built for a personal Viber
+        account (`viber_web`) after `provisionChannelDevice`: `creating` and
+        `installing` while the host builds it, `ready` once its `adbTarget` and
+        `containerName` are saved into the channel's settings, `failed` when a
+        step broke, `gone` when the device no longer exists.
+
+
+        Poll it every few seconds after a provisioning answered `202`, and stop
+        at `ready`, `failed` or `gone`. A channel that was never provisioned
+        answers `gone`. The read asks the host about the channel's device, so a
+        deployment without a provisioning agent answers 503
+        `provisioning.unavailable`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - provisioning.unavailable
+      responses:
+        '200':
+          description: The state of the channel's device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelProvisioning'
+              example:
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                state: creating
+                slot: 3
+                containerName: viber3
+                adbTarget: 127.0.0.1:5558
+                androidVersion: 13.0.0
+                updatedAt: '2026-11-03T10:01:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ===========================================================================
   # tenancy — platform administration (cabinets + client API keys). Requires a
   # key carrying the `platform:admin` scope; ordinary cabinet keys are rejected
@@ -25335,6 +25519,22 @@ components:
           WhatsApp Business account id or token, or Meta refused them. Fix the
           channel's settings or credentials.
 
+        **Android devices** (a personal Viber account)
+
+        - `provisioning.unavailable` — (503) this deployment has no
+          provisioning agent, or the agent cannot be reached right now, so no
+          device can be built or read. `getProvisioningCapacity` says whether
+          the deployment has one at all; retry when it does and is only
+          unreachable.
+        - `provisioning.no_slot_available` — (503) the host has no free account
+          slot: every device it can run is taken. Release one (delete the
+          channel it belongs to) or add another host; retrying does not help
+          now.
+        - `provisioning.step_failed` — (500) a step of building the device
+          broke on the host (an image that could not be fetched, Android that
+          did not boot, an app that would not install). The `detail` names the
+          step; fixing the host and provisioning again resumes the same device.
+
         **Contacts**
 
         - `contact.not_found` — (404) no such contact in the cabinet.
@@ -28208,6 +28408,157 @@ components:
         containerName: viber-3f6b2a1c
         pairingAuto: false
         phone: '380501234567'
+
+    # The device a personal Viber channel runs on, as the provisioning agent
+    # builds it: one redroid container per account slot.
+    ChannelProvisioning:
+      type: object
+      description: >-
+        The state of the Android device behind a personal Viber account
+        (`viber_web`), as `provisionChannelDevice` and `getChannelProvisioning`
+        report it: which account slot the channel holds, the container that slot
+        names and the adb target the device answers on.
+      properties:
+        channelId:
+          type: string
+          description: The channel the device belongs to (a UUID).
+        state:
+          type: string
+          enum: [creating, installing, ready, failed, gone]
+          # Named, or the generator prefixes EVERY colliding enum document-wide
+          # (one `ready`/`failed` elsewhere renames the whole surface).
+          x-enum-varnames:
+            - ChannelProvisioningCreating
+            - ChannelProvisioningInstalling
+            - ChannelProvisioningReady
+            - ChannelProvisioningFailed
+            - ChannelProvisioningGone
+          description: >-
+            `creating` — the container exists and Android is booting;
+            `installing` — the client and the input method are being installed;
+            `ready` — the device is usable and its `adbTarget` and
+            `containerName` are saved into the channel's settings;
+            `failed` — a step broke, `failedStep` names it and nothing was
+            saved; `gone` — the channel holds no device (or its container no
+            longer exists), so `provisionChannelDevice` creates one.
+        slot:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: >-
+            The account slot the channel holds on the provisioned host; the
+            container name, the data directory and the adb port all follow from
+            it. Absent while the channel holds no device.
+        containerName:
+          type: string
+          description: >-
+            The name of the container the slot's device runs in (`viber<slot>`).
+            Absent while the device does not exist yet.
+          example: viber3
+        adbTarget:
+          type: string
+          description: >-
+            The adb serial of the device — the value saved as the channel's
+            `settings.device.adbTarget` — for example `127.0.0.1:5558`. Absent
+            while the device does not exist yet.
+          example: 127.0.0.1:5558
+        androidVersion:
+          type: string
+          enum: ['13.0.0', '14.0.0']
+          x-enum-varnames:
+            - ChannelProvisioningVersion13
+            - ChannelProvisioningVersion14
+          description: >-
+            `13.0.0` — the smaller, default base system; `14.0.0` — the newer
+            Android release, when an account needs it.
+          example: '13.0.0'
+        failedStep:
+          type: string
+          enum: [validate, portCheck, image, create, budget, adbConnect, boot, adbRoot, install, ime, harden, remove, purge]
+          x-enum-varnames:
+            - ProvisioningStepValidate
+            - ProvisioningStepPortCheck
+            - ProvisioningStepImage
+            - ProvisioningStepCreate
+            - ProvisioningStepBudget
+            - ProvisioningStepAdbConnect
+            - ProvisioningStepBoot
+            - ProvisioningStepAdbRoot
+            - ProvisioningStepInstall
+            - ProvisioningStepIme
+            - ProvisioningStepHarden
+            - ProvisioningStepRemove
+            - ProvisioningStepPurge
+          description: >-
+            The step that broke, only with `state` `failed`: `validate` — the
+            host refused the request itself; `portCheck` — another container
+            already publishes the slot's adb port; `image` — the base system
+            could not be fetched; `create` — the container could not be created;
+            `budget` — its resource limits could not be applied; `adbConnect` —
+            adb could not reach it; `boot` — Android did not finish booting in
+            time; `adbRoot` — the root shell the client needs was refused;
+            `install` — an app could not be installed; `ime` — the text input
+            method could not be selected; `harden` — the background apps could
+            not be trimmed; `remove`, `purge` — a removal step broke. Read
+            `detail` for the host's own message.
+        detail:
+          type: string
+          description: >-
+            The host's own message about a failure, or why the request was
+            refused. Absent when nothing went wrong.
+        updatedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the device last changed state, in UTC (RFC 3339). Absent while
+            the channel holds no device.
+      additionalProperties: false
+      example:
+        channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+        state: ready
+        slot: 3
+        containerName: viber3
+        adbTarget: 127.0.0.1:5558
+        androidVersion: 13.0.0
+        updatedAt: '2026-11-03T10:00:00Z'
+
+    ProvisioningCapacity:
+      type: object
+      description: >-
+        How many Android devices this deployment can still build, and whether it
+        can build any at all. Use it to tell an operator up front whether a
+        personal Viber account can get a device here.
+      properties:
+        enabled:
+          type: boolean
+          description: >-
+            true — this deployment has a provisioning agent, so
+            `provisionChannelDevice` can build a device; false — it has none and
+            that operation answers 503 `provisioning.unavailable`.
+        from:
+          type: integer
+          minimum: 1
+          description: The lowest account slot a device can get here.
+          example: 1
+        to:
+          type: integer
+          minimum: 1
+          description: The highest account slot a device can get here.
+          example: 16
+        free:
+          type: integer
+          minimum: 0
+          description: >-
+            How many account slots on the host are free right now. `0` means
+            the next provisioning answers 503 `provisioning.no_slot_available`
+            until a device is released.
+          example: 13
+      additionalProperties: false
+      example:
+        enabled: true
+        from: 1
+        to: 16
+        free: 13
 
     Channel:
       type: object
