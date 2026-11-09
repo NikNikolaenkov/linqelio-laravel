@@ -194,6 +194,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Contract fixture synced with Linqelio's channel create fix: `createChannel`
+  now stores the `settings` it is given, and the same `Idempotency-Key` with
+  different settings is 409 `idempotency.key_reused` (it was only kind or
+  label). Wording only in the contract; no new operations or error codes.
 - `alerts()->list()` pages like every other list: the cursor goes out as
   `since` and comes back from `pageInfo.nextCursor` (the top-level
   `nextCursor` is still read from an older platform). A `status` string is
