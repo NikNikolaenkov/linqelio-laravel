@@ -679,7 +679,7 @@ paths:
 
         Accepts an optional `Idempotency-Key`. With a key, repeating the same
         request returns the channel the first call created (201) instead of
-        creating a second one; the same key with a different kind or label is
+        creating a second one; the same key with a different kind, label or settings is
         409 `idempotency.key_reused`. Without a key every call creates a new
         channel, so an interrupted call may leave one you did not record —
         find it with `listChannels` and remove it with `deleteChannel`.
