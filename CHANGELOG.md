@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's kept avatars (#293, ADR-0131).
+  - **New operations:** `getContactAvatar`, `getChannelAvatar` and `getConversationAvatar` (groups) stream the photo Linqelio keeps of a contact, of a channel's own account or bot, and of a group. They are binary reads for the console, classified as not wrapped.
+  - **New fields:** `Channel.avatarUrl` and `ConversationSummary.avatarUrl`.
+  - **Meaning of `profile.avatarUrl` / `identities[].avatarUrl` for `wa_web`, `tg_client`, `tg_bot`:** now the relative API path `/v1/contacts/{id}/avatar`. Messenger links (Facebook, Viber) stay as they were.
+  - No new error codes.
 - Contract fixture synced with Linqelio's one-channel-per-number rule (#287,
   ADR-0124 amended 2026-11-10): `createChannel` takes an optional `phone`
   (`wa_web`, `tg_client`); a kind and number that are already a channel are
