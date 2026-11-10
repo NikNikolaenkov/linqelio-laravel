@@ -325,6 +325,9 @@ final class Contract
         'deleteComment' => 'comment moderation in the console — not an SDK method yet',
         'sendPrivateReply' => 'a private reply to a comment from the console — not an SDK method yet',
         'getConversationPostThumbnail' => 'the post picture the console shows — a binary, not an SDK method',
+        'getContactAvatar' => 'the photo the console shows (#293) — a binary read from the URL the contact names, not an SDK method',
+        'getChannelAvatar' => 'the channel account photo the console shows (#293) — a binary, not an SDK method',
+        'getConversationAvatar' => 'the group photo the console shows (#293) — a binary, not an SDK method',
         // Cabinet API keys: a person issues, rotates and revokes credentials in the console; an SDK holds one key and never mints others.
         'listApiKeys' => 'credential management in the console — not an SDK concern',
         'createApiKey' => 'credential management in the console — not an SDK concern',
