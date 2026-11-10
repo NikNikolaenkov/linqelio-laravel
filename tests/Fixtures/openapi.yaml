@@ -691,6 +691,27 @@ paths:
         `tenancy.quota_exceeded`, whose `quota` member names the metric, the
         limit and the current use. A replay of an Idempotency-Key is not a new
         channel and is answered even at the limit.
+
+
+        One number, one channel of a kind: a channel stands for a phone number
+        — for `wa_web` and `tg_client` the optional `phone` (stored as the
+        number the account must log in with, like `expectedPhone` on
+        `connectChannel`) or the account it is logged in with, for `viber_web`
+        `settings.device.phone`. A create whose number another channel of the
+        SAME kind already has is refused. In your cabinet any such channel
+        counts, in any status (a disconnected one too): 409
+        `channel.already_exists`, whose `channelId` names it — connect that
+        channel instead. In another cabinet only a number that is proven or in
+        use counts: the account a login recorded, or a connected channel. The
+        answer is then 409 `channel.account_in_use`, with nothing about that
+        cabinet. A number merely entered on a channel elsewhere, or being
+        paired there, does not block yours: nobody can reserve a number they
+        do not hold, and the answer reveals no number that is not confirmed.
+        If two cabinets pair one number, the scan by the phone's owner
+        decides. The same number on another kind is allowed: one
+        SIM is both a WhatsApp and a Telegram account. A replay of an
+        Idempotency-Key is answered before this check, with the channel it
+        created.
       x-mcp:
         expose: true
         readOnly: false
@@ -724,6 +745,10 @@ paths:
         - egress.proxy_not_active
         - egress.proxy_not_granted
         - egress.proxy_channel_limit
+        # #287 (ADR-0124, amended 2026-11-10): the kind and number are already a
+        # channel — in this cabinet (channelId in the problem) or in another one.
+        - channel.already_exists
+        - channel.account_in_use
       requestBody:
         required: true
         content:
@@ -898,8 +923,12 @@ paths:
         a later call without `expectedPhone` checks the login against the
         same number, and a call with another `expectedPhone` replaces it. A
         channel that was never given a number accepts any account, as before.
-        A number that another channel of the cabinet already holds is refused
-        with 409 `channel.account_in_use`, and a channel that is already
+        A number that another channel of the same kind already holds — as its
+        account, or as the number it is logging in with or connected with —
+        is refused with 409 `channel.account_in_use`. In another cabinet only
+        an account a login recorded or a connected channel counts — a number
+        merely entered or being paired there does not — and a channel
+        that is already
         connected to a different account than `expectedPhone` answers 409
         `channel.account_mismatch`. A WhatsApp Web channel (`wa_web`) that is
         connected but whose account has not been checked against the number
@@ -1331,6 +1360,15 @@ paths:
         is refused with 400 `validation.invalid_request`.
 
 
+        A personal Viber number (`viber_web`) stands for its
+        `device.phone`. Changing it to a number another `viber_web` channel
+        already has is refused by the same rule as on `createChannel`: 409
+        `channel.already_exists` with that channel's `channelId` when it is in
+        your cabinet (in any status), 409 `channel.account_in_use` when a
+        channel of another cabinet is connected with it or logged in with it;
+        nothing is stored.
+
+
         Switching group chats on (`groups.enabled: true`) is the cabinet's
         decision to take group messages in and to allow sends into groups; it
         also clears the list of `listChannelIgnoredGroups`. Switching it off
@@ -1356,6 +1394,9 @@ paths:
         - channel.not_found
         # R7-B (#36, ADR-0080): the organization is suspended — its cabinets are read-only.
         - tenancy.suspended
+        # #287: a viber_web device.phone another viber_web channel already has.
+        - channel.already_exists
+        - channel.account_in_use
       requestBody:
         required: true
         content:
@@ -25436,9 +25477,15 @@ components:
           number, also on a connect without `expectedPhone`: if the change of
           number is intended, connect again with the new number as
           `expectedPhone` (disconnect a channel that is connected first).
-        - `channel.account_in_use` — (409) the phone number is already
-          connected through another channel of the cabinet. Use that channel,
-          or disconnect it first.
+        - `channel.account_in_use` — (409) the phone number is in use by
+          another channel of the same kind: the account a login recorded or a
+          connected channel (in your cabinet also one pairing it) — possibly
+          in another cabinet, which is not named. Check the number; if it is
+          yours, disconnect or delete that channel first.
+        - `channel.already_exists` — (409) a channel of this kind with this
+          number is already in your cabinet, in whatever status; the
+          problem's `channelId` names it. Open and connect that channel
+          instead of creating another.
         - `message.type_unsupported` — (422) the channel does not support this
           message type. Send another type (for example text).
         - `message.too_large` — (413) the message or the uploaded file is too
@@ -26299,6 +26346,9 @@ components:
         # check_failed (503): a failed probe, or no echo endpoint configured.
         - egress.check_failed
         # --- END egress proxies ----------------------------------------------------
+        # #287 (ADR-0124, amended 2026-11-10): createChannel / updateChannelSettings
+        # name a kind and number that are already a channel of the caller's cabinet.
+        - channel.already_exists
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -26418,8 +26468,9 @@ components:
         object. Switch on `code`; show `detail` to a person; quote `trace_id`
         when asking support. `detail` never reveals another cabinet's data or
         internal details. Extra members appear with some codes: `errors[]`
-        (field failures), `quota` (with `tenancy.quota_exceeded`) and
-        `policyFindings` (with a send held by the send policy).
+        (field failures), `quota` (with `tenancy.quota_exceeded`),
+        `policyFindings` (with a send held by the send policy) and `channelId`
+        (with `channel.already_exists`).
       properties:
         type:
           type: string
@@ -26475,6 +26526,15 @@ components:
             client does not know.
           items:
             $ref: '#/components/schemas/PolicyFinding'
+        # #287: present only with channel.already_exists.
+        channelId:
+          type: string
+          format: uuid
+          description: >
+            With `channel.already_exists`: the id of the channel of your
+            cabinet that already has this kind and number. Open and connect it
+            instead of creating another. Never present for a channel of
+            another cabinet.
       required:
         - type
         - title
@@ -28397,8 +28457,12 @@ components:
         phone:
           type: string
           description: >
-            The number expected to be linked on the device, in digits with the
-            country code (`380501234567`). The driver stores it next to the
+            The number expected to be linked on the device, with the country
+            code (`380501234567`); validated and stored as on
+            `createChannel`'s `phone` (a Ukrainian number has exactly 12
+            digits). It is the channel's number: another `viber_web` channel
+            with it is refused (409 `channel.already_exists` or
+            `channel.account_in_use`, by `createChannel`'s rule). The driver stores it next to the
             instance; it is not our account check — `getChannelStatus` reports
             the number that actually linked.
           example: '380501234567'
@@ -28714,6 +28778,23 @@ components:
       properties:
         kind:
           $ref: '#/components/schemas/ChannelKind'
+        phone:
+          type: string
+          description: >-
+            Optional, `wa_web` and `tg_client` only: the phone number of the
+            account this channel is for, with its country code. `+`, spaces,
+            dashes and brackets are ignored; 7 to 15 digits remain, and a
+            Ukrainian number (`380…`, or `0…` written nationally) has exactly
+            12. It is stored as the number the account must log in with, as
+            `expectedPhone` on `connectChannel` stores it, and it makes the
+            create refuse a number another channel of the kind already has
+            (409 `channel.already_exists` or `channel.account_in_use`, see
+            `createChannel` for which channels count). Other
+            kinds refuse it with 400 `validation.invalid_request`; a personal
+            Viber number (`viber_web`) takes its number in
+            `settings.device.phone`. Part of what an Idempotency-Key replay
+            compares.
+          example: '+380501234567'
         label:
           type: string
           description: >-
