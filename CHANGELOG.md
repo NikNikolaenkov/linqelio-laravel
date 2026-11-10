@@ -9,6 +9,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's one-channel-per-number rule (#287,
+  ADR-0124 amended 2026-11-10): `createChannel` takes an optional `phone`
+  (`wa_web`, `tg_client`); a kind and number that are already a channel are
+  refused with 409 `channel.already_exists` (the cabinet's own channel, named
+  by the new `Problem.channelId`) or `channel.account_in_use` (another
+  cabinet's proven or connected number, not named); `updateChannelSettings`
+  checks a `viber_web` `device.phone` the same way; a +380 number has exactly
+  12 digits. New error code `channel.already_exists` (now an `ErrorCode`
+  case). `channels()->create()` does not take a phone yet.
 - Contract fixture synced with Linqelio's device provisioning:
   `provisionChannelDevice` and `getChannelProvisioning` (a personal Viber
   account's Android device is built on the operator host from the console), plus

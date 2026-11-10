@@ -52,8 +52,10 @@ enum ErrorCode: string
     case ChannelPairingRequired = 'channel.pairing_required';
     /** The connected account differs from the expected phone (409), ADR-0124. */
     case ChannelAccountMismatch = 'channel.account_mismatch';
-    /** Another channel of the cabinet already holds that number (409), ADR-0124. */
+    /** Another channel of the same kind holds that number: its account, or a connected channel — possibly in another cabinet, which is not named (409), ADR-0124. */
     case ChannelAccountInUse = 'channel.account_in_use';
+    /** The cabinet already has a channel of this kind with this number; the problem's channelId names it (409), Linqelio #287. */
+    case ChannelAlreadyExists = 'channel.already_exists';
 
     case PolicyRateLimited = 'policy.rate_limited';
     case PolicyQuotaExceeded = 'policy.quota_exceeded';
