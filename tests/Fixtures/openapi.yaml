@@ -14779,10 +14779,12 @@ paths:
       x-platform-support: read
       summary: Download the photo of a group conversation
       description: >-
-        Streams the photo of a group chat on WhatsApp Web or Telegram
-        (`wa_web`, `tg_client`, `tg_bot`). Linqelio keeps its own copy, read
+        Streams the photo of a group chat on WhatsApp Web or a Telegram
+        account (`wa_web`, `tg_client`). Linqelio keeps its own copy, read
         from the messenger when a message arrives in the group, at most once a
         day. It is the `avatarUrl` that `listConversations` shows for a group.
+        A Telegram bot's (`tg_bot`) groups have no photo here: their chats are
+        not group conversations.
 
 
         Authorization is the conversation's own visibility: a conversation of
