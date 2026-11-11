@@ -1571,13 +1571,10 @@ paths:
         photo is 404 `channel.not_found`. The response may be cached privately
         for an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw image bytes, not JSON; an agent identifies a channel by
-          its `label`, `kind` and `account` from `listChannels`.
       tags:
         - channels
       parameters:
@@ -11398,11 +11395,10 @@ paths:
         export answers 404 `analytics.export_not_found`. Every download is
         recorded in the audit log (`analytics.export.download`).
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: A file download (CSV or XLSX), not a JSON answer an agent can use.
       tags:
         - analytics
       x-error-codes:
@@ -14053,17 +14049,17 @@ paths:
         means the file could not be stored right now (retry). Nothing is sent
         to anyone by the upload itself, and each call stores a new file.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: false
         destructive: false
         idempotent: false
-        reason: >-
-          Takes a raw binary body, which an MCP tool call cannot carry; an
-          agent sends media by referencing a URL it already has.
       tags:
         - messages
       requestBody:
         required: true
+        description: >-
+          The file's raw bytes, at most 32 MiB. Name it with `filename` and
+          give its type with `mime` when the bytes alone do not tell it.
         content:
           application/octet-stream:
             schema:
@@ -14159,13 +14155,10 @@ paths:
         503 `provider.unavailable` that it cannot be read right now (retry
         later). The response may be cached privately for an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw file bytes, not JSON; an agent attaches a file by its
-          URL and never needs to read it back.
       tags:
         - messages
       parameters:
@@ -14323,13 +14316,10 @@ paths:
         that it cannot be read right now (retry later). The response may be
         cached privately for an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw file bytes, not JSON; an agent reads a message's text and
-          attachment metadata through `getMessage` or `listContactMessages`.
       tags:
         - messages
       parameters:
@@ -14728,13 +14718,10 @@ paths:
         picture is 404 `conversation.not_found`. The response may be cached
         privately for an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw image bytes, not JSON; an agent reads the post's link and
-          caption from `listConversations` or `listConversationMessages`.
       tags:
         - conversations
       parameters:
@@ -14793,13 +14780,10 @@ paths:
         404 `conversation.not_found`. The response may be cached privately for
         an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw image bytes, not JSON; an agent reads the group's name and
-          members from `listConversations` and `listConversationParticipants`.
       tags:
         - conversations
       parameters:
@@ -15696,13 +15680,10 @@ paths:
         `contact.not_found`. `eraseContact` deletes the copy. The response may
         be cached privately for an hour.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Returns raw image bytes, not JSON; an agent reads the contact's name
-          and addresses from `getContact`.
       tags:
         - contacts
       parameters:
@@ -22552,13 +22533,10 @@ paths:
       x-idempotency: replay
       summary: Upload a CSV file of contacts to import
       x-mcp:
-        expose: false
+        expose: true
         readOnly: false
         destructive: false
         idempotent: true
-        reason: >-
-          A file-based bulk workflow a person runs in the console: upload a
-          CSV, map its columns, review the preview, then start.
       description: >
         Stores the file as an import job in the `uploaded` state and answers
         its header, row count and first rows — nothing is imported yet. The
@@ -22588,6 +22566,9 @@ paths:
             maxLength: 200
       requestBody:
         required: true
+        description: >-
+          The CSV file's raw bytes: UTF-8, at most 10 MiB, column names in the
+          first row.
         content:
           text/csv:
             schema:
@@ -23188,11 +23169,10 @@ paths:
       x-platform-support: none
       summary: Download the per-row report of an import
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: A file download (CSV), part of the bulk import workflow in the console.
       description: >
         A CSV (UTF-8 with BOM, formula-safe) with one line per issue:
         `row` (as a spreadsheet numbers it — the header is row 1), `severity`
@@ -23475,11 +23455,10 @@ paths:
       # ADR-0056 §1 (our own surfaces never get a bearer link; the object store
       # is not published).
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: A file download (CSV of personal data) a person makes in the console.
       description: >
         Streams the export file THROUGH the platform, authenticated like every
         other call — there is no public or pre-signed link to the file. Only the export's author may download

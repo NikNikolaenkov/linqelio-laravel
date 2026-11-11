@@ -208,6 +208,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Contract fixture synced with Linqelio's files through MCP (Linqelio #298,
+  ADR-0132): the eleven file operations (`getMessageMedia`, `uploadMedia`,
+  `getUploadedMedia`, the three avatars, `getConversationPostThumbnail`,
+  `downloadAnalyticsExport`, `downloadContactExport`,
+  `getContactImportReport`, `uploadContactImport`) are now
+  `x-mcp.expose: true`, and the two uploads' request bodies have a
+  description. MCP metadata and wording only: no new operations, fields or
+  error codes, and no change to the package.
 - Contract fixture synced with Linqelio's channel create fix: `createChannel`
   now stores the `settings` it is given, and the same `Idempotency-Key` with
   different settings is 409 `idempotency.key_reused` (it was only kind or
