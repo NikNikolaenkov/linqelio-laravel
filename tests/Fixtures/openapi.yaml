@@ -1551,6 +1551,70 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # #293, ADR-0131: the photo of the channel's own account or bot.
+  /channels/{id}/avatar:
+    get:
+      operationId: getChannelAvatar
+      x-permission: 'channels:read'
+      x-platform-support: read
+      summary: Download the photo of a channel's own account
+      description: >-
+        Streams the profile photo of the account a channel is: the WhatsApp or
+        Telegram account (`wa_web`, `tg_client`) or the Telegram bot
+        (`tg_bot`). Linqelio keeps its own copy, read when the channel
+        connects and again at most once a day. It is the channel's `avatarUrl`
+        in `listChannels`.
+
+
+        Authorization is the channel's own visibility: a channel of another
+        cabinet, one outside the caller's scope, or a channel without a kept
+        photo is 404 `channel.not_found`. The response may be cached privately
+        for an hour.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Returns raw image bytes, not JSON; an agent identifies a channel by
+          its `label`, `kind` and `account` from `listChannels`.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        # A malformed (non-uuid) channel id.
+        - validation.invalid_request
+        - media.unreadable
+        - provider.unavailable
+      responses:
+        '200':
+          description: The photo's bytes.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /channels/{id}/provisioning:
     post:
       operationId: provisionChannelDevice
@@ -14707,6 +14771,72 @@ paths:
           $ref: '#/components/responses/UnreadableFile'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  # #293, ADR-0131: a group's photo, kept by Linqelio.
+  /conversations/{id}/avatar:
+    get:
+      operationId: getConversationAvatar
+      x-permission: 'channels:read'
+      x-platform-support: read
+      summary: Download the photo of a group conversation
+      description: >-
+        Streams the photo of a group chat on WhatsApp Web or a Telegram
+        account (`wa_web`, `tg_client`). Linqelio keeps its own copy, read
+        from the messenger when a message arrives in the group, at most once a
+        day. It is the `avatarUrl` that `listConversations` shows for a group.
+        A Telegram bot's (`tg_bot`) groups have no photo here: their chats are
+        not group conversations.
+
+
+        Authorization is the conversation's own visibility: a conversation of
+        another cabinet, of a channel outside the caller's scope, a
+        conversation that is not a group, or a group without a kept photo is
+        404 `conversation.not_found`. The response may be cached privately for
+        an hour.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Returns raw image bytes, not JSON; an agent reads the group's name and
+          members from `listConversations` and `listConversationParticipants`.
+      tags:
+        - conversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - conversation.not_found
+        # A malformed (non-uuid) conversation id.
+        - validation.invalid_request
+        - media.unreadable
+        - provider.unavailable
+      responses:
+        '200':
+          description: The photo's bytes.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # --- END M4 comments (paths) -------------------------------------------------
 
   /conversations:
@@ -15543,6 +15673,72 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  # #293, ADR-0131: a contact's photo, kept by Linqelio.
+  /contacts/{id}/avatar:
+    get:
+      operationId: getContactAvatar
+      x-permission: 'channels:read'
+      x-platform-support: read
+      summary: Download a contact's profile photo
+      description: >-
+        Streams the contact's picture as Linqelio keeps it: read from WhatsApp
+        Web or Telegram (`wa_web`, `tg_client`, `tg_bot`) when the contact
+        writes, at most once a day, and gone when the contact removes it. It
+        is the contact's `profile.avatarUrl` when that is a path of this API.
+        A contact whose picture is only a messenger's link (Facebook, Viber)
+        has nothing kept here: use that link.
+
+
+        Authorization is the contact's own visibility, as `getContact`: a
+        contact of another cabinet, one the caller's channel scope does not
+        reach, or a contact without a kept picture is 404
+        `contact.not_found`. `eraseContact` deletes the copy. The response may
+        be cached privately for an hour.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Returns raw image bytes, not JSON; an agent reads the contact's name
+          and addresses from `getContact`.
+      tags:
+        - contacts
+      parameters:
+        - $ref: '#/components/parameters/ContactId'
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - contact.not_found
+        # issue #119: a malformed (non-uuid) path id.
+        - validation.invalid_request
+        - media.unreadable
+        - provider.unavailable
+      responses:
+        '200':
+          description: The photo's bytes.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UnreadableFile'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /contacts/{id}/erase:
     post:
@@ -26810,6 +27006,16 @@ components:
             organized in topics. Each of its messages carries its topic in
             `threadId`, a send can name the topic, the conversation's feed can
             be filtered by topic, and its topics can be listed.
+        # #293, ADR-0131: the picture to show for the row — additive.
+        avatarUrl:
+          type: string
+          description: >-
+            The picture to show for this conversation. For a group, its photo
+            through the API (`getConversationAvatar`:
+            `/v1/conversations/{id}/avatar`). For a direct conversation, the
+            contact's `profile.avatarUrl` (`getContactAvatar`:
+            `/v1/contacts/{id}/avatar`, or a link the messenger gave, such as
+            Facebook's). Absent when there is none.
       required:
         - id
         - channelId
@@ -27448,8 +27654,14 @@ components:
           type: string
         avatarUrl:
           description: >-
-            A link to the person's profile picture on the messenger, when
-            known. It may stop working.
+            The person's profile picture on this messenger, when known. For
+            WhatsApp Web and Telegram (`wa_web`, `tg_client`, `tg_bot`)
+            Linqelio keeps its own copy and this is the contact's
+            `getContactAvatar` path (`/v1/contacts/{id}/avatar`, same
+            credentials) when this address's picture is the one the contact
+            shows; another address's kept picture is not listed here. For the
+            other kinds it is the link the messenger gave, which may stop
+            working.
           type: string
       required:
         - channelType
@@ -27466,7 +27678,12 @@ components:
           type: string
         avatarUrl:
           description: >-
-            A link to the contact's picture, when known.
+            The contact's picture, when known. A picture Linqelio keeps (read
+            from WhatsApp Web or Telegram when the contact writes, at most once
+            a day) is the path to download it through the API:
+            `getContactAvatar`, `/v1/contacts/{id}/avatar`, same credentials.
+            Otherwise it is the link the messenger gave (Facebook, Viber),
+            which may stop working.
           type: string
         locale:
           description: >-
@@ -28697,6 +28914,18 @@ components:
             connected at least once. It stays after the account logs out, so the
             number can be compared on a re-login. Absent for the other kinds and
             for a channel that never connected.
+        # #293, ADR-0131: the photo of the channel's own account or bot — additive.
+        avatarUrl:
+          type: string
+          description: >-
+            Where to download the profile photo of the channel's own account —
+            the WhatsApp or Telegram account, or the Telegram bot — through the
+            API (`getChannelAvatar`, same credentials): a path such as
+            `/v1/channels/3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c/avatar`.
+            Linqelio keeps its own copy, read when the channel connects and
+            again at most once a day. Absent when no photo is kept (the account
+            has none, it was not read yet, or the kind is not `wa_web`,
+            `tg_client` or `tg_bot`).
       required:
         - id
         - kind
