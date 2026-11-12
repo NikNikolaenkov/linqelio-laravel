@@ -208,6 +208,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Contract fixture synced with Linqelio's contact jobs through MCP (Linqelio
+  #300, ADR-0132 amended): `listContactImports`, `getContactImport`,
+  `previewContactImport`, `startContactImport`, `cancelContactImport`,
+  `createContactExport`, `listContactExports` and `getContactExport` are now
+  `x-mcp.expose: true`. MCP metadata only: no new operations, fields or error
+  codes, and no change to the package.
 - Contract fixture synced with Linqelio's files through MCP (Linqelio #298,
   ADR-0132): the eleven file operations (`getMessageMedia`, `uploadMedia`,
   `getUploadedMedia`, the three avatars, `getConversationPostThumbnail`,

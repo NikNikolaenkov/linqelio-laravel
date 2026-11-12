@@ -22657,13 +22657,10 @@ paths:
         report to download with `getContactImportReport`. Needs the
         `contacts:write` permission, like every import operation.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Part of the file-based bulk import workflow a person runs in the
-          console.
       tags:
         - contacts
       x-error-codes:
@@ -22735,13 +22732,10 @@ paths:
         per-row details are in `getContactImportReport`. An unknown job, or one
         of another cabinet, is 404 `contact.job_not_found`.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Part of the file-based bulk import workflow a person runs in the
-          console.
       tags:
         - contacts
       x-error-codes:
@@ -22817,13 +22811,11 @@ paths:
       summary: Dry-run a column mapping over the first rows
       # ADR-0084 (an import states consent explicitly, per channel).
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          A dry run (writes nothing), part of the file-based bulk import
-          workflow a person runs in the console.
+        reason: A dry run that checks the mapping and writes nothing.
       description: >
         Checks the mapping and runs the first `rows` data rows (default 100,
         at most 500) through exactly what the real run does — normalization,
@@ -22954,13 +22946,10 @@ paths:
       # ADR-0061 §4 (host rung of the authority ladder); ADR-0008 §4 (never a
       # silent merge); ADR-0084 §2 (an import never lifts an opt-out).
       x-mcp:
-        expose: false
+        expose: true
         readOnly: false
         destructive: false
         idempotent: true
-        reason: >-
-          A bulk write of many contacts from a file, started by a person in the
-          console after reviewing the preview.
       description: >
         Queues the uploaded file with the mapping (checked exactly as in
         previewContactImport) and answers 202 at once — the run happens in the
@@ -23086,13 +23075,10 @@ paths:
         Cancelling only stops an import (and drops its file); refusing it while the organization is suspended would leave the run to continue the moment the organization resumes.
       summary: Stop an import that has not finished
       x-mcp:
-        expose: false
+        expose: true
         readOnly: false
         destructive: false
         idempotent: true
-        reason: >-
-          Part of the file-based bulk import workflow a person runs in the
-          console.
       description: >
         Stops the job between two chunks and drops the uploaded file. Rows
         already applied stay applied — an import is not undone — and the
@@ -23221,14 +23207,10 @@ paths:
         An export only reads the cabinet's own contacts; a suspended organization stays read-only, not locked out of its data.
       summary: Export contacts to a CSV file in the background
       x-mcp:
-        expose: false
+        expose: true
         readOnly: false
         destructive: false
         idempotent: true
-        reason: >-
-          A bulk export of personal data into a file only its author can
-          download; a person asks for it in the console. An agent reads
-          contacts with listContacts instead.
       description: >
         Queues an export of the contacts matching the filter (all of it:
         carrying every tag, with a conversation on one of the channels, typed
@@ -23317,13 +23299,10 @@ paths:
         Use it to find an export to download with `downloadContactExport`, or
         to see whether one is still running (then poll `getContactExport`).
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Part of the contact export workflow, whose result is a file
-          download a person makes in the console.
       tags:
         - contacts
       x-error-codes:
@@ -23388,13 +23367,10 @@ paths:
         another member or key is 404 `contact.job_not_found`, as is an unknown
         id.
       x-mcp:
-        expose: false
+        expose: true
         readOnly: true
         destructive: false
         idempotent: true
-        reason: >-
-          Part of the contact export workflow, whose result is a file
-          download a person makes in the console.
       tags:
         - contacts
       x-error-codes:
