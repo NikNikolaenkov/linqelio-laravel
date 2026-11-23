@@ -9,6 +9,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's webhooks behind OAuth 2.0 (#316,
+  ADR-0133) and its failure reasons for a recipient nobody is behind (#322).
+  - **New fields:** `registerWebhook` takes an optional `oauth`
+    (`WebhookOAuthClient`: `tokenUrl`, `clientId`, `clientSecret`, `scope`) — the
+    platform then obtains a token with the client credentials grant and adds
+    `Authorization: Bearer` to every delivery; a registered or listed
+    subscription answers `oauth` (`WebhookOAuth`, never the secret).
+    `webhooks()->register()` does not take `oauth` yet.
+  - **Meaning of a `failed` reason** (`message.status`, `meta.error`):
+    `<kind>: recipient_not_found` now also comes from a Telegram account
+    (`tg_client`) — a phone that is not on Telegram or hides itself from a
+    lookup by number, a username nobody holds, a person who blocked the
+    account; it used to be `tg_client: rejected`. `tg_client: rate_limited` on a
+    message that failed at once means Telegram limited the sending account.
+    The reason stays a free string: nothing to change in code that only stores
+    or shows it.
+  - No new operations or error codes.
 - Contract fixture synced with Linqelio's kept avatars (#293, ADR-0131).
   - **New operations:** `getContactAvatar`, `getChannelAvatar` and `getConversationAvatar` (groups) stream the photo Linqelio keeps of a contact, of a channel's own account or bot, and of a group. They are binary reads for the console, classified as not wrapped.
   - **New fields:** `Channel.avatarUrl` and `ConversationSummary.avatarUrl`.

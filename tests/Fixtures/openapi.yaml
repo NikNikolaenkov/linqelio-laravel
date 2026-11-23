@@ -298,7 +298,10 @@ info:
     answers are retried with growing delays (from 30 seconds, doubling, up to
     an hour between attempts; six attempts), then the delivery is
     dead-lettered: `listDeadLetters` shows it and `replayDeadLetter` sends it
-    again.
+    again. A receiver that accepts only OAuth 2.0 bearer tokens is served by
+    the `oauth` settings of `registerWebhook`: the platform obtains a token
+    with the client credentials grant and adds `Authorization: Bearer` to
+    every delivery.
 
     ## Versioning
 
@@ -2832,7 +2835,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyOptional'
       summary: Register an outbound webhook subscription
-      # ADR-0031 (event gateway), ADR-0046 (signing keys).
+      # ADR-0031 (event gateway), ADR-0046 (signing keys), ADR-0133 (OAuth).
       description: >-
         Subscribes an HTTPS endpoint to the cabinet's events. From now on the
         platform POSTs each matching event to `url` as JSON with the headers
@@ -2855,11 +2858,24 @@ paths:
         it immediately.
 
 
+        For a receiver behind OAuth 2.0 send `oauth`: before a delivery the
+        platform asks `oauth.tokenUrl` for a token with the client credentials
+        grant (`grant_type=client_credentials`, the client id and secret in
+        the form body) and adds `Authorization: Bearer <token>` to the POST.
+        The signature headers stay as they are. The token is reused until it
+        expires. When the endpoint answers 401 the platform obtains a new
+        token and repeats the POST once; a second 401 is a failed attempt.
+        When no token can be obtained the attempt fails with the error text
+        `oauth token: ...` and is retried like any other.
+
+
         Watch for: every registration creates a new subscription, even for a
         URL that is already subscribed — check `listWebhooks` first or send an
         `Idempotency-Key` so a retry replays the first answer. Both `secret`
         and `secretRef` answers 400 `validation.invalid_request`; so does a
-        `secretRef` that is not a `secret://` reference. 503
+        `secretRef` that is not a `secret://` reference, and an `oauth` whose
+        `tokenUrl` is not an absolute `https` URL of a public host or that
+        lacks `clientId` or `clientSecret`. 503
         `provider.unavailable` means the key could not be generated or stored
         and nothing was registered — retry later.
 
@@ -16184,8 +16200,18 @@ paths:
         `thread_not_found`, `note_refused`, `gave_up`, `unknown` (more may be
         added); `note_refused` means the messenger refused a recorded voice
         message or video note (the recipient does not accept them): send it
-        again without `note`. Also `channel.not_connected`
-        and `tenancy.suspended`.
+        again without `note`. `recipient_not_found` means nobody can be
+        reached at the address, while the message and the channel are fine:
+        on WhatsApp the number has no account; on a Telegram account
+        (`tg_client`) the phone number is not on Telegram or hides itself
+        from a lookup by number, the @username belongs to nobody, the id is
+        not among the account's chats, or that person blocked the account,
+        restricts who may write to them, or deleted theirs — check the
+        address, a retry cannot help. On a Telegram account `rate_limited`
+        on a message that `failed` at once means Telegram limited the
+        sending account itself (too many first messages to people who are
+        not its contacts): slow down or send through another channel. Also
+        `channel.not_connected` and `tenancy.suspended`.
 
 
         `Idempotency-Key` is required, so a retry after a timeout never sends
@@ -30332,10 +30358,67 @@ components:
             `active` — events are delivered; `disabled` — delivery is paused
             and events that happen meanwhile are not delivered later. Set it
             with `updateWebhook`.
+        oauth:
+          $ref: '#/components/schemas/WebhookOAuth'
       required:
         - id
         - url
         - status
+    # ADR-0133 (OAuth 2.0 client credentials for webhook deliveries).
+    WebhookOAuth:
+      type: object
+      description: >-
+        The OAuth 2.0 client credentials settings of a webhook subscription,
+        as stored. Present only on a subscription registered with `oauth`.
+        The client secret is never included.
+      properties:
+        tokenUrl:
+          type: string
+          description: The token endpoint the platform asks for an access token.
+        clientId:
+          type: string
+          description: The client id sent to the token endpoint.
+        scope:
+          type: string
+          description: The scope requested with the token. Absent when none was set.
+      required:
+        - tokenUrl
+        - clientId
+    WebhookOAuthClient:
+      type: object
+      description: >-
+        OAuth 2.0 client credentials for a webhook's deliveries, sent in
+        `oauth` of `registerWebhook`. With it the platform obtains an access
+        token at `tokenUrl` and sends it as `Authorization: Bearer` on every
+        POST to the subscription's `url`.
+      properties:
+        tokenUrl:
+          type: string
+          description: >-
+            The token endpoint, for example
+            `https://id.example.com/connect/token`. An absolute `https` URL of
+            a public host. Give the address explicitly: the platform does not
+            read OAuth discovery documents and does not follow a redirect from
+            this address.
+        clientId:
+          type: string
+          description: The client id registered with the authorization server.
+        clientSecret:
+          type: string
+          writeOnly: true
+          description: >-
+            The client secret. Handed to the secret store; the database keeps
+            only its reference and no operation returns it. To replace it,
+            delete the subscription and register it again.
+        scope:
+          type: string
+          description: >-
+            The scope to request, space-separated when several. Omit it when
+            the authorization server assigns the scope itself.
+      required:
+        - tokenUrl
+        - clientId
+        - clientSecret
     ErasureResult:
       type: object
       description: >
@@ -30477,6 +30560,8 @@ components:
             `WebhookSubscription.eventTypes`.
           items:
             type: string
+        oauth:
+          $ref: '#/components/schemas/WebhookOAuthClient'
       required:
         - url
     RegisterWebhookResult:
@@ -30510,6 +30595,8 @@ components:
             and listWebhooks does not read even the reference. Configure the
             receiver with it now; if it is lost, the way back is to delete this
             subscription and register another.
+        oauth:
+          $ref: '#/components/schemas/WebhookOAuth'
       required:
         - id
         - url
