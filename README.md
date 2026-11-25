@@ -97,9 +97,10 @@ retries (on 429 and 5xx) repeat it rather than doing the work again.
 
 The same holds for the creating operations the platform replays (ADR-0103) —
 `campaigns()->create()` / `launch()`, `groups()->create()` and the participant
-changes, `alerts()->subscribe()`, `contactImports()->upload()` / `start()`,
-`contactExports()->create()`, `analytics()->export()`,
-`contacts()->fillAiProfile()` / `invite()`, `webhooks()->register()`. Each takes
+changes, `chats()->addMembers()` / `removeMembers()`, `alerts()->subscribe()`,
+`contactImports()->upload()` / `start()`, `contactExports()->create()`,
+`analytics()->export()`, `contacts()->fillAiProfile()` / `invite()`,
+`webhooks()->register()`. Each takes
 an optional `idempotencyKey:`; a retry with the same key and the same request
 gets the first answer back and nothing is done twice. The same key with a
 DIFFERENT request is refused (`idempotency.key_reused`), and a retry while the
@@ -416,6 +417,47 @@ Linqelio::groups()->ignored($channelId);   // groups a number is in while groups
 Group changes happen on the messenger and can be partial: check
 `$change->failed` (who, and why) rather than assuming everyone is in.
 
+### Telegram chat members by phone
+
+On a Telegram account channel (`tg_client`) the groups, supergroups and
+channels the account administers are addressed by their Telegram address
+(`chat:<id>` or `channel:<id>`), and people by phone number — they need not be
+contacts of the cabinet:
+
+```php
+use Linqelio\Laravel\Data\Chats\ChatMember;
+
+$chats = Linqelio::chats()->list($channelId);   // chatId, type, role, canInvite, canRemove; check $chats->complete
+
+$added = Linqelio::chats()->addMembers($channelId, 'chat:1234567890', [
+    new ChatMember('+380501234567', 'Olena Kovalenko'),
+    '+380671112233',
+], idempotencyKey: "onboard-{$employee->id}");
+
+foreach ($added->failed() as $row) {
+    // `failed`, or `invite_not_sent` — hand $row->inviteLink over another way
+}
+
+Linqelio::chats()->removeMembers($channelId, 'channel:2233445566', ['+380501234567']);
+
+// Someone leaves: out of every chat the account administers (or only $chatIds).
+do {
+    $removal = Linqelio::chats()->removeEverywhere($channelId, '+380501234567');
+    if (! $removal->complete && $removal->retryAfterSeconds) {
+        sleep($removal->retryAfterSeconds);
+    }
+} while (! $removal->complete);
+```
+
+Answers are per person (or per chat): one refusal does not fail the call. A
+person Telegram will not add directly because of their privacy settings is sent
+a personal invite link instead (`invite_queued`), so adding needs
+`messages:send` as well as `channels:manage`. Membership changes, including
+ones other admins make in Telegram, arrive as the `chat.member_added`,
+`chat.member_removed`, `chat.member_joined` and `chat.member_left` webhooks
+(listen for `WebhookReceived`). The inbound addresses an HR system calls
+without a key (`createChatMemberHook`) are made in the console.
+
 ## Scheduled sends
 
 One message to one contact, held by the platform until its moment — it survives
@@ -647,8 +689,8 @@ Each error domain has its family: `ValidationException`, `AuthException`,
 `ContactException`, `IdempotencyException`, `EmbedException`,
 `ProviderException`, and for the newer surfaces `CampaignException` (campaigns
 and scheduled sends), `AlertException`, `TemplateException`,
-`AnalyticsException`, `AiException` and `ConversationException` (conversations
-and groups). `ValidationException`, `ContactException` and `CampaignException`
+`AnalyticsException`, `AiException` and `ConversationException` (conversations,
+groups and Telegram chats). `ValidationException`, `ContactException` and `CampaignException`
 carry `errors()` — field => reason — for `validation.*`,
 `contact.field_invalid` and `campaign.invalid`.
 

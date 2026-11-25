@@ -101,8 +101,9 @@ info:
       linked by QR code (`wa_web`), a WhatsApp Business Cloud API number
       (`wa_cloud`), a Telegram account (`tg_client`), a Telegram bot
       (`tg_bot`), a Viber bot (`viber_bot`), a personal Viber number
-      (`viber_web`), a Facebook Page (`fb_page`) or an Instagram professional
-      account (`instagram`). What a channel can do depends on its kind;
+      (`viber_web`), a Facebook Page (`fb_page`), an Instagram professional
+      account (`instagram`) or a Google Workspace account in Google Chat
+      (`google_chat`). What a channel can do depends on its kind;
       `listChannels` reports each channel's capabilities.
     - **Contact** — a person the cabinet talks to. **Identity** — one of the
       contact's addresses on a channel (a phone number, a Telegram user, a
@@ -268,7 +269,8 @@ info:
     - **Realtime** — at most 10 open event streams per caller (person, key or
       widget contact): 429 `realtime.too_many_streams`.
     - **Sizes** — a JSON request body up to 1 MiB; an uploaded media file up
-      to 32 MiB (413 `message.too_large`).
+      to 100 MiB (104 857 600 bytes; 413 `message.too_large`). A recorded
+      message (`note`) is converted from an upload of at most 32 MiB.
     - **Login** — five failed attempts lock the account for 15 minutes (423
       `auth.account_locked`).
 
@@ -575,8 +577,9 @@ paths:
         Business API number (`wa_cloud`), a Telegram account paired by QR
         (`tg_client`), a Telegram bot (`tg_bot`), a Viber bot (`viber_bot`), a
         personal Viber number paired through the evovibgo driver (`viber_web`),
-        a Facebook Page (`fb_page`) and an Instagram professional account
-        (`instagram`).
+        a Facebook Page (`fb_page`), an Instagram professional account
+        (`instagram`) and a Google Workspace account in Google Chat
+        (`google_chat`).
 
 
         Use it to find a channel id for `sendContactMessage` (`channelId`),
@@ -679,6 +682,11 @@ paths:
         (`startMetaConnect`) and the channels are created when they pick their
         Pages or account (`completeMetaConnect`). Asking for one of these kinds
         here is refused with 400 `validation.invalid_request`.
+
+        A Google Chat account (`google_chat`) is not created here either: the
+        channel appears when a person signs in with Google
+        (`startGoogleChatConnect`, then `completeGoogleChatConnect`). Asking
+        for the kind here is refused with 400 `validation.invalid_request`.
 
         Accepts an optional `Idempotency-Key`. With a key, repeating the same
         request returns the channel the first call created (201) instead of
@@ -1144,7 +1152,9 @@ paths:
         sent for one is refused with 400. A Facebook Page (`fb_page`) or Instagram account
         (`instagram`) takes no token either — the platform obtains and renews
         it after a login with Facebook or Instagram (`startMetaConnect`) — and
-        a token sent for one is refused with 400.
+        a token sent for one is refused with 400. A Google Chat account
+        (`google_chat`) takes no token either: it is connected by signing in
+        with Google, and a token sent for one is refused with 400.
       x-mcp:
         expose: false
         readOnly: false
@@ -1220,6 +1230,15 @@ paths:
         that run instead of starting another.
 
 
+        Google Chat account (`google_chat`): the same background import, with
+        the same limits, of every space the person is in — direct messages and,
+        when groups are on for the channel, group chats and spaces — newest
+        messages first within `historyDays`, at most `historyCount` per space.
+        The person's own messages are imported as sent. Files are imported as
+        their names with the text. The platform carries the run out itself
+        (it starts within a minute); follow it with `getChannelHistoryImport`.
+
+
         Either way nothing is sent to anyone, imported messages raise no
         webhooks, desk notifications or AI replies, and a message already stored
         is never stored twice, so repeating the call is safe. Other kinds have no
@@ -1291,13 +1310,15 @@ paths:
       summary: Get the progress of a channel's history import
       description: >-
         Returns the latest history import of a Telegram account channel
-        (`tg_client`) started with `syncChannel`: its state, limits and how many
-        chats and messages it has imported so far. `status` is `pending` (waits
-        for the channel's session, up to half a minute), `running`, `paused`
-        (Telegram asked to slow down; it resumes by itself at `waitUntil`),
-        `done`, `failed` (see `error`; start it again with `syncChannel`) or
-        `none` when the channel never ran one (channels other than a Telegram
-        account always report `none`). Changes nothing.
+        (`tg_client`) or a Google Chat account (`google_chat`) started with
+        `syncChannel`: its state, limits and how many chats and messages it has
+        imported so far. `status` is `pending` (waits for the channel's session,
+        up to half a minute; for Google Chat, for the platform's next pass, up
+        to a minute), `running`, `paused` (Telegram or Google asked to slow
+        down; it resumes by itself at `waitUntil`), `done`, `failed` (see
+        `error`; start it again with `syncChannel`) or `none` when the channel
+        never ran one (channels of other kinds always report `none`). Changes
+        nothing.
       x-mcp:
         expose: true
         readOnly: true
@@ -1342,6 +1363,577 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # --- BEGIN archive import (#331, ADR-0137): a Telegram Desktop export ------
+  /channels/{id}/archive-imports:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      operationId: createChannelArchiveImport
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      x-idempotency: replay
+      summary: Start uploading a Telegram export archive
+      description: >
+        Opens an upload of a Telegram Desktop export (Settings → Advanced →
+        Export Telegram data, or a chat's Export chat history; format
+        Machine-readable JSON; the export folder packed into a ZIP) into a
+        Telegram account channel (`tg_client`). Answers the run with its `id`,
+        `partSize` (8 MiB) and `partCount`; send each part with
+        `uploadChannelArchiveImportPart`, then `completeChannelArchiveImportUpload`.
+        Nothing is written to the channel's history until
+        `startChannelArchiveImport`.
+
+
+        `ownAccountConfirmed` must be true: the caller confirms the export is
+        of the account connected in the channel (an export of one chat does not
+        say whose it is). The archive may be at most the platform's limit
+        (20 GiB unless configured otherwise): 413 archive.too_large. One run at
+        a time per channel: 409 archive.import_busy while another is not
+        finished or cancelled. A channel of another kind: 409
+        channel.capability_unsupported. An upload left without progress is
+        deleted after a day.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Uploading an archive of gigabytes in 8 MiB parts is the console's job;
+          an assistant can follow a run with getChannelArchiveImport.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelArchiveImportRequest'
+            example:
+              filename: Telegram-export.zip
+              sizeBytes: 1610612736
+              ownAccountConfirmed: true
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - channel.capability_unsupported
+        - archive.import_busy
+        - archive.too_large
+        - provider.unavailable
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '201':
+          description: The run, waiting for its parts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: uploading
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 0
+                missingParts: [1, 2, 3]
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      operationId: listChannelArchiveImports
+      x-permission: 'channels:read'
+      x-platform-support: tech
+      summary: List a channel's archive imports
+      description: >-
+        Returns the channel's 20 most recent archive imports, newest first,
+        with their state and counters (no preview — read one run with
+        getChannelArchiveImport). A finished run is kept for 30 days.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - validation.invalid_request
+      responses:
+        '200':
+          description: The channel's recent runs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImportList'
+              example:
+                items:
+                  - id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                    channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                    status: ready
+                    filename: Telegram-export.zip
+                    sizeBytes: 1610612736
+                    partSize: 8388608
+                    partCount: 192
+                    partsReceived: 192
+                    createdAt: '2026-11-24T10:00:00Z'
+                    updatedAt: '2026-11-24T10:21:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /channels/{id}/archive-imports/{importId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/ArchiveImportId'
+    get:
+      operationId: getChannelArchiveImport
+      x-permission: 'channels:read'
+      x-platform-support: tech
+      summary: Get an archive import with its preview
+      description: >-
+        Returns one archive import of the channel: its state (`uploading`,
+        `validating`, `ready`, `queued`, `running`, `completed`, `failed`,
+        `cancelled`), which parts are still missing (an interrupted upload
+        resumes from the first of them), and — once checked — the preview:
+        every chat of the archive with its type, message count, period, files,
+        whether the channel already has it and how many of its messages are
+        already stored, or why it cannot be imported. A failed check carries
+        `errorCode` (`archive.not_zip`, `archive.result_missing`,
+        `archive.html_export`, `archive.result_invalid`,
+        `archive.foreign_account`, `archive.too_large`, `archive.no_chats`).
+        Changes nothing.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - archive.not_found
+        - validation.invalid_request
+        - provider.unavailable
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: ready
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 192
+                preview:
+                  kind: account
+                  messages: 148320
+                  alreadyStored: 3110
+                  files: 9210
+                  filesPresent: 9204
+                  chats:
+                    - index: 0
+                      name: Olena Kovalenko
+                      type: personal_chat
+                      messages: 2410
+                      firstAt: '2021-03-01T12:00:00Z'
+                      lastAt: '2026-11-20T18:04:00Z'
+                      files: 120
+                      filesPresent: 120
+                      exists: true
+                      alreadyStored: 310
+                      verdict: match
+                    - index: 1
+                      name: Auto news
+                      type: public_channel
+                      skip: broadcast_channel
+                      messages: 0
+                      files: 0
+                      filesPresent: 0
+                      exists: false
+                      alreadyStored: 0
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:21:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/archive-imports/{importId}/parts/{partNumber}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/ArchiveImportId'
+      - name: partNumber
+        in: path
+        required: true
+        description: The part's number, from 1 to the run's `partCount`.
+        schema:
+          type: integer
+          minimum: 1
+    put:
+      operationId: uploadChannelArchiveImportPart
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      summary: Upload one part of the archive
+      description: >
+        Stores one part of the archive: bytes `(partNumber-1)*partSize` up to
+        the next part, exactly `partSize` bytes (the last part — the rest).
+        Sending the same part again replaces it, so a part whose answer was
+        lost is simply sent again. Only while the run is `uploading`: 409
+        archive.state_conflict after completeChannelArchiveImportUpload. A part
+        number outside the run or a body of the wrong length: 422
+        archive.part_invalid. Answers the run with the parts still missing.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Raw bytes of an archive in 8 MiB parts are not something an assistant
+          sends; the console uploads them.
+      tags:
+        - channels
+      requestBody:
+        required: true
+        description: The part's raw bytes.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - archive.not_found
+        - archive.state_conflict
+        - archive.part_invalid
+        - provider.unavailable
+      responses:
+        '200':
+          description: The run with the part stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: uploading
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 1
+                missingParts: [2, 3, 4]
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:00:05Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/archive-imports/{importId}/complete:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/ArchiveImportId'
+    post:
+      operationId: completeChannelArchiveImportUpload
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      x-idempotency: replay
+      summary: Finish the upload and check the archive
+      description: >
+        Ends the upload once every part is stored (409
+        archive.upload_incomplete otherwise, with the missing parts in
+        `detail`) and queues the structure check: the run moves to
+        `validating`, and in the background result.json is read — nothing is
+        written to the history. Follow it with getChannelArchiveImport: `ready`
+        with the preview, or `failed` with `errorCode`. Calling it again on a
+        run already past the upload answers the run as it is.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: Part of the console's upload; see createChannelArchiveImport.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - archive.not_found
+        - archive.upload_incomplete
+        - archive.state_conflict
+        - provider.unavailable
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '202':
+          description: The run, being checked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: validating
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 192
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:20:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/archive-imports/{importId}/start:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/ArchiveImportId'
+    post:
+      operationId: startChannelArchiveImport
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      x-idempotency: replay
+      summary: Confirm and import the chosen chats
+      description: >
+        The confirmation: imports the chosen chats of a `ready` run (their
+        `index` in the preview) into the channel's history in the background
+        and answers 202 with the run `queued`. Every message is stored as
+        history — no webhooks, no consent, no unread marks — and what the
+        channel already holds is never duplicated; a message stored before
+        without its file gets the file from the archive. A chat the preview
+        marks with `skip` cannot be chosen (400). `confirmed` must be true. Not
+        `ready`: 409 archive.state_conflict.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Writing a whole account's history is confirmed by a person in the
+          console after reading the preview.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartChannelArchiveImportRequest'
+            example:
+              chats: [0, 2, 5]
+              confirmed: true
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - archive.not_found
+        - archive.state_conflict
+        - provider.unavailable
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '202':
+          description: The run, queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: queued
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 192
+                selectedChats: [0, 2, 5]
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:25:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/archive-imports/{importId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/ArchiveImportId'
+    post:
+      operationId: cancelChannelArchiveImport
+      x-permission: 'channels:manage'
+      x-platform-support: tech
+      x-suspension: allowed
+      x-suspension-reason: >
+        Cancelling only stops an import and deletes its archive; refusing it while the organization is suspended would leave the archive in storage and the run to continue the moment the organization resumes.
+      summary: Cancel an archive import and delete the archive
+      description: >-
+        Stops the run at any stage — upload, check, waiting or import — and
+        deletes the archive from storage. Messages already imported stay.
+        Cancelling a finished run answers it unchanged.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: Part of the console's import wizard.
+      tags:
+        - channels
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - archive.not_found
+        - provider.unavailable
+      responses:
+        '200':
+          description: The run, cancelled (or already finished).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelArchiveImport'
+              example:
+                id: 3f2a8c1e-5b7d-4e9f-a1c3-6d8e0f2b4a6c
+                channelId: 7b2d8f3a-4c5e-4a71-8b9c-3d4e5f6a7b8c
+                status: cancelled
+                filename: Telegram-export.zip
+                sizeBytes: 1610612736
+                partSize: 8388608
+                partCount: 192
+                partsReceived: 40
+                createdAt: '2026-11-24T10:00:00Z'
+                updatedAt: '2026-11-24T10:05:00Z'
+                finishedAt: '2026-11-24T10:05:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # --- END archive import ----------------------------------------------------
+
   /channels/{id}/settings:
     put:
       operationId: updateChannelSettings
@@ -1351,8 +1943,9 @@ paths:
       description: >-
         Stores the channel's non-secret settings: for a WhatsApp Business API
         number (`wa_cloud`) the Meta identifiers `phoneNumberId` and `wabaId`,
-        and for a WhatsApp Web account (`wa_web`) or a Telegram account
-        (`tg_client`) whether group chats are taken in (`groups.enabled`).
+        and for a WhatsApp Web account (`wa_web`), a Telegram account
+        (`tg_client`) or a Google Chat account (`google_chat`) whether group
+        chats are taken in (`groups.enabled`).
         Unlike `setChannelCredentials` these values are readable back: they
         appear on the channel in `listChannels`.
 
@@ -3982,6 +4575,309 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
   # --- END M1 Meta channels (paths) --------------------------------------------
+
+  # --- BEGIN Google Chat connect (issue #325, ADR-0135): paths ---------------
+  /platform/google-chat-app:
+    get:
+      operationId: getGoogleChatAppSettings
+      x-permission: 'platform:admin'
+      summary: Get the platform's Google app settings (platform operator)
+      # ADR-0135, design §4.3: one Google app for the whole platform.
+      description: >-
+        Returns the settings of the platform's one Google app — the OAuth
+        client through which every cabinet connects a Google Workspace account
+        in Google Chat (`google_chat`): its client id, whether its client
+        secret is stored (`clientSecretSet`; the secret is never returned),
+        and what the inbound messages need — the Pub/Sub topic Google Workspace
+        Events publishes to, the service account the push subscription signs
+        as and the audience it signs for.
+
+
+        Also returns the addresses to enter in the Google Cloud console
+        (`urls`): the OAuth redirect URI of the client and the push endpoint
+        of the Pub/Sub subscription. `configured` is true once a person can
+        sign in; until then `startGoogleChatConnect` answers 409
+        `google_chat.app_not_configured`.
+      x-mcp:
+        expose: false
+        readOnly: true
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): the configuration of
+          the platform's own Google app, not any cabinet's data.
+      tags:
+        - platform
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - provider.unavailable
+      responses:
+        '200':
+          description: The Google app settings (the secret omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleChatAppSettings'
+              example:
+                configured: true
+                clientId: 123456789012-abc123def456.apps.googleusercontent.com
+                clientSecretSet: true
+                pubsubTopic: projects/linqelio-chat/topics/chat-events
+                pushServiceAccount: chat-push@linqelio-chat.iam.gserviceaccount.com
+                pushAudience: https://messages.example.com/webhooks/google-chat
+                urls:
+                  oauthRedirect: https://messages.example.com/oauth/google/callback
+                  webhook: https://messages.example.com/webhooks/google-chat
+                updatedAt: '2026-11-25T10:15:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      operationId: updateGoogleChatAppSettings
+      x-permission: 'platform:admin'
+      summary: Set the platform's Google app settings (platform operator)
+      description: >-
+        Stores the platform's Google app: the OAuth client id (as the Google
+        Cloud console shows it, `<number>-<id>.apps.googleusercontent.com`),
+        optionally its client secret, and what the inbound messages need — the
+        Pub/Sub topic (`projects/<project>/topics/<topic>`), the e-mail of the
+        service account the push subscription authenticates as, and the
+        audience of its token (the push endpoint's address when omitted).
+        Every call replaces the client id, the topic, the service account and
+        the audience; a client secret that is absent or empty keeps the stored
+        one. The secret is write-only: it goes to the secret store and no
+        operation returns it.
+
+
+        The first call also generates the key the sign-in state is signed
+        with. Answers the settings as `getGoogleChatAppSettings` does.
+        Recorded in the platform's security log.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: true
+        reason: >-
+          Platform operator surface (`platform:admin`): carries the Google
+          app's client secret, which must not pass through an agent's context.
+      tags:
+        - platform
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - provider.unavailable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleChatAppSettingsUpdate'
+            example:
+              clientId: 123456789012-abc123def456.apps.googleusercontent.com
+              clientSecret: example-client-secret-not-real
+              pubsubTopic: projects/linqelio-chat/topics/chat-events
+              pushServiceAccount: chat-push@linqelio-chat.iam.gserviceaccount.com
+      responses:
+        '200':
+          description: The stored settings (the secret omitted).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleChatAppSettings'
+              example:
+                configured: true
+                clientId: 123456789012-abc123def456.apps.googleusercontent.com
+                clientSecretSet: true
+                pubsubTopic: projects/linqelio-chat/topics/chat-events
+                pushServiceAccount: chat-push@linqelio-chat.iam.gserviceaccount.com
+                pushAudience: https://messages.example.com/webhooks/google-chat
+                urls:
+                  oauthRedirect: https://messages.example.com/oauth/google/callback
+                  webhook: https://messages.example.com/webhooks/google-chat
+                updatedAt: '2026-11-25T10:15:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /google-chat-connect:
+    post:
+      operationId: startGoogleChatConnect
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Start connecting a Google Chat account
+      # ADR-0135, design §4.4: the signed, single-use state (as ADR-0107 §3).
+      description: >-
+        Starts the sign-in that connects a Google Workspace account in Google
+        Chat (`google_chat`) to the cabinet, and answers the Google address to
+        open in the person's browser (`authorizeUrl`). Nobody types a token:
+        the person signs in with Google and allows the platform to read and
+        send their Chat messages, and Google sends the browser back to the
+        platform, which then opens the console at
+        `/c/<cabinet>/channels?googleChatGrant=<grantId>` — or with
+        `googleChatError=<reason>` when the sign-in was refused or failed
+        (`access_denied`, `state_invalid`, `exchange_failed`,
+        `not_configured`, `scope_missing` — the person unticked a Chat
+        permission). Create the channel with `completeGoogleChatConnect`.
+
+
+        The address is valid for 10 minutes and works once. The same flow
+        reconnects a channel whose state is `reconnect_required`: signing in
+        with the same Google account gives the existing channel the new access
+        instead of a duplicate. Answers 409 `google_chat.app_not_configured`
+        while the platform's Google app is not set up.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Finishes only in a person's browser (a Google sign-in); an agent
+          cannot complete it.
+      tags:
+        - channels
+      x-error-codes:
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+        - google_chat.app_not_configured
+        - provider.unavailable
+        - tenancy.suspended
+      responses:
+        '201':
+          description: The sign-in to open in the person's browser.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleChatConnectStart'
+              example:
+                authorizeUrl: https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=123456789012-abc123def456.apps.googleusercontent.com&prompt=consent&redirect_uri=https%3A%2F%2Fmessages.example.com%2Foauth%2Fgoogle%2Fcallback&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fchat.messages&state=v1.eyJjIjoiNWExYyJ9.c2lnbmF0dXJl
+                expiresAt: '2026-11-25T10:25:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /google-chat-connect/grants/{grantId}/complete:
+    post:
+      operationId: completeGoogleChatConnect
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Connect the Google Chat account the person signed in with
+      # ADR-0135: create or reconnect, store the tokens, audit; single use.
+      description: >-
+        Creates the `google_chat` channel of the Google account the sign-in
+        started by `startGoogleChatConnect` returned with (`grantId`, from
+        `googleChatGrant=<grantId>` in the console address), and stores its
+        access for the platform to use and renew. When the account is already
+        a channel of this cabinet, that channel is reconnected instead: it
+        gets the new access and its state returns to `active` (`outcome:
+        reconnected`).
+
+
+        Answers 409 `google_chat.account_connected_elsewhere` when the account
+        is a channel of another cabinet, 403 `tenancy.quota_exceeded` when the
+        plan allows no more `google_chat` channels, 404
+        `google_chat.grant_invalid` when the grant is unknown, older than 30
+        minutes, already used or another person's (start again). Uses the
+        grant up. Counts against the plan (`channels.google_chat`). Recorded
+        in the audit trail.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          Part of the browser sign-in of a Google Chat account; exists only
+          for the person who just signed in.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/GoogleChatGrantId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.cabinet_not_found
+        - tenancy.quota_exceeded
+        - google_chat.grant_invalid
+        - google_chat.account_connected_elsewhere
+        - provider.unavailable
+        - tenancy.suspended
+      responses:
+        '200':
+          description: The connected channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleChatConnectResult'
+              example:
+                outcome: created
+                email: olena@example.com
+                channel:
+                  id: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                  kind: google_chat
+                  label: olena@example.com
+                  state: active
+                  capabilities:
+                    text: true
+                    media: false
+                    templates: false
+                    buttons: false
+                    groups: true
+                    presence: false
+                    threads: false
+                    deepLinkInvite: false
+                    voiceNotes: false
+                    videoNotes: false
+                    delivery: webhook
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  # --- END Google Chat connect (paths) -----------------------------------------
 
   # --- BEGIN platform mail (ADR-0123): the platform's outgoing mail settings --
   /platform/mail:
@@ -9236,6 +10132,806 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /channels/{id}/chats:
+    get:
+      operationId: listChannelChats
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: List the Telegram chats where the channel's account is an admin
+      # issue #321: Telegram chat members by chat address.
+      description: >
+        Lists the groups, supergroups and channels of a Telegram account
+        channel (`tg_client`) where the account is the owner or an admin, with
+        what the account may do there (`canInvite`, `canRemove`) and the
+        chat address (`chatId`, such as `chat:123` or `channel:456`) that the
+        member commands take. Both the account's main chat list and its archive
+        are read, and a chat listed from the archive is addressed by the member
+        commands like any other. A chat the account only belongs to is not
+        listed. `conversationId` is set when the chat already has a
+        conversation.
+
+
+        `complete` is false when the account's dialog list was not read to its
+        end (the scan stopped at its limit of 2000 dialogs, or could not page
+        further): chats may then be missing from the list. Needs a
+        channel whose kind manages groups (else 409
+        `channel.capability_unsupported`) and which is connected. Needs
+        `channels:manage` on the channel; for a channel outside the caller's
+        scope the answer is 404 `channel.not_found`. A platform rate limit is
+        503 `provider.unavailable` with `Retry-After`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The chats where the account is an admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelChatList'
+              example:
+                channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                complete: true
+                items:
+                  - chatId: 'chat:1234567890'
+                    type: group
+                    title: Kovalenko family order
+                    username: null
+                    membersCount: 12
+                    role: owner
+                    canInvite: true
+                    canRemove: true
+                    conversationId: 6e7f8a9b-0c1d-4e2f-a3b4-c5d6e7f8a9b0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/chats/{chatId}/members/add:
+    post:
+      operationId: addChatMembers
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      x-idempotency: replay
+      summary: Add people to a Telegram chat by phone number
+      # issue #321: Telegram chat members by chat address.
+      description: >-
+        Adds people (1–50, by phone number) to the Telegram chat `chatId`
+        (as `listChannelChats` shows it), acting as the channel's own account,
+        which must be an admin of the chat with the right to invite. The added
+        people see that they were added, so this acts on real people. Needs
+        `channels:manage` and, because of the invite fallback below,
+        additionally `messages:send`.
+
+
+        The answer is per person (`results`, in request order); one refused
+        person does not fail the call. A person is `added`, or was already
+        there (`already_member`), or is not on Telegram (`not_on_telegram`),
+        or the add failed (`failed`, with a `reason`). When Telegram refuses to
+        add someone because of their privacy settings, a personal invite link
+        is created for them and the account sends it in a message instead:
+        `invite_queued` means the message was accepted for sending (its
+        delivery is the message's own status, `inviteMessageId`).
+        `invite_not_sent` means the link was created but the message carrying
+        it was not accepted for sending (the send policy, the person's contact
+        not being available to this caller, or Telegram requiring Premium to
+        message this person first); the link is in the response (`inviteLink`),
+        and `reason` says why: `send_policy` (the send policy refused the
+        message), `premium_required` (Telegram requires Premium to message
+        this person first), `contact_unavailable` (the person's contact could
+        not be looked up, created or used by this caller) or `send_refused`
+        (the send was refused otherwise). The link is personal: while it is
+        unused and valid for at least a day more, a later call for the same
+        person hands out the same link, and the invite message already queued
+        with it is not sent again (`inviteMessageId` names it). `contactId` is the cabinet's contact for the
+        person: matched when the cabinet already knows them; a contact is
+        CREATED only when an invite message has to be sent to someone the
+        cabinet does not know. A person this account had removed and left
+        banned is unbanned before being added (another admin's ban is never
+        touched); when that ban cannot be lifted the person is `failed` with
+        reason `ban_not_lifted` and gets no invite link.
+
+
+        An entry whose phone is not a phone number is its own row (`failed`,
+        reason `invalid_phone`) and does not fail the call; the call is 422
+        only when not one entry is a valid phone number, and 400 for an empty
+        list or one of more than 50 entries.
+
+
+        Requirements: a connected Telegram account channel (`tg_client`; else
+        409 `channel.capability_unsupported`), a chat that exists and where the
+        account is an admin (404 `chat.not_found`, 403 `chat.admin_required`).
+        A platform rate limit before anyone was handled is 503
+        `provider.unavailable` with `Retry-After`. A rate limit that arrives
+        after some people were handled answers 200: the people not handled yet
+        are `failed` with reason `rate_limited`, and `retryAfterSeconds` says
+        how long to wait before repeating the call for them.
+        Send an `Idempotency-Key` to make a retry safe.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/ChatAddress'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMembersRequest'
+            example:
+              members:
+                - phone: '+380501234567'
+                  name: Olena Kovalenko
+                - phone: '+380671112233'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - chat.not_found
+        - chat.admin_required
+        - provider.upstream_error
+        - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '200':
+          description: The people were processed (see `results` for each).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMembersResult'
+              example:
+                chatId: 'chat:1234567890'
+                title: Kovalenko family order
+                results:
+                  - phone: '+380501234567'
+                    outcome: added
+                    contactId: 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e
+                    providerId: '777000111'
+                  - phone: '+380671112233'
+                    outcome: invite_queued
+                    inviteLink: https://t.me/+AbCdEfGhIjK
+                    inviteExpiresAt: '2026-11-30T10:00:00Z'
+                    inviteMessageId: 4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/chats/{chatId}/members/remove:
+    post:
+      operationId: removeChatMembers
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      x-idempotency: replay
+      summary: Remove people from a Telegram chat by phone number
+      # issue #321: Telegram chat members by chat address.
+      description: >-
+        Removes people (1–50, by phone number) from the Telegram chat `chatId`
+        (as `listChannelChats` shows it), acting as the channel's own account,
+        which must be an admin of the chat with the right to remove members.
+        The removed people lose access to the chat, so this acts on real
+        people.
+
+
+        The answer is per person (`results`, in request order); one refusal
+        does not fail the call. A person is `removed`, was not in the chat
+        (`not_member`), is not on Telegram (`not_on_telegram`), or the removal
+        failed (`failed`, with a `reason`). The chat's owner and its other
+        admins cannot be removed: such a person comes back `failed` with
+        reason `admin`. In a basic group (`chat:<id>`) an admin may remove
+        only the people it invited: anyone else comes back `failed` with
+        reason `admin_required` (when that is everyone, the call is 403
+        `chat.admin_required`). Removal is a kick: the person is banned and the ban is
+        lifted at once, so they may rejoin. When that ban could not be lifted
+        the person is still out of the chat, and the row (`removed` or
+        `not_member`) carries reason `ban_not_lifted`; calling remove for them
+        again lifts it.
+
+
+        An entry whose phone is not a phone number is its own row (`failed`,
+        reason `invalid_phone`) and does not fail the call; the call is 422
+        only when not one entry is a valid phone number, and 400 for an empty
+        list or one of more than 50 entries.
+
+
+        Requirements: a connected Telegram account channel (`tg_client`; else
+        409 `channel.capability_unsupported`), a chat that exists and where the
+        account is an admin (404 `chat.not_found`, 403 `chat.admin_required`).
+        A platform rate limit before anyone was processed is 503
+        `provider.unavailable` with `Retry-After`. A rate limit that arrives
+        while lifting a person's ban answers 200: that person is `removed`
+        (or `not_member`, when they were already out of the chat and only an
+        earlier ban of this account was being lifted) with reason
+        `ban_not_lifted`, and everyone after them `failed` with reason
+        `rate_limited`; `retryAfterSeconds` says how long to wait before
+        repeating the call for them.
+        Send an `Idempotency-Key` to make a retry safe.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+        - $ref: '#/components/parameters/ChannelId'
+        - $ref: '#/components/parameters/ChatAddress'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMembersRequest'
+            example:
+              members:
+                - phone: '+380501234567'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - chat.not_found
+        - chat.admin_required
+        - provider.upstream_error
+        - provider.unavailable
+        # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
+        - idempotency.key_reused
+        - idempotency.in_progress
+      responses:
+        '200':
+          description: The people were processed (see `results` for each).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMembersResult'
+              example:
+                chatId: 'chat:1234567890'
+                title: Kovalenko family order
+                results:
+                  - phone: '+380501234567'
+                    outcome: removed
+                    contactId: 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e
+                    providerId: '777000111'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /channels/{id}/chat-members/remove:
+    post:
+      operationId: removeMemberFromChats
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Remove one person, by phone number, from the Telegram chats of the channel
+      # issue #321: Telegram chat members by chat address.
+      description: >-
+        Removes one person (by phone number) from the Telegram chats of the
+        channel's account: from every chat where it is an admin (each chat of
+        `listChannelChats`), or only from the chats named in `chatIds` (chat
+        addresses as `listChannelChats` shows them, at most 200). With
+        `chatIds` omitted, every such chat gets a row: one where the account
+        may not remove members (`canRemove` false) comes back `failed` with
+        reason `admin_required`, without Telegram being asked. The removed
+        person loses access to those chats, so this acts on a real person.
+
+
+        The answer is per chat: every requested chat has a row in `results`.
+        `complete` is false when the account's chat list itself could not be
+        read to the end (as in `listChannelChats`), when Telegram asked the
+        account to wait (`rate_limited` rows, `retryAfterSeconds` says how
+        long) or when the call's time ran out (`not_processed` rows). Repeat
+        the call until `complete` is true; a chat already handled answers
+        `not_member` the second time. This operation takes no `Idempotency-Key`: repeating it is
+        how it is finished. When the person can only be found by matching the
+        phone against the chats' member lists, that search stops before the
+        call's time runs out (the chats are `not_processed`); the next call
+        continues it where it stopped.
+
+
+        Requirements: a connected Telegram account channel (`tg_client`; else
+        409 `channel.capability_unsupported`). A chat in `chatIds` that does
+        not exist or where the account cannot act is not a call error: it gets
+        its own row in `results` (`failed`, with a `reason`).
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoveFromChatsRequest'
+            example:
+              phone: '+380501234567'
+              chatIds:
+                - 'chat:1234567890'
+                - 'channel:2233445566'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - auth.origin_rejected
+        - tenancy.cross_cabinet_denied
+        - tenancy.suspended
+        - channel.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The chats were processed (see `complete` and `results`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoveFromChatsResult'
+              example:
+                phone: '+380501234567'
+                complete: false
+                contactId: 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e
+                providerId: '777000111'
+                retryAfterSeconds: 30
+                results:
+                  - chatId: 'chat:1234567890'
+                    title: Kovalenko family order
+                    outcome: removed
+                  - chatId: 'channel:2233445566'
+                    outcome: not_processed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # issue #319 (ADR-0138): inbound addresses for chat member commands.
+  /channels/{id}/chat-member-hooks:
+    get:
+      operationId: listChatMemberHooks
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: List the inbound addresses of a Telegram account channel
+      description: >-
+        Lists the inbound addresses made for this channel with
+        `createChatMemberHook`, newest first, revoked ones included
+        (`revokedAt`). The secret part of an address is never shown again
+        after it was made; `lastUsedAt` says when the address last took a
+        command. Needs `channels:manage` on the channel; for a channel outside
+        the caller's scope the answer is 404 `channel.not_found`.
+      x-mcp:
+        expose: true
+        readOnly: true
+        destructive: false
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - channel.not_found
+      responses:
+        '200':
+          description: The channel's inbound addresses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMemberHookList'
+              example:
+                items:
+                  - id: 7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f
+                    channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                    name: HR system
+                    createdAt: '2026-11-24T10:00:00Z'
+                    rotatedAt: null
+                    revokedAt: null
+                    lastUsedAt: '2026-11-24T12:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: createChatMemberHook
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Make an inbound address for adding and removing chat members
+      # ADR-0138. No x-idempotency on purpose (as createApiKey): the answer
+      # carries a secret the platform must not keep.
+      description: >-
+        Makes an inbound address through which another system — typically an
+        HR system that can only send an HTTP request — adds people to and
+        removes them from the chats of this Telegram account channel
+        (`tg_client`), with `runChatMemberCommand`. The address (`url`)
+        carries its secret: it is shown in this response only, once (the
+        platform keeps just a one-way hash), so hand it over right away and
+        keep it like a password. Whoever has it acts on the channel's chats
+        with the rights `channels:manage` and `messages:send` on this
+        channel. Replace the secret with `rotateChatMemberHook`, stop the
+        address with `revokeChatMemberHook`.
+
+
+        Needs `channels:manage` on the channel (404 `channel.not_found` for a
+        channel outside the caller's scope) and a channel kind that manages
+        chat members (409 `channel.capability_unsupported`). Not idempotent:
+        each call makes another working address. Written to the cabinet's
+        audit trail (without the secret).
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          An agent must not mint credentials: the response carries a secret
+          address, and handing out access is a person's decision.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMemberHookCreateRequest'
+            example:
+              name: HR system
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - channel.not_found
+        - channel.capability_unsupported
+      responses:
+        '201':
+          description: The new address; `url` is shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMemberHookSecret'
+              example:
+                hook:
+                  id: 7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f
+                  channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                  name: HR system
+                  createdAt: '2026-11-24T10:00:00Z'
+                  rotatedAt: null
+                  revokedAt: null
+                  lastUsedAt: null
+                url: https://messages.example.com/v1/inbound/chat-members/5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f.EXAMPLE-SECRET-NOT-REAL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /chat-member-hooks/{hookId}/rotate:
+    post:
+      operationId: rotateChatMemberHook
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Replace the secret of an inbound address
+      description: >-
+        Gives the address a new secret and returns its new `url`, once. The
+        old `url` stops working at once. A revoked address cannot be rotated
+        (404 `chat_member_hook.not_found`, as for an unknown one). Needs
+        `channels:manage` on the address's channel. Written to the audit trail.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: false
+        idempotent: false
+        reason: >-
+          The response carries a new secret address; handing out access is a
+          person's decision.
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChatMemberHookId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - chat_member_hook.not_found
+      responses:
+        '200':
+          description: The address with its new `url`, shown only in this response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMemberHookSecret'
+              example:
+                hook:
+                  id: 7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f
+                  channelId: 3f6b2a1c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
+                  name: HR system
+                  createdAt: '2026-11-24T10:00:00Z'
+                  rotatedAt: '2026-11-25T09:00:00Z'
+                  revokedAt: null
+                  lastUsedAt: '2026-11-24T12:30:00Z'
+                url: https://messages.example.com/v1/inbound/chat-members/5a1c7e2e-3b4d-4f60-9a8b-2c3d4e5f6a7b.7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f.EXAMPLE-NEW-SECRET-NOT-REAL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /chat-member-hooks/{hookId}:
+    delete:
+      operationId: revokeChatMemberHook
+      x-permission: 'channels:manage'
+      x-platform-support: none
+      summary: Revoke an inbound address
+      description: >-
+        Stops the address: it takes no more commands (they answer 404). The
+        address stays listed with `revokedAt`, for the record. Revoking a
+        revoked address changes nothing. Needs `channels:manage` on the
+        address's channel. Written to the audit trail.
+      x-mcp:
+        expose: true
+        readOnly: false
+        destructive: true
+        idempotent: true
+      tags:
+        - channels
+      parameters:
+        - $ref: '#/components/parameters/ChatMemberHookId'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.invalid_key
+        - auth.key_expired
+        - auth.forbidden_scope
+        - auth.session_invalid
+        - auth.second_factor_required
+        - tenancy.cross_cabinet_denied
+        - auth.origin_rejected
+        - tenancy.suspended
+        - chat_member_hook.not_found
+      responses:
+        '204':
+          description: The address is revoked.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /inbound/chat-members/{token}:
+    post:
+      operationId: runChatMemberCommand
+      x-permission: none
+      x-permission-reason: >
+        Called by another system (an HR system) that can only send an HTTP request to an address: it carries no Linqelio credential. It is authenticated by the secret in the address itself (createChatMemberHook, ADR-0138), stored as a one-way hash; the command then runs as the address's channel with channels:manage and messages:send on it, through the very handlers of addChatMembers and removeMemberFromChats.
+      summary: Add or remove a person in Telegram chats through an inbound address
+      description: >-
+        The address made with `createChatMemberHook` (its `url`). The body
+        says what to do with one person, by phone number, in the chats of the
+        address's Telegram account channel:
+
+
+        - `add` — add the person to each chat of `chatIds` (1–20), exactly as
+        `addChatMembers` with this one person does for each chat: added
+        directly, or — when Telegram refuses — a personal invite link sent to
+        them. `add` holds one `ChatMembersResult` per chat, in order. A chat
+        the account cannot act in gets its own row (`failed`, reason
+        `chat_not_found`, `admin_required` or `rate_limited`).
+
+        - `remove` — remove the person from the chats of `chatIds`, or from
+        every chat of the account when it is omitted, exactly as
+        `removeMemberFromChats`. `remove` holds its result; repeat the command
+        until `complete` is true.
+
+
+        The same audit records and `chat.member_*` events as the API calls
+        follow. Repeating a command is safe: an added person is
+        `already_member` (and an invite link already sent is the same link),
+        a removed one `not_member`. The work is done before the answer, within
+        the same time limits as the API (up to 90 seconds per call to
+        Telegram).
+
+
+        An unknown address, a revoked one and a wrong secret all answer 404
+        `chat_member_hook.not_found`. A channel that is not connected is 409
+        `channel.not_connected`; Telegram asking to wait before anything was
+        done is 503 `provider.unavailable` with `Retry-After`.
+      x-mcp:
+        expose: false
+        readOnly: false
+        destructive: true
+        idempotent: true
+        reason: >-
+          Called by another system with the secret address; an agent uses
+          addChatMembers and removeMemberFromChats with its own credentials.
+      tags:
+        - channels
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: The address's token, as the `url` of `createChatMemberHook` carries it.
+          schema:
+            type: string
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMemberCommand'
+            example:
+              action: add
+              phone: '+380501234567'
+              name: Olena Kovalenko
+              chatIds:
+                - 'channel:1234567890'
+      x-error-codes:
+        - validation.invalid_request
+        - auth.origin_rejected
+        - chat_member_hook.not_found
+        - channel.not_connected
+        - channel.capability_unsupported
+        - provider.upstream_error
+        - provider.unavailable
+      responses:
+        '200':
+          description: The command was carried out (see the result per chat).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMemberCommandResult'
+              example:
+                action: add
+                add:
+                  - chatId: 'channel:1234567890'
+                    title: Company news
+                    results:
+                      - phone: '+380501234567'
+                        outcome: added
+                        providerId: '777000111'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /conversations/{id}/participants/add:
     post:
       operationId: addGroupParticipants
@@ -9265,8 +10961,12 @@ paths:
         platform rate limit is 503 `provider.unavailable` with `Retry-After`; a
         platform refusal is 502 `provider.upstream_error`. Afterwards the member
         list is re-read from the channel, so `listConversationParticipants`
-        shows what the platform actually did. Send an `Idempotency-Key` to make
-        a retry safe.
+        shows what the platform actually did. On a Telegram account channel
+        (`tg_client`) a person Telegram did not add is listed in `failed` with
+        reason `refused`; a group that is no longer among the account's chats
+        is 404 `chat.not_found`, and an account without the admin right the
+        change needs is 403 `chat.admin_required`. Send an `Idempotency-Key`
+        to make a retry safe.
       x-mcp:
         expose: true
         readOnly: false
@@ -9302,6 +11002,8 @@ paths:
         - channel.not_connected
         - channel.capability_unsupported
         - policy.groups_disabled
+        - chat.not_found
+        - chat.admin_required
         - group.members_unresolvable
         - provider.upstream_error
         - provider.unavailable
@@ -9363,8 +11065,12 @@ paths:
         cannot use is 422 `validation.invalid_request`. Otherwise the same
         requirements and errors as `addGroupParticipants`: a group
         conversation, a channel kind that manages groups, group chats switched
-        on, a connected channel. Afterwards the member list is re-read from the
-        channel. Send an `Idempotency-Key` to make a retry safe.
+        on, a connected channel. On a Telegram account channel (`tg_client`)
+        a group that is no longer among the account's chats is 404
+        `chat.not_found`, and an account without the admin right to remove
+        members is 403 `chat.admin_required`. Afterwards the member list is
+        re-read from the channel. Send an `Idempotency-Key` to make a retry
+        safe.
       x-mcp:
         expose: true
         readOnly: false
@@ -9399,6 +11105,8 @@ paths:
         - channel.not_connected
         - channel.capability_unsupported
         - policy.groups_disabled
+        - chat.not_found
+        - chat.admin_required
         - provider.upstream_error
         - provider.unavailable
         # R14-A (#140, ADR-0103): the generic Idempotency-Key layer.
@@ -13140,9 +14848,9 @@ paths:
         bytes).
 
 
-        Uploading sends nothing to anybody. The file may be at most 32 MiB
-        (413 `message.too_large`), though each messenger has its own, usually
-        smaller, limit that the send enforces. The file is stored encrypted
+        Uploading sends nothing to anybody. The file may be at most 100 MiB
+        (104 857 600 bytes; 413 `message.too_large`), though each messenger
+        has its own, often smaller, limit that the send enforces. The file is stored encrypted
         under the cabinet's key and the returned url is a platform URL
         (`<API base>/v1/media/{id}`, as `uploadMedia` answers), not a storage
         link: put it in the send as it is. 503 `provider.unavailable` when the
@@ -14045,8 +15753,8 @@ paths:
       x-platform-support: none
       summary: Upload an attachment to send
       description: >-
-        Stores a file (the raw bytes as the request body, at most 32 MiB) and
-        returns the URL to put in a send's `content.media.url` — for
+        Stores a file (the raw bytes as the request body, at most 100 MiB —
+        104 857 600 bytes) and returns the URL to put in a send's `content.media.url` — for
         `sendContactMessage`, `sendConversationMessage`, `createScheduledSend`
         or a campaign's content, with `type` image, audio, video or document.
         The file is stored encrypted under the cabinet's key. The returned
@@ -14061,9 +15769,19 @@ paths:
         The content type comes from `mime`, else the request's Content-Type,
         else it is detected from the bytes. `filename` is kept (up to 120
         characters) so a document arrives with its name. A larger file is 413
-        `message.too_large`; an empty body is 400; 503 `provider.unavailable`
-        means the file could not be stored right now (retry). Nothing is sent
-        to anyone by the upload itself, and each call stores a new file.
+        `message.too_large`; an empty body, or one that ends before its
+        declared length, is 400; 503 `provider.unavailable` means the file
+        could not be stored right now (upload it again). Nothing is sent to
+        anyone by the upload itself, and each call stores a new file.
+
+
+        The limit is the platform's. A messenger may refuse a file the
+        platform took: tg_client, wa_web and viber_web deliver files up to
+        100 MiB (WhatsApp plays a video of up to about 16 MiB as a video —
+        send a larger one as `type: document`); the other channels have lower
+        limits of their own, and a file over a channel's limit makes the
+        message `failed`. A file sent as a recorded message (`note`) may be
+        at most 32 MiB.
       x-mcp:
         expose: true
         readOnly: false
@@ -14074,7 +15792,7 @@ paths:
       requestBody:
         required: true
         description: >-
-          The file's raw bytes, at most 32 MiB. Name it with `filename` and
+          The file's raw bytes, at most 100 MiB. Name it with `filename` and
           give its type with `mime` when the bytes alone do not tell it.
         content:
           application/octet-stream:
@@ -20858,6 +22576,7 @@ paths:
                       channels.viber_web: -1
                       channels.fb_page: -1
                       channels.instagram: -1
+                      channels.google_chat: -1
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -20938,6 +22657,7 @@ paths:
                   channels.viber_web: 1
                   channels.fb_page: 1
                   channels.instagram: 1
+                  channels.google_chat: 1
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -25172,6 +26892,15 @@ components:
         type: string
         format: uuid
 
+    ArchiveImportId:
+      name: importId
+      in: path
+      required: true
+      description: Archive import id (uuid).
+      schema:
+        type: string
+        format: uuid
+
     ChannelId:
       name: id
       in: path
@@ -25189,6 +26918,26 @@ components:
       schema:
         type: string
         format: uuid # issue #119: a malformed id is a 400 before any store/driver call
+
+    ChatMemberHookId:
+      name: hookId
+      in: path
+      required: true
+      description: An inbound address id (uuid), as `listChatMemberHooks` shows it.
+      schema:
+        type: string
+        format: uuid
+
+    ChatAddress:
+      name: chatId
+      in: path
+      required: true
+      description: >-
+        A Telegram chat address as `listChannelChats` shows it: `chat:<id>` for
+        a group, `channel:<id>` for a supergroup or channel.
+      schema:
+        type: string
+        pattern: '^(chat|channel):[0-9]+$'
 
     # M4 comments (issue #188, ADR-0108).
     CommentMessageId:
@@ -25338,6 +27087,17 @@ components:
       description: >-
         The grant id the login returned to the console with (`metaGrant` in
         the address), a UUID.
+      schema:
+        type: string
+        format: uuid
+
+    GoogleChatGrantId:
+      name: grantId
+      in: path
+      required: true
+      description: >-
+        The grant id the Google sign-in returned to the console with
+        (`googleChatGrant` in the address), a UUID.
       schema:
         type: string
         format: uuid
@@ -25666,7 +27426,7 @@ components:
         - `message.type_unsupported` — (422) the channel does not support this
           message type. Send another type (for example text).
         - `message.too_large` — (413) the message or the uploaded file is too
-          large (files up to 32 MiB). Send a smaller one.
+          large (files up to 100 MiB). Send a smaller one.
         - `message.not_found` — (404) no such message, or no media on it, in
           the cabinet.
         - `media.not_found` — (404) no file uploaded under that id in the
@@ -25794,6 +27554,13 @@ components:
           conversation.
         - `group.members_unresolvable` — (422) none of the requested contacts
           can be reached on the channel; `errors[]` names each.
+        - `chat.not_found` — (404) no such Telegram chat among the chats of the
+          channel's account (`listChannelChats`).
+        - `chat.admin_required` — (403) the channel's account is not an admin
+          of the chat, or lacks the right to add or remove members there.
+        - `chat_member_hook.not_found` — (404) no such inbound address in the
+          cabinet — or, on `runChatMemberCommand`, an address that is unknown,
+          revoked or names a wrong secret (which of them is not said).
         - `embed.token_expired` — (401) the widget token expired. Mint a new
           one with `createEmbedSession`.
         - `embed.scope_violation` — (403) the widget token does not cover this
@@ -25909,6 +27676,17 @@ components:
         - `creatio.state_invalid` — (400) the sign-in `state` is missing,
           forged or expired. Start the sign-in again.
 
+        **Google Chat**
+
+        - `google_chat.app_not_configured` — (409) the platform's Google app is
+          not set up yet, so nothing can connect with Google. A platform
+          operator saves it with `updateGoogleChatAppSettings`.
+        - `google_chat.grant_invalid` — (404) the sign-in's grant is unknown,
+          expired (30 minutes), already used, or another person's. Start again
+          with `startGoogleChatConnect`.
+        - `google_chat.account_connected_elsewhere` — (409) the Google account
+          is a channel of another cabinet. Delete it there first.
+
         **Facebook Pages and Instagram**
 
         - `meta.app_not_configured` — (409) the platform's Meta app is not set
@@ -26008,6 +27786,37 @@ components:
         - `egress.check_failed` — (503) the proxy probe failed, or the platform's
           echo endpoint is not configured; the result is persisted to the proxy's
           health.
+
+        **Telegram archive import**
+
+        - `archive.not_found` — (404) no such archive import of this channel.
+        - `archive.import_busy` — (409) the channel already has an archive
+          import that is not finished; follow it or cancel it first.
+        - `archive.state_conflict` — (409) the run is not in a state that
+          allows the command (a part after the upload was completed, a start
+          before the preview is ready). Read the run again.
+        - `archive.upload_incomplete` — (409) parts are missing; `detail` and
+          the run's `missingParts` name them. Upload them and complete again.
+        - `archive.part_invalid` — (422) the part number is outside the run, or
+          the body is not exactly the part's length.
+        - `archive.too_large` — (413) the archive, or what it unpacks to, is
+          over the platform's limit (20 GiB; unpacked at most four times that).
+        - `archive.not_zip` — the archive is not a ZIP or is damaged (a run's
+          `errorCode`). Pack the export folder into a ZIP again.
+        - `archive.result_missing` — no `result.json` at the top of the ZIP or
+          in its only folder (a run's `errorCode`).
+        - `archive.html_export` — the export is HTML; export again choosing
+          "Machine-readable JSON" (a run's `errorCode`).
+        - `archive.result_invalid` — `result.json` is not a readable Telegram
+          export (a run's `errorCode`).
+        - `archive.foreign_account` — the export is of another Telegram account
+          than the one connected in the channel (a run's `errorCode`).
+        - `archive.no_chats` — nothing in the archive can be imported: only
+          channels, saved messages and bots, or chats the channel cannot take
+          (a run's `errorCode`).
+        - `archive.import_failed` — the import stopped on an error; the run's
+          `error` says where (a run's `errorCode`). Start a new import — what
+          was imported stays and is not duplicated.
       enum:
         - validation.invalid_request
         - auth.invalid_key
@@ -26315,6 +28124,14 @@ components:
         #     channel can reach); errors[] names each.
         - conversation.not_group
         - group.members_unresolvable
+        #   chat.not_found (404) / chat.admin_required (403): a Telegram chat
+        #     named by its address is not among the account's chats, or the
+        #     account is not an admin there (issue #321).
+        - chat.not_found
+        - chat.admin_required
+        #   chat_member_hook.not_found (404): no such inbound address — on the
+        #     inbound endpoint also a revoked one or a wrong secret (#319).
+        - chat_member_hook.not_found
         # --- END R11-A ------------------------------------------------------------
         # --- BEGIN R11-C (issue #59, ADR-0068): AI guard + questionnaire -------
         #   guard_risk: a send-policy FINDING (warn, or deny in enforce mode)
@@ -26430,6 +28247,17 @@ components:
         - meta.grant_invalid
         - meta.account_connected_elsewhere
         # --- END M1 ---------------------------------------------------------------
+        # --- BEGIN Google Chat connect (issue #325, ADR-0135) ----------------------
+        #   app_not_configured (409): startGoogleChatConnect while the platform's
+        #     Google app lacks the client id or secret, or its public address.
+        #   grant_invalid (404): completeGoogleChatConnect on a grant that is
+        #     unknown, expired, used or another person's.
+        #   account_connected_elsewhere (409): completeGoogleChatConnect for a
+        #     Google account that is a channel of another cabinet.
+        - google_chat.app_not_configured
+        - google_chat.grant_invalid
+        - google_chat.account_connected_elsewhere
+        # --- END Google Chat connect -----------------------------------------------
         # --- BEGIN M4 comments (issue #188, ADR-0108) -----------------------------
         #   comment_action_unavailable (422): hide / unhide / delete / private
         #     reply on a message that is not a comment, or that the action
@@ -26526,6 +28354,21 @@ components:
         # #287 (ADR-0124, amended 2026-11-10): createChannel / updateChannelSettings
         # name a kind and number that are already a channel of the caller's cabinet.
         - channel.already_exists
+        # --- BEGIN archive import (#331, ADR-0137) ---
+        - archive.not_found
+        - archive.import_busy
+        - archive.state_conflict
+        - archive.upload_incomplete
+        - archive.part_invalid
+        - archive.too_large
+        - archive.not_zip
+        - archive.result_missing
+        - archive.html_export
+        - archive.result_invalid
+        - archive.foreign_account
+        - archive.no_chats
+        - archive.import_failed
+        # --- END archive import ---
 
     # --- R6-C (#33, ADR-0051 §3): the quota refusal's problem extension --------
     QuotaExceeded:
@@ -26728,6 +28571,8 @@ components:
       # ADR-0012. Extends additively.
       # ADR-0128: viber_web is a PERSONAL Viber number driven by an external
       # client driver, deliberately distinct from viber_bot's Public Account.
+      # ADR-0135: google_chat is a Google Workspace account in Google Chat,
+      # acting as the person who signed in; never created by createChannel.
       description: >
         The kind of messenger account a channel is: `wa_web` — a WhatsApp
         number linked like WhatsApp Web, by scanning a QR code; `wa_cloud` — a
@@ -26743,9 +28588,15 @@ components:
         conversations but does not send into them; round video notes, templates
         and buttons are not supported); `fb_page` — a Facebook Page
         (Messenger conversations and the Page's comments); `instagram` — an
-        Instagram professional account (Direct, comments and mentions). The
-        last two connect by logging in with Facebook or Instagram. New kinds
-        may be added.
+        Instagram professional account (Direct, comments and mentions) — these
+        two connect by logging in with Facebook or Instagram; `google_chat` — a
+        Google Workspace account in Google Chat, acting as the person who
+        signed in: their direct messages, group chats and spaces (text and
+        files, a file with its caption; a reply goes into the replied
+        message's Google thread; group chats and spaces are group
+        conversations; no thread filter, templates or buttons). It is connected by signing in with Google and is never
+        created with `createChannel` (`startGoogleChatConnect`). New kinds may
+        be added.
       enum:
         - wa_web
         - wa_cloud
@@ -26755,6 +28606,7 @@ components:
         - viber_web
         - fb_page
         - instagram
+        - google_chat
 
     Direction:
       type: string
@@ -27165,8 +29017,9 @@ components:
     ChannelGroupSettings:
       type: object
       description: >
-        Group chats on this channel — a WhatsApp Web account (`wa_web`) or a
-        Telegram account (`tg_client`). Off unless set:
+        Group chats on this channel — a WhatsApp Web account (`wa_web`), a
+        Telegram account (`tg_client`) or a Google Chat account
+        (`google_chat`, its group chats and spaces). Off unless set:
         with `enabled: false` the channel neither takes group messages in nor
         sends into groups (policy.groups_disabled). Turning it on is the
         explicit, audited decision that stands in for a person's consent in a
@@ -27178,7 +29031,8 @@ components:
             true — group messages are taken in and sends into groups are
             allowed; false (or absent) — group messages are ignored (see
             `listChannelIgnoredGroups`) and sends into groups are refused.
-            `true` is accepted only for `wa_web` and `tg_client` channels.
+            `true` is accepted only for `wa_web`, `tg_client` and `google_chat`
+            channels.
       additionalProperties: false
     # =========================================================================
     # END R10-A group conversations
@@ -27329,7 +29183,9 @@ components:
             message to OGG/Opus, a video note to a square MP4 of at most 60
             seconds); a longer video is 422, field `content.media`, reason
             `video_note_too_long`, a voice recording longer than 20 minutes is
-            422, field `content.media`, reason `voice_too_long`, and a file
+            422, field `content.media`, reason `voice_too_long`, an upload
+            larger than 32 MiB is 422, field `content.media`, reason
+            `note_too_large` (send it without `note`), and a file
             that cannot be read as media is 422, field `content.media`, reason
             `unreadable_media`. A channel
             whose `capabilities.voiceNotes` or `capabilities.videoNotes` is
@@ -27989,6 +29845,8 @@ components:
             personal Viber number (`viber_web`) also reports true, but only
             RECEIVES group conversations: it cannot send into a group or manage
             one, so the value alone does not promise `createGroup` support.
+            A Google Chat account (`google_chat`) reports true for its group
+            chats and spaces, and does not manage groups either.
         presence:
           type: boolean
           description: Can report typing and online presence. No kind declares it today.
@@ -28368,6 +30226,155 @@ components:
         - candidateId
         - outcome
     # --- END M1 Meta channels (schemas) -------------------------------------------
+
+    # --- BEGIN Google Chat connect (issue #325, ADR-0135): schemas -------------
+    GoogleChatAppSettings:
+      type: object
+      description: >-
+        The platform's Google app as `getGoogleChatAppSettings` returns it: its
+        OAuth client id, whether its client secret is stored, what the inbound
+        push needs, and the addresses to enter in the Google Cloud console. The
+        secret is never included.
+      properties:
+        configured:
+          type: boolean
+          description: >-
+            true when a person can sign in: the platform knows its public
+            address (`urls` is present) and the client id and secret are
+            stored. false until then, and `startGoogleChatConnect` answers 409
+            `google_chat.app_not_configured`.
+        clientId:
+          type: string
+          description: The OAuth client id. Absent until set.
+        clientSecretSet:
+          type: boolean
+          description: Whether the client secret is stored (its value is never returned).
+        pubsubTopic:
+          type: string
+          description: >-
+            The Pub/Sub topic Google Workspace Events publishes the accounts'
+            Chat events to, `projects/<project>/topics/<topic>`. Absent until
+            set; without it nothing is received.
+        pushServiceAccount:
+          type: string
+          description: >-
+            The e-mail of the service account the Pub/Sub push subscription
+            authenticates as; a push signed by anyone else is refused. Absent
+            until set.
+        pushAudience:
+          type: string
+          description: >-
+            The audience the push subscription's token must carry: the stored
+            one, or the push endpoint's address (`urls.webhook`) when none is
+            stored. Absent when neither is known.
+        urls:
+          $ref: '#/components/schemas/GoogleChatAppUrls'
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the settings were last saved (UTC). Absent until then.
+      required:
+        - configured
+        - clientSecretSet
+
+    GoogleChatAppUrls:
+      type: object
+      description: >-
+        The platform's addresses to enter in the Google Cloud console. Absent
+        when the platform does not know its public address
+        (`PUBLIC_BASE_URL`).
+      properties:
+        oauthRedirect:
+          type: string
+          description: The authorized redirect URI of the OAuth client.
+        webhook:
+          type: string
+          description: The push endpoint of the Pub/Sub subscription.
+      required:
+        - oauthRedirect
+        - webhook
+
+    GoogleChatAppSettingsUpdate:
+      type: object
+      description: >-
+        The body of `updateGoogleChatAppSettings`. The client id, the topic,
+        the service account and the audience replace the stored ones; a client
+        secret that is absent or empty keeps the stored one.
+      properties:
+        clientId:
+          type: string
+          description: The OAuth client id, `<number>-<id>.apps.googleusercontent.com`.
+          maxLength: 255
+          pattern: '^[0-9]{1,32}-[a-z0-9]{1,128}\.apps\.googleusercontent\.com$'
+        clientSecret:
+          type: string
+          writeOnly: true
+          description: The OAuth client secret (write-only). Absent or empty keeps the stored one.
+          maxLength: 256
+        pubsubTopic:
+          type: string
+          description: >-
+            The Pub/Sub topic, `projects/<project>/topics/<topic>`. Absent or
+            empty clears it (nothing is received then).
+          maxLength: 512
+        pushServiceAccount:
+          type: string
+          description: >-
+            The e-mail of the service account the push subscription
+            authenticates as. Absent or empty clears it (every push is refused
+            then).
+          maxLength: 320
+        pushAudience:
+          type: string
+          description: >-
+            The audience the push subscription's token is issued for. Absent or
+            empty: the push endpoint's address.
+          maxLength: 512
+      required:
+        - clientId
+      additionalProperties: false
+
+    GoogleChatConnectStart:
+      type: object
+      description: A started sign-in, as `startGoogleChatConnect` answers it.
+      properties:
+        authorizeUrl:
+          type: string
+          description: >-
+            The Google sign-in page to open in the person's browser (a
+            full-page navigation, not a frame). Works once.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the sign-in stops being accepted (UTC), 10 minutes from now.
+      required:
+        - authorizeUrl
+        - expiresAt
+
+    GoogleChatConnectResult:
+      type: object
+      description: What `completeGoogleChatConnect` did.
+      properties:
+        outcome:
+          type: string
+          description: >-
+            `created` — a new channel; `reconnected` — the existing channel of
+            this cabinet for the same Google account got the new access.
+          enum:
+            - created
+            - reconnected
+          x-enum-varnames:
+            - GoogleChatConnectCreated
+            - GoogleChatConnectReconnected
+        email:
+          type: string
+          description: The e-mail of the Google account that signed in, when Google told it.
+        channel:
+          $ref: '#/components/schemas/Channel'
+      required:
+        - outcome
+        - channel
+    # --- END Google Chat connect (schemas) -----------------------------------------
 
     # --- BEGIN platform mail (ADR-0123): schemas --------------------------------
     MailTransport:
@@ -29419,17 +31426,21 @@ components:
           type: boolean
           description: >-
             wa_web: also ask WhatsApp to replay older messages (default false).
-            tg_client: ignored — a call always starts a history import.
+            tg_client, google_chat: ignored — a call always starts a history
+            import.
         historyCount:
           type: integer
           description: >-
             wa_web: how many older messages to request (default 100).
-            tg_client: at most this many messages per chat (default 200).
+            tg_client, google_chat: at most this many messages per chat
+            (default 200).
           minimum: 1
           maximum: 500
         historyDays:
           type: integer
-          description: tg_client only — how many days back to import (default 90).
+          description: >-
+            tg_client and google_chat only — how many days back to import
+            (default 90).
           minimum: 1
           maximum: 365
 
@@ -29559,6 +31570,293 @@ components:
         - contactsImported
         - contactsMatched
 
+    # --- BEGIN archive import (#331, ADR-0137) ---------------------------------
+    CreateChannelArchiveImportRequest:
+      type: object
+      description: The archive about to be uploaded (createChannelArchiveImport).
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: The archive's file name, shown in the run list.
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The archive's exact size in bytes; it decides the parts.
+        ownAccountConfirmed:
+          type: boolean
+          description: >-
+            Must be true: the export is of the Telegram account connected in
+            this channel.
+      required:
+        - filename
+        - sizeBytes
+        - ownAccountConfirmed
+    StartChannelArchiveImportRequest:
+      type: object
+      description: The confirmation of startChannelArchiveImport.
+      properties:
+        chats:
+          type: array
+          minItems: 1
+          description: The chats to import, by their `index` in the preview.
+          items:
+            type: integer
+            minimum: 0
+        confirmed:
+          type: boolean
+          description: Must be true — the person confirmed the preview.
+      required:
+        - chats
+        - confirmed
+    ChannelArchiveImportList:
+      type: object
+      description: A channel's recent archive imports (listChannelArchiveImports).
+      properties:
+        items:
+          type: array
+          description: The runs, newest first.
+          items:
+            $ref: '#/components/schemas/ChannelArchiveImport'
+      required:
+        - items
+    ChannelArchiveImport:
+      type: object
+      # ADR-0137.
+      description: >-
+        One import of a Telegram Desktop export archive into a tg_client
+        channel.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The run's id.
+        channelId:
+          type: string
+          format: uuid
+          description: The channel the archive is imported into.
+        status:
+          type: string
+          enum: [uploading, validating, ready, queued, running, completed, failed, cancelled]
+          x-enum-varnames:
+            - ChannelArchiveImportStatusUploading
+            - ChannelArchiveImportStatusValidating
+            - ChannelArchiveImportStatusReady
+            - ChannelArchiveImportStatusQueued
+            - ChannelArchiveImportStatusRunning
+            - ChannelArchiveImportStatusCompleted
+            - ChannelArchiveImportStatusFailed
+            - ChannelArchiveImportStatusCancelled
+          description: >-
+            Where the run is: `uploading` — waiting for parts; `validating` —
+            the structure check reads result.json; `ready` — the preview is
+            there, waiting for the confirmation; `queued` — confirmed, waiting
+            for the importer; `running` — importing; `completed`, `failed`
+            (see `errorCode`), `cancelled` — ended, the archive is deleted.
+        filename:
+          type: string
+          description: The archive's file name.
+        sizeBytes:
+          type: integer
+          format: int64
+          description: The archive's size in bytes.
+        partSize:
+          type: integer
+          format: int64
+          description: The size of every part but the last, in bytes (8 MiB).
+        partCount:
+          type: integer
+          description: How many parts the archive is uploaded in.
+        partsReceived:
+          type: integer
+          description: How many parts are stored.
+        missingParts:
+          type: array
+          description: >-
+            While uploading — the part numbers still missing, at most the first
+            100; an interrupted upload resumes from the first of them.
+          items:
+            type: integer
+        selectedChats:
+          type: array
+          description: The chats confirmed for import (their preview `index`).
+          items:
+            type: integer
+        preview:
+          $ref: '#/components/schemas/ArchiveImportPreview'
+        errorCode:
+          type: string
+          description: >-
+            Why a `failed` run stopped: an `archive.*` code of the structure
+            check (see ErrorCode) or `archive.import_failed`.
+        error:
+          type: string
+          description: A detail of a failed run, for support.
+        chatsTotal:
+          type: integer
+          description: Chats chosen for import.
+        chatsDone:
+          type: integer
+          description: Chats imported to the end.
+        messagesRead:
+          type: integer
+          description: Messages of the chosen chats read from the archive.
+        messagesWritten:
+          type: integer
+          description: Messages handed to the channel's history.
+        messagesDuplicate:
+          type: integer
+          description: Messages the channel already held, left as they were.
+        messagesEnriched:
+          type: integer
+          description: Messages held without their file that got it from the archive.
+        filesStored:
+          type: integer
+          description: Files stored from the archive.
+        filesSkipped:
+          type: integer
+          description: Files not in the archive or too large, left as a caption.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the upload was opened.
+        updatedAt:
+          type: string
+          format: date-time
+          description: The run's last change.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the import began.
+        finishedAt:
+          type: string
+          format: date-time
+          description: When the run ended.
+      required:
+        - id
+        - channelId
+        - status
+        - filename
+        - sizeBytes
+        - partSize
+        - partCount
+        - partsReceived
+        - createdAt
+        - updatedAt
+    ArchiveImportPreview:
+      type: object
+      description: >-
+        What the archive holds, read before anything is written. The totals
+        count the chats that can be imported.
+      properties:
+        kind:
+          type: string
+          enum: [account, chat]
+          x-enum-varnames:
+            - ArchiveImportPreviewKindAccount
+            - ArchiveImportPreviewKindChat
+          description: >-
+            `account` — an export of the whole account; `chat` — an export of
+            one chat.
+        messages:
+          type: integer
+          description: Messages in the chats that can be imported.
+        alreadyStored:
+          type: integer
+          description: Of them, already held by the channel.
+        files:
+          type: integer
+          description: Messages with a file in those chats.
+        filesPresent:
+          type: integer
+          description: Of them, whose file is in the archive.
+        chats:
+          type: array
+          description: Every chat of the archive, in its order, imported or not.
+          items:
+            $ref: '#/components/schemas/ArchiveImportChat'
+      required:
+        - kind
+        - messages
+        - alreadyStored
+        - files
+        - filesPresent
+        - chats
+    ArchiveImportChat:
+      type: object
+      description: One chat of an archive's preview.
+      properties:
+        index:
+          type: integer
+          description: The chat's position in the archive — what startChannelArchiveImport names.
+        name:
+          type: string
+          description: The chat's name in the export.
+        type:
+          type: string
+          description: >-
+            The export's chat type: `personal_chat`, `private_group`,
+            `private_supergroup`, `public_supergroup`, or one that is skipped
+            (`public_channel`, `private_channel`, `saved_messages`,
+            `bot_chat`, …).
+        left:
+          type: boolean
+          description: The account has left the group.
+        skip:
+          type: string
+          description: >-
+            Why the chat cannot be imported; absent when it can.
+            `broadcast_channel`, `saved_messages`, `bot`, `service_chat`,
+            `unknown_type`, `no_id` — not imported by design;
+            `groups_disabled` — the channel takes no group chats;
+            `ids_mismatch` — the chat's ids do not line up with the messages
+            the channel already holds, so importing it would duplicate them.
+        messages:
+          type: integer
+          description: Messages in the chat.
+        firstAt:
+          type: string
+          format: date-time
+          description: The chat's first message.
+        lastAt:
+          type: string
+          format: date-time
+          description: The chat's last message.
+        files:
+          type: integer
+          description: Messages with a file.
+        filesPresent:
+          type: integer
+          description: Of them, whose file is in the archive.
+        exists:
+          type: boolean
+          description: The channel already has this chat.
+        alreadyStored:
+          type: integer
+          description: Messages of the chat the channel already holds.
+        verdict:
+          type: string
+          enum: [fresh, match, mismatch]
+          x-enum-varnames:
+            - ArchiveImportChatVerdictFresh
+            - ArchiveImportChatVerdictMatch
+            - ArchiveImportChatVerdictMismatch
+          description: >-
+            The reconciliation with what the channel holds: `fresh` — nothing
+            stored in the chat's period; `match` — stored messages are found
+            under the archive's ids; `mismatch` — they are not (see `skip`).
+      required:
+        - index
+        - name
+        - type
+        - messages
+        - files
+        - filesPresent
+        - exists
+        - alreadyStored
+    # --- END archive import ----------------------------------------------------
     ChannelHistoryImport:
       type: object
       description: A history import run of a tg_client channel (`getChannelHistoryImport`).
@@ -30334,7 +32632,10 @@ components:
             The event types delivered to this endpoint. An empty list means
             every event type. Delivered types: `message.inbound` (a message
             arrived), `message.status` (an outbound message became sent,
-            delivered, read or failed), `message.updated` (a comment was
+            delivered, read or failed; a message the business wrote in the
+            messenger's own app is announced this way too, once when it is
+            stored, so `messageId` can name a message the receiver has not
+            seen yet — read it with `getMessage`), `message.updated` (a comment was
             edited, hidden, shown again, deleted or answered privately —
             `data.change` says which), `conversation.rekeyed` (a
             conversation's `chatId` changed, or a second conversation of the
@@ -30347,7 +32648,13 @@ components:
             `createContactInvite`; payload `ContactInviteRedeemedEvent`) and
             `contact.invite_conflict` (a person followed an invite link, but
             their channel identity belongs to another contact; payload
-            `ContactInviteConflictEvent`). A
+            `ContactInviteConflictEvent`), and the membership of a Telegram
+            account channel's (`tg_client`) groups and channels, payload
+            `ChatMemberEvent`: `chat.member_added` (someone was added — by
+            Linqelio or by another admin), `chat.member_removed` (someone was
+            removed — by Linqelio or by another admin), `chat.member_joined`
+            (someone joined by themself, for example through an invite link)
+            and `chat.member_left` (someone left by themself). A
             subscription with a non-empty list receives a type added later
             only once it is added here with `updateWebhook`.
           items:
@@ -33362,8 +35669,8 @@ components:
           description: >
             Messages per channel per calendar day (in `timezone`). 0 disables the
             daily window. Unset: the platform default for the channel kind
-            (1000 for wa_web and tg_client, 200 for the personal Viber number
-            viber_web, none for official APIs). Media counts
+            (1000 for wa_web, tg_client and google_chat, 200 for the personal
+            Viber number viber_web, none for the other official APIs). Media counts
             like text. At the limit sends are deferred to the next day.
         hourly_limit:
           type: integer
@@ -33372,8 +35679,8 @@ components:
           description: >
             Messages per channel per clock hour (in `timezone`). 0 disables the
             hourly window. Unset: the platform default for the channel kind
-            (200 for wa_web and tg_client, 30 for the personal Viber number
-            viber_web, none for official APIs).
+            (200 for wa_web, tg_client and google_chat, 30 for the personal
+            Viber number viber_web, none for the other official APIs).
         contact_limit:
           type: integer
           minimum: 0
@@ -33473,7 +35780,8 @@ components:
         organization itself; `channels.<kind>` — connected channels of one
         kind (`channels.wa_web`, `channels.wa_cloud`, `channels.tg_client`,
         `channels.tg_bot`, `channels.viber_bot`, `channels.viber_web`,
-        `channels.fb_page`, `channels.instagram`); `messages.month` — outbound
+        `channels.fb_page`, `channels.instagram`, `channels.google_chat`);
+        `messages.month` — outbound
         messages accepted this calendar month (UTC); `ai.tokens.month` — AI
         tokens used this calendar month (UTC); `egress.proxies` — pool egress
         proxies granted to the organization (a resource rather than a monthly
@@ -34579,7 +36887,9 @@ components:
         `channel.status`,
         `channel.health_changed`, `compliance.notice` and
         `contact.invite_redeemed` (payload `ContactInviteRedeemedEvent`),
-        `contact.invite_conflict` (payload `ContactInviteConflictEvent`) —
+        `contact.invite_conflict` (payload `ContactInviteConflictEvent`),
+        `chat.member_added`, `chat.member_removed`, `chat.member_joined`,
+        `chat.member_left` (payload `ChatMemberEvent`) —
         `channels:read` on the channel; `channel.qr` — `channels:manage` on the channel
         (`data.stage` says what changed; the QR itself is read with
         `getChannelStatus`); `settings.updated` — `settings:manage`;
@@ -34587,7 +36897,10 @@ components:
         channel, or `settings:manage` for a cabinet-wide alert (payload
         `AlertRaisedEvent`); `campaign.progress` — `campaigns:manage`;
         `compliance.scan_progress` — `compliance:read` (payload
-        `ComplianceScanProgressEvent`). `sync.progress` is reserved and not
+        `ComplianceScanProgressEvent`); `archive_import.progress` —
+        `channels:read` on the channel (`data` carries `importId`,
+        `channelId`, `status` and the run's counters, as
+        getChannelArchiveImport names them). `sync.progress` is reserved and not
         emitted yet. New types may be added; ignore the ones you do not know.
       properties:
         eventId:
@@ -37565,6 +39878,89 @@ components:
         - contactId
         - occurredAt
 
+    # issue #320 (ADR-0134): a Telegram chat's membership changed.
+    ChatMemberEvent:
+      type: object
+      description: >
+        The payload of the `chat.member_added`, `chat.member_removed`,
+        `chat.member_joined` and `chat.member_left` events — in outbound
+        webhook deliveries and on the realtime stream (RealtimeEvent.data).
+        Sent for the groups, supergroups and channels of a Telegram account
+        channel (`tg_client`): for the changes Linqelio made
+        (`addChatMembers`, `removeChatMembers`, `removeMemberFromChats`,
+        `addGroupParticipants`, `removeGroupParticipants` — `source` is `api`,
+        only for the people Telegram actually added or removed) and for the
+        changes Telegram reported to the account (`source` `member` or
+        `admin`). In a basic group or a supergroup Telegram reports them as
+        the chat's service messages; in a broadcast channel only to its
+        admins. A change the account itself made in the Telegram app, outside
+        Linqelio, is not announced. A person who joins through an invite link
+        Linqelio sent is announced as `chat.member_joined` with `viaLink`.
+        Webhook deliveries are at-least-once: deduplicate on
+        `X-Linqelio-Delivery`.
+      properties:
+        channelId:
+          description: The Telegram account channel.
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        chatId:
+          description: >-
+            The chat's address, as `listChannelChats` shows it: `chat:<id>`
+            (a basic group) or `channel:<id>` (a supergroup or a broadcast
+            channel).
+          type: string
+        conversationId:
+          description: The chat's conversation, or null when it has none.
+          type: string
+          format: uuid
+          nullable: true
+        providerId:
+          description: The person's Telegram user id.
+          type: string
+        phone:
+          description: >-
+            The person's phone number (`+` and digits), when known: the number
+            Linqelio was asked to act on, or the one Telegram shows the
+            account. Absent otherwise.
+          type: string
+        contactId:
+          description: The cabinet's contact for this person, when there is one.
+          type: string
+          format: uuid
+        source:
+          description: >-
+            Who made the change: `api` — Linqelio, through its API or console;
+            `member` — the person themself (`chat.member_joined`,
+            `chat.member_left`); `admin` — another admin of the chat, in
+            Telegram.
+          type: string
+          enum:
+            - api
+            - member
+            - admin
+        actorProviderId:
+          description: The Telegram user id of the admin, when `source` is `admin` and Telegram named them.
+          type: string
+        viaLink:
+          description: >-
+            `chat.member_joined` only: true when the person joined through an
+            invite link (or a join request through one).
+          type: boolean
+        occurredAt:
+          description: When it happened (UTC, RFC 3339).
+          type: string
+          format: date-time
+      required:
+        - channelId
+        - kind
+        - chatId
+        - conversationId
+        - providerId
+        - source
+        - occurredAt
+
     # ADR-0117: a redeemed invite (createContactInvite) — identifiers only.
     ContactInviteRedeemedEvent:
       type: object
@@ -37818,6 +40214,453 @@ components:
         - subject
         - contactIds
       additionalProperties: false
+
+    ChannelChat:
+      type: object
+      description: A Telegram chat where the channel's account is an admin (`listChannelChats`).
+      properties:
+        chatId:
+          type: string
+          pattern: '^(chat|channel):[0-9]+$'
+          description: The chat address the member commands take.
+        type:
+          type: string
+          description: >-
+            The kind of chat: `group` — a basic group, `supergroup` — a
+            supergroup, `channel` — a broadcast channel.
+          enum: [group, supergroup, channel]
+        title:
+          type: string
+          description: The chat's title.
+        username:
+          type: string
+          nullable: true
+          description: The public @username of the chat, when it has one.
+        membersCount:
+          type: integer
+          nullable: true
+          description: The member count Telegram reports, when it reports one.
+        role:
+          type: string
+          enum: [owner, admin]
+          description: >-
+            The account's role in the chat: `owner` — its creator, `admin` — an
+            administrator.
+        canInvite:
+          type: boolean
+          description: Whether the account may add members.
+        canRemove:
+          type: boolean
+          description: Whether the account may remove members.
+        conversationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The conversation of this chat, when it has one.
+      required:
+        - chatId
+        - type
+        - title
+        - role
+        - canInvite
+        - canRemove
+
+    ChannelChatList:
+      type: object
+      description: The chats of a Telegram channel's account where it is an admin.
+      properties:
+        channelId:
+          type: string
+          description: The channel the list is about.
+        complete:
+          type: boolean
+          description: >-
+            False when the account's dialog list was not read to its end (the
+            scan stopped at its limit of 2000 dialogs, or could not page
+            further), so chats may be missing.
+        items:
+          type: array
+          description: The chats, as many as were read (see `complete`).
+          items:
+            $ref: '#/components/schemas/ChannelChat'
+      required:
+        - channelId
+        - complete
+        - items
+
+    ChatMemberInput:
+      type: object
+      description: One person to add to or remove from a chat, by phone number.
+      properties:
+        phone:
+          type: string
+          minLength: 7
+          maxLength: 20
+          description: The phone number, with or without a leading `+`.
+        name:
+          type: string
+          maxLength: 200
+          description: A name for the contact created or matched by this phone number.
+      required:
+        - phone
+      additionalProperties: false
+
+    ChatMembersRequest:
+      type: object
+      description: The people to add to (`addChatMembers`) or remove from (`removeChatMembers`) a chat.
+      properties:
+        members:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: The people (1–50, by phone number); a repeated number is handled once.
+          items:
+            $ref: '#/components/schemas/ChatMemberInput'
+      required:
+        - members
+      additionalProperties: false
+
+    ChatMemberOutcome:
+      type: string
+      description: >-
+        What happened to one person. `added`, `already_member`, `invite_queued`
+        (an invite message was accepted for sending; its delivery is the
+        message's own status) and `invite_not_sent` apply to adding; `removed`
+        and `not_member` to removing; `not_on_telegram` and `failed` to both.
+      enum:
+        - added
+        - already_member
+        - invite_queued
+        - invite_not_sent
+        - removed
+        - not_member
+        - not_on_telegram
+        - failed
+
+    ChatMemberResult:
+      type: object
+      description: The outcome for one person of an add or remove call.
+      properties:
+        phone:
+          type: string
+          description: The phone number as requested.
+        outcome:
+          $ref: '#/components/schemas/ChatMemberOutcome'
+        contactId:
+          type: string
+          format: uuid
+          description: >-
+            The cabinet's contact for this person, when the caller may see it:
+            matched when the cabinet already knows the person; created only
+            when an invite message has to be sent to someone it does not know.
+        providerId:
+          type: string
+          description: The person's Telegram user id, when known.
+        reason:
+          type: string
+          description: >-
+            Why the outcome is `failed` or `invite_not_sent` (for the latter
+            see `addChatMembers`). For `failed`: `invalid_phone` (the entry's
+            phone is not a phone number), `no_result` (the platform answered
+            nothing for this person), `invite_link` (the direct add was refused
+            and no invite link could be created), `rate_limited` (Telegram
+            asked the account to wait before this person was handled: repeat
+            the call for them after `retryAfterSeconds`), `admin` (the person
+            is the chat's owner or an admin and is not removed),
+            `admin_required` (in a basic group: this admin did not invite the
+            person, so may not remove them), `chat_not_found`, `ban_not_lifted` (a ban this
+            account placed could not be lifted, so the person was not added),
+            or a Telegram refusal code in lower case (such as
+            `user_privacy_restricted`, `user_channels_too_much`,
+            `user_kicked`). Also set on `removed` and `not_member` as
+            `ban_not_lifted`: the person is out of the chat, but this
+            account's ban on them could not be lifted; calling remove for
+            them again lifts it.
+        inviteLink:
+          type: string
+          description: >-
+            The personal invite link created for this person because a direct
+            add was refused; present for both `invite_queued` and
+            `invite_not_sent`. With `invite_not_sent` it is the thing to hand
+            to the person another way.
+        inviteExpiresAt:
+          type: string
+          format: date-time
+          description: When the invite link expires.
+        inviteMessageId:
+          type: string
+          description: The id of the invite message (read its status for delivery).
+      required:
+        - phone
+        - outcome
+
+    ChatMembersResult:
+      type: object
+      description: The per-person result of `addChatMembers` or `removeChatMembers`.
+      properties:
+        chatId:
+          type: string
+          description: The chat address, as requested.
+        title:
+          type: string
+          description: The chat's title, when known.
+        results:
+          type: array
+          description: One entry per requested person, in request order.
+          items:
+            $ref: '#/components/schemas/ChatMemberResult'
+        retryAfterSeconds:
+          type: integer
+          description: >-
+            How many seconds Telegram asked the account to wait before the
+            people with reason `rate_limited` are tried again; present only
+            when Telegram asked to wait.
+      required:
+        - chatId
+        - results
+
+    # issue #319 (ADR-0138): inbound addresses for chat member commands.
+    ChatMemberHook:
+      type: object
+      description: An inbound address for chat member commands, without its secret.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The address's id.
+        channelId:
+          type: string
+          format: uuid
+          description: The Telegram account channel whose chats the address acts on.
+        name:
+          type: string
+          description: Who the address was made for.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the address was made.
+        rotatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the secret was last replaced; null when never.
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the address was revoked; null while it works.
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the address last took a command; null when never.
+      required:
+        - id
+        - channelId
+        - name
+        - createdAt
+        - rotatedAt
+        - revokedAt
+        - lastUsedAt
+
+    ChatMemberHookList:
+      type: object
+      description: The inbound addresses of a channel (`listChatMemberHooks`).
+      properties:
+        items:
+          type: array
+          description: The addresses, newest first, revoked ones included.
+          items:
+            $ref: '#/components/schemas/ChatMemberHook'
+      required:
+        - items
+
+    ChatMemberHookCreateRequest:
+      type: object
+      description: A new inbound address (`createChatMemberHook`).
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Who the address is for (shown in the list).
+      required:
+        - name
+      additionalProperties: false
+
+    ChatMemberHookSecret:
+      type: object
+      description: An address with its secret `url` — returned once, on creation and rotation.
+      properties:
+        hook:
+          $ref: '#/components/schemas/ChatMemberHook'
+        url:
+          type: string
+          description: >-
+            The full address to POST commands to (`runChatMemberCommand`). It
+            carries the secret; it is not shown again.
+      required:
+        - hook
+        - url
+
+    ChatMemberCommand:
+      type: object
+      description: One command to an inbound address (`runChatMemberCommand`).
+      properties:
+        action:
+          type: string
+          enum:
+            - add
+            - remove
+          description: '`add` the person to the chats, or `remove` them.'
+        phone:
+          type: string
+          minLength: 7
+          maxLength: 20
+          description: The person's phone number, with or without a leading `+`.
+        name:
+          type: string
+          maxLength: 200
+          description: '`add` only: a name for the contact, should one have to be made.'
+        chatIds:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: >-
+            The chats, as `listChannelChats` shows them. Required for `add`
+            (at most 20); for `remove`, omitted means every chat of the account.
+          items:
+            type: string
+            pattern: '^(chat|channel):[0-9]+$'
+      required:
+        - action
+        - phone
+      additionalProperties: false
+
+    ChatMemberCommandResult:
+      type: object
+      description: >-
+        What a command did, in the API's own shapes: `add` — one
+        `ChatMembersResult` per chat (as `addChatMembers` answers it), in the
+        order of `chatIds`; `remove` — the `removeMemberFromChats` result.
+      properties:
+        action:
+          type: string
+          enum:
+            - add
+            - remove
+          description: The command's action, as sent — `add` or `remove`.
+        add:
+          type: array
+          description: '`add` only: one result per chat, in the order of `chatIds`.'
+          items:
+            $ref: '#/components/schemas/ChatMembersResult'
+        remove:
+          $ref: '#/components/schemas/RemoveFromChatsResult'
+      required:
+        - action
+
+    RemoveFromChatsRequest:
+      type: object
+      description: The person to remove from the chats of a channel (`removeMemberFromChats`).
+      properties:
+        phone:
+          type: string
+          minLength: 7
+          maxLength: 20
+          description: The phone number, with or without a leading `+`.
+        chatIds:
+          type: array
+          minItems: 1
+          maxItems: 200
+          description: >-
+            Only these chats (1–200). Omitted means every chat where the
+            account is an admin; the chats where it may not remove members
+            then come back `failed` with reason `admin_required`.
+          items:
+            type: string
+            pattern: '^(chat|channel):[0-9]+$'
+      required:
+        - phone
+      additionalProperties: false
+
+    ChatRemovalOutcome:
+      type: string
+      description: >-
+        What happened in one chat. `removed` — the person was removed;
+        `not_member` — they were not in the chat; `not_on_telegram` — the phone
+        has no Telegram account; `failed` — the removal failed (see `reason`);
+        `rate_limited` — Telegram rate-limited the call before this chat;
+        `not_processed` — the time budget ran out before this chat. The last
+        two mean the chat was not handled yet: repeat the call.
+      enum:
+        - removed
+        - not_member
+        - not_on_telegram
+        - failed
+        - rate_limited
+        - not_processed
+
+    ChatRemovalResult:
+      type: object
+      description: The outcome of removing the person from one chat.
+      properties:
+        chatId:
+          type: string
+          description: The chat address.
+        title:
+          type: string
+          description: The chat's title, when known.
+        outcome:
+          $ref: '#/components/schemas/ChatRemovalOutcome'
+        reason:
+          type: string
+          description: >-
+            Why the outcome is `failed`: `admin_required` (the account may not
+            remove members there), `chat_not_found` (not one of the account's
+            chats), `admin` (the person is the chat's owner or an admin),
+            `ban_not_lifted`, or a Telegram refusal code in lower case. Also
+            set on `removed` and `not_member` as `ban_not_lifted`: the person
+            is out of the chat, but this account's ban on them could not be
+            lifted; calling remove for them again lifts it.
+      required:
+        - chatId
+        - outcome
+
+    RemoveFromChatsResult:
+      type: object
+      description: The per-chat result of `removeMemberFromChats`.
+      properties:
+        phone:
+          type: string
+          description: The phone number as requested.
+        contactId:
+          type: string
+          format: uuid
+          description: The contact of the cabinet matched for this phone, when there is one.
+        providerId:
+          type: string
+          description: The person's Telegram user id, when known.
+        complete:
+          type: boolean
+          description: >-
+            False while some chats are `rate_limited` or `not_processed`, and
+            also when the account's chat list could not be read to the end
+            (chats may be missing from `results`); repeat the call.
+        retryAfterSeconds:
+          type: integer
+          description: >-
+            How many seconds Telegram asked the account to wait before the
+            call is repeated; present only when Telegram asked to wait.
+        results:
+          type: array
+          description: One entry per chat handled or still to be handled.
+          items:
+            $ref: '#/components/schemas/ChatRemovalResult'
+      required:
+        - phone
+        - complete
+        - results
 
     GroupMembersRequest:
       type: object

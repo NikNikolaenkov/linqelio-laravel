@@ -232,6 +232,50 @@ enum ErrorCode: string
     /** The one private reply to this comment was already sent, or its 7 days have passed (422). */
     case MetaPrivateReplyUnavailable = 'meta.private_reply_unavailable';
 
+    // Telegram chat members by chat address (ADR-0134, ADR-0138).
+    /** No such Telegram chat among the chats of the channel's account (404). */
+    case ChatNotFound = 'chat.not_found';
+    /** The channel's account is not an admin of the chat, or lacks the right to add or remove members (403). */
+    case ChatAdminRequired = 'chat.admin_required';
+    /** No such inbound address for chat member commands, or a revoked one or a wrong secret (404). */
+    case ChatMemberHookNotFound = 'chat_member_hook.not_found';
+
+    // Google Chat channels: connecting a Google Workspace account by signing in (ADR-0135).
+    /** The platform's Google app is not set up yet (409); a platform operator must save it. */
+    case GoogleChatAppNotConfigured = 'google_chat.app_not_configured';
+    /** The sign-in's grant is unknown, expired, used or another person's (404). */
+    case GoogleChatGrantInvalid = 'google_chat.grant_invalid';
+    /** That Google account is already a channel of another cabinet (409). */
+    case GoogleChatAccountConnectedElsewhere = 'google_chat.account_connected_elsewhere';
+
+    // Importing a Telegram Desktop export into a Telegram account channel (ADR-0137).
+    /** No such archive import of this channel (404). */
+    case ArchiveNotFound = 'archive.not_found';
+    /** The channel already has an archive import that is not finished (409). */
+    case ArchiveImportBusy = 'archive.import_busy';
+    /** The run is not in a state that allows the command (409). */
+    case ArchiveStateConflict = 'archive.state_conflict';
+    /** Parts of the archive are still missing (409). */
+    case ArchiveUploadIncomplete = 'archive.upload_incomplete';
+    /** The part number is outside the run, or the body is not the part's length (422). */
+    case ArchivePartInvalid = 'archive.part_invalid';
+    /** The archive, or what it unpacks to, is over the platform's limit (413). */
+    case ArchiveTooLarge = 'archive.too_large';
+    /** A run's `errorCode`: the archive is not a ZIP or is damaged. */
+    case ArchiveNotZip = 'archive.not_zip';
+    /** A run's `errorCode`: no result.json at the top of the ZIP or in its only folder. */
+    case ArchiveResultMissing = 'archive.result_missing';
+    /** A run's `errorCode`: the export is HTML, not machine-readable JSON. */
+    case ArchiveHtmlExport = 'archive.html_export';
+    /** A run's `errorCode`: result.json is not a readable Telegram export. */
+    case ArchiveResultInvalid = 'archive.result_invalid';
+    /** A run's `errorCode`: the export is of another Telegram account than the channel's. */
+    case ArchiveForeignAccount = 'archive.foreign_account';
+    /** A run's `errorCode`: nothing in the archive can be imported. */
+    case ArchiveNoChats = 'archive.no_chats';
+    /** A run's `errorCode`: the import stopped on an error. */
+    case ArchiveImportFailed = 'archive.import_failed';
+
     // Cabinet API keys managed by the cabinet itself.
     /** No such key in this cabinet (404), or it was already revoked. */
     case KeyringKeyNotFound = 'keyring.key_not_found';
