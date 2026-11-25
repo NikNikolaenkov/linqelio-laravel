@@ -9,6 +9,7 @@ use Linqelio\Laravel\Resources\AlertsResource;
 use Linqelio\Laravel\Resources\AnalyticsResource;
 use Linqelio\Laravel\Resources\CampaignsResource;
 use Linqelio\Laravel\Resources\ChannelsResource;
+use Linqelio\Laravel\Resources\ChatsResource;
 use Linqelio\Laravel\Resources\ContactExportsResource;
 use Linqelio\Laravel\Resources\ContactImportsResource;
 use Linqelio\Laravel\Resources\ContactsResource;
@@ -44,6 +45,8 @@ final class Linqelio
     private ?WebhooksResource $webhooks = null;
 
     private ?GroupsResource $groups = null;
+
+    private ?ChatsResource $chats = null;
 
     private ?CampaignsResource $campaigns = null;
 
@@ -99,6 +102,12 @@ final class Linqelio
     public function groups(): GroupsResource
     {
         return $this->groups ??= new GroupsResource($this->client);
+    }
+
+    /** Members of the Telegram chats a Telegram account channel administers, by phone. */
+    public function chats(): ChatsResource
+    {
+        return $this->chats ??= new ChatsResource($this->client);
     }
 
     public function campaigns(): CampaignsResource

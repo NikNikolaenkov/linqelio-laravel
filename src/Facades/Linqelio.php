@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Linqelio\Laravel\Resources\EmbedResource embed()
  * @method static \Linqelio\Laravel\Resources\WebhooksResource webhooks()
  * @method static \Linqelio\Laravel\Resources\GroupsResource groups()
+ * @method static \Linqelio\Laravel\Resources\ChatsResource chats()
  * @method static \Linqelio\Laravel\Resources\CampaignsResource campaigns()
  * @method static \Linqelio\Laravel\Resources\ScheduledSendsResource scheduledSends()
  * @method static \Linqelio\Laravel\Resources\HealthResource health()

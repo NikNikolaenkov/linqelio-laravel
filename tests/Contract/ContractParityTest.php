@@ -11,6 +11,7 @@ use Linqelio\Laravel\Data\Campaigns\CampaignInput;
 use Linqelio\Laravel\Data\Campaigns\CampaignTemplate;
 use Linqelio\Laravel\Data\Campaigns\CampaignTemplateParam;
 use Linqelio\Laravel\Data\Campaigns\CampaignWindow;
+use Linqelio\Laravel\Data\Chats\ChatMember;
 use Linqelio\Laravel\Data\Enums\AlertDeliveryChannel;
 use Linqelio\Laravel\Data\Enums\AlertSeverity;
 use Linqelio\Laravel\Data\Enums\AlertState;
@@ -118,6 +119,12 @@ final class Contract
         'updateGroup' => 'groups()->rename()',
         'leaveGroup' => 'groups()->leave()',
         'listChannelIgnoredGroups' => 'groups()->ignored()',
+
+        // Telegram chat members by chat address (ADR-0134).
+        'listChannelChats' => 'chats()->list()',
+        'addChatMembers' => 'chats()->addMembers()',
+        'removeChatMembers' => 'chats()->removeMembers()',
+        'removeMemberFromChats' => 'chats()->removeEverywhere()',
 
         'createCampaign' => 'campaigns()->create()',
         'listCampaigns' => 'campaigns()->list()',
@@ -464,6 +471,38 @@ final class Contract
         // the channel's settings; an integration has no business renting hardware.
         'provisionChannelDevice' => 'console infrastructure (channels:manage) — a new Android device is provisioned on the operator host',
         'getChannelProvisioning' => 'console infrastructure (channels:read) — progress of an operator-initiated device build',
+
+        // ADR-0138: inbound addresses for chat member commands. Making and
+        // rotating one mints a secret URL that acts with channels:manage and
+        // messages:send — credential management, like the cabinet API keys
+        // above. The command itself is called by another system (an HR system)
+        // with that secret in the address and no Linqelio key at all; a host
+        // holding a key calls chats()->addMembers() / removeEverywhere() instead.
+        'listChatMemberHooks' => 'credential management in the console (ADR-0138) — the inbound addresses that act on chat members',
+        'createChatMemberHook' => 'credential management in the console (ADR-0138) — the answer carries a secret address; an SDK never mints credentials',
+        'rotateChatMemberHook' => 'credential management in the console (ADR-0138) — the answer carries a new secret address',
+        'revokeChatMemberHook' => 'credential management in the console (ADR-0138) — paired with createChatMemberHook',
+        'runChatMemberCommand' => 'called by an outside system with the secret inbound address, no client key (ADR-0138); a host uses chats()',
+
+        // ADR-0137: importing a Telegram Desktop export. A wizard in the console:
+        // a person uploads an archive of up to 20 GiB in 8 MiB parts, reads the
+        // preview and confirms which chats to write into the account's history.
+        // Not an integration call; follow-ups for a host would be the reads only.
+        'createChannelArchiveImport' => 'console archive import wizard (ADR-0137) — a person uploads a Telegram export',
+        'uploadChannelArchiveImportPart' => 'console archive import wizard (ADR-0137) — raw 8 MiB parts of a multi-gigabyte archive',
+        'completeChannelArchiveImportUpload' => 'console archive import wizard (ADR-0137) — ends the upload, queues the check',
+        'startChannelArchiveImport' => 'console archive import wizard (ADR-0137) — a person confirms the chats after reading the preview',
+        'getChannelArchiveImport' => 'console archive import wizard (ADR-0137) — the console follows the run and shows its preview',
+        'listChannelArchiveImports' => 'console archive import wizard (ADR-0137) — the console lists recent runs',
+        'cancelChannelArchiveImport' => 'console archive import wizard (ADR-0137) — stops a run and deletes its archive',
+
+        // ADR-0135: Google Chat channels. The platform operator sets the Google
+        // app; a person connects their Workspace account by signing in with
+        // Google in the browser — the same shape as the Meta channels above.
+        'getGoogleChatAppSettings' => 'platform operator Google app settings — console only (platform:admin)',
+        'updateGoogleChatAppSettings' => 'platform operator Google app settings — console only (platform:admin), carries the client secret',
+        'startGoogleChatConnect' => 'a person signs in with Google in the browser — not an SDK flow',
+        'completeGoogleChatConnect' => 'the console finishes a Google sign-in with the grant the browser came back with — not an SDK flow',
     ];
 
     /**
@@ -952,6 +991,25 @@ function contractDrivers(): array
         'listChannelIgnoredGroups' => [
             'call' => fn (): array => Linqelio::groups()->ignored('ch-1')->groups,
             'paged' => true,
+        ],
+
+        'listChannelChats' => [
+            'call' => fn (): array => Linqelio::chats()->list('ch-1')->chats,
+            'paged' => true,
+        ],
+        'addChatMembers' => [
+            'call' => fn () => Linqelio::chats()->addMembers(
+                'ch-1',
+                'chat:1234567890',
+                [new ChatMember('+380501234567', 'Olena'), '+380671112233'],
+                idempotencyKey: 'k-1',
+            ),
+        ],
+        'removeChatMembers' => [
+            'call' => fn () => Linqelio::chats()->removeMembers('ch-1', 'chat:1234567890', ['+380501234567'], idempotencyKey: 'k-1'),
+        ],
+        'removeMemberFromChats' => [
+            'call' => fn () => Linqelio::chats()->removeEverywhere('ch-1', '+380501234567', ['chat:1234567890', 'channel:2233445566']),
         ],
 
         'createCampaign' => [

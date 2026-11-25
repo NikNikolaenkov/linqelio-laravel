@@ -49,7 +49,7 @@ final class ExceptionFactory
             'template' => new TemplateException($message, $code, $status, $problem, $requestId, $retryAfter),
             'analytics' => new AnalyticsException($message, $code, $status, $problem, $requestId, $retryAfter),
             'ai' => new AiException($message, $code, $status, $problem, $requestId, $retryAfter),
-            'conversation', 'group' => new ConversationException($message, $code, $status, $problem, $requestId, $retryAfter),
+            'conversation', 'group', 'chat' => new ConversationException($message, $code, $status, $problem, $requestId, $retryAfter),
             default => new LinqelioException($message, $code, $status, $problem, $requestId, $retryAfter),
         };
     }

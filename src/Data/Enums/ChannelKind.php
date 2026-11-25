@@ -34,6 +34,13 @@ enum ChannelKind: string
     case Instagram = 'instagram';
 
     /**
+     * A Google Workspace account in Google Chat, acting as the person who signed
+     * in: direct messages, group chats and spaces. Connected by signing in with
+     * Google in the console, never created with `channels()->create()`.
+     */
+    case GoogleChat = 'google_chat';
+
+    /**
      * Whether this kind is connected by scanning a code rather than by supplying
      * a token. QR kinds cannot be provisioned unattended — a human has to pair
      * the account once.
@@ -57,12 +64,13 @@ enum ChannelKind: string
 
     /**
      * Whether this kind is connected by a person logging in to the provider in
-     * the console (Meta). Such channels are never given a token over the API.
+     * the console (Meta, Google). Such channels are never given a token over the
+     * API.
      */
     public function isLoggedIn(): bool
     {
         return match ($this) {
-            self::FbPage, self::Instagram => true,
+            self::FbPage, self::Instagram, self::GoogleChat => true,
             default => false,
         };
     }
@@ -77,6 +85,7 @@ enum ChannelKind: string
             self::ViberBot => 'Viber',
             self::FbPage => 'Facebook Page',
             self::Instagram => 'Instagram',
+            self::GoogleChat => 'Google Chat',
         };
     }
 }

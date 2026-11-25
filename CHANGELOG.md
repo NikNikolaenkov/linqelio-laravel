@@ -9,6 +9,41 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Contract fixture synced with Linqelio's Telegram chat members (#319, #320,
+  #337, #338; ADR-0134, ADR-0138), Google Chat channels (#325–#329, ADR-0135)
+  and Telegram archive import (#330–#334, ADR-0137).
+  - **New wrapper `chats()`** for the Telegram chats a Telegram account channel
+    (`tg_client`) administers, by phone number: `list()` (`listChannelChats`,
+    `ChannelChats` of `ChannelChat`), `addMembers()` / `removeMembers()`
+    (`addChatMembers`, `removeChatMembers` — `ChatMember` or a phone,
+    per-person `ChatMembersResult`, optional `idempotencyKey`) and
+    `removeEverywhere()` (`removeMemberFromChats`, per-chat `ChatRemoval`;
+    repeat until `complete`). New enums `ChatType`, `ChatRole`,
+    `ChatMemberOutcome`, `ChatRemovalOutcome`. The wire gates drive all four.
+  - **Not wrapped, with a reason in `Contract::EXCLUDED`:** the inbound
+    addresses for chat member commands (`listChatMemberHooks`,
+    `createChatMemberHook`, `rotateChatMemberHook`, `revokeChatMemberHook` —
+    they mint secret URLs, credential management like the API keys) and
+    `runChatMemberCommand` (an outside system calls it with the secret address,
+    no key); the archive import wizard of the console (seven
+    `*ChannelArchiveImport*` operations: a multi-gigabyte upload in 8 MiB parts
+    a person confirms after the preview); the Google app settings
+    (`getGoogleChatAppSettings`, `updateGoogleChatAppSettings`,
+    platform:admin) and the Google sign-in (`startGoogleChatConnect`,
+    `completeGoogleChatConnect`), as for the Meta channels.
+  - **New channel kind** `google_chat` (`ChannelKind::GoogleChat`, connected by
+    signing in, so `isLoggedIn()` and no token).
+  - **New error codes** (now `ErrorCode` cases): `chat.not_found`,
+    `chat.admin_required` (both a `ConversationException`),
+    `chat_member_hook.not_found`, `google_chat.app_not_configured`,
+    `google_chat.grant_invalid`, `google_chat.account_connected_elsewhere`
+    and thirteen `archive.*`.
+  - **New webhook events** `chat.member_added`, `chat.member_removed`,
+    `chat.member_joined`, `chat.member_left` (payload `ChatMemberEvent`) reach
+    `WebhookReceived`; the package does not model them further.
+  - Also in the contract: uploaded media up to 100 MiB (a recorded `note` from
+    at most 32 MiB, else 422 `note_too_large`), and `syncChannel` /
+    `getChannelHistoryImport` / `groups.enabled` for `google_chat`.
 - Contract fixture synced with Linqelio's webhooks behind OAuth 2.0 (#316,
   ADR-0133) and its failure reasons for a recipient nobody is behind (#322).
   - **New fields:** `registerWebhook` takes an optional `oauth`
